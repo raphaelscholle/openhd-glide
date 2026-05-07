@@ -155,6 +155,12 @@ int main(int argc, char** argv)
             glide::LogLevel::info,
             "GlideFlow",
             "DRM/KMS surface ready " + std::to_string(options.surface.width) + "x" + std::to_string(options.surface.height));
+        glide::log(glide::LogLevel::info, "GlideFlow", renderer.runtime_description());
+        if (renderer.likely_software_renderer()) {
+            glide::log(glide::LogLevel::warning, "GlideFlow", "OpenGL ES renderer looks like a software fallback");
+        } else {
+            glide::log(glide::LogLevel::info, "GlideFlow", "OpenGL ES renderer appears hardware accelerated");
+        }
 #else
         glide::log(glide::LogLevel::error, "GlideFlow", "DRM/KMS mode is disabled in this build");
         return 1;
@@ -171,6 +177,13 @@ int main(int argc, char** argv)
     }
     if (options.render_gles && !renderer.available()) {
         glide::log(glide::LogLevel::warning, "GlideFlow", "OpenGL ES renderer unavailable; running layout path only");
+    } else if (options.preview && options.render_gles) {
+        glide::log(glide::LogLevel::info, "GlideFlow", renderer.runtime_description());
+        if (renderer.likely_software_renderer()) {
+            glide::log(glide::LogLevel::warning, "GlideFlow", "OpenGL ES renderer looks like a software fallback");
+        } else {
+            glide::log(glide::LogLevel::info, "GlideFlow", "OpenGL ES renderer appears hardware accelerated");
+        }
     }
 
     glide::flow::TextPlacement placement = fps_overlay.layout(0.0, options.surface);
@@ -225,7 +238,7 @@ int main(int argc, char** argv)
 
         if (options.preview) {
             std::this_thread::sleep_until(frame_start + preview_frame_time);
-        } else {
+        } else if (!options.kms) {
             std::this_thread::sleep_for(std::chrono::milliseconds(16));
         }
     }

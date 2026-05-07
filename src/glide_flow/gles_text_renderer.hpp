@@ -36,6 +36,8 @@ public:
     void draw_line(RenderPoint start, RenderPoint end, float thickness, RgbaColor color, SurfaceSize surface);
     void draw_circle_outline(RenderPoint center, float radius, float thickness, RgbaColor color, SurfaceSize surface);
     void draw(const TextPlacement& placement, SurfaceSize surface);
+    std::string runtime_description() const;
+    bool likely_software_renderer() const;
     std::string last_error() const;
 
 private:

@@ -5,8 +5,11 @@
 #include <array>
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 #include <cstdint>
 #include <filesystem>
+#include <sstream>
+#include <string>
 
 #if OPENHD_GLIDE_HAS_GLESV2
 #include <GLES2/gl2.h>
@@ -172,6 +175,43 @@ void draw_stroke_quad(
 #endif
 
 } // namespace
+
+std::string GlesTextRenderer::runtime_description() const
+{
+#if OPENHD_GLIDE_HAS_GLESV2
+    const auto* vendor = reinterpret_cast<const char*>(glGetString(GL_VENDOR));
+    const auto* renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+    const auto* version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
+
+    std::ostringstream stream;
+    stream << "OpenGL ES runtime vendor='" << (vendor != nullptr ? vendor : "unknown")
+           << "' renderer='" << (renderer != nullptr ? renderer : "unknown")
+           << "' version='" << (version != nullptr ? version : "unknown") << "'";
+    return stream.str();
+#else
+    return "OpenGL ES runtime unavailable at build time";
+#endif
+}
+
+bool GlesTextRenderer::likely_software_renderer() const
+{
+#if OPENHD_GLIDE_HAS_GLESV2
+    const auto* renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+    const auto* vendor = reinterpret_cast<const char*>(glGetString(GL_VENDOR));
+    auto haystack = std::string(renderer != nullptr ? renderer : "");
+    haystack += " ";
+    haystack += vendor != nullptr ? vendor : "";
+    std::transform(haystack.begin(), haystack.end(), haystack.begin(), [](unsigned char value) {
+        return static_cast<char>(std::tolower(value));
+    });
+    return haystack.find("llvmpipe") != std::string::npos
+        || haystack.find("softpipe") != std::string::npos
+        || haystack.find("software") != std::string::npos
+        || haystack.find("swrast") != std::string::npos;
+#else
+    return true;
+#endif
+}
 
 GlesTextRenderer::~GlesTextRenderer()
 {

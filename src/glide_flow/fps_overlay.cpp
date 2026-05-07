@@ -20,13 +20,14 @@ TextPlacement FpsOverlay::layout(double fps, SurfaceSize surface) const
         static_cast<float>(surface.height) / 720.0F));
     const auto scale = scale_ * surface_scale;
     const auto text_height = vector_text_height() * scale;
-    const auto surface_height = static_cast<float>(surface.height);
+    const auto text_width = vector_text_width(value) * scale;
+    const auto surface_width = static_cast<float>(surface.width);
     const auto margin = margin_ * surface_scale;
 
     return TextPlacement {
         .text = value,
-        .x = margin,
-        .y = std::max(text_height, surface_height - margin),
+        .x = std::max(margin, (surface_width - text_width) * 0.5F),
+        .y = margin + text_height,
         .scale = scale,
     };
 }
