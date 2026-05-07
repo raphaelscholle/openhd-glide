@@ -70,6 +70,9 @@ Standalone View decode test:
 sudo glide-view --udp-video --udp-port 5600
 ```
 
+This command does not display video. It should log `first decoded sample ...` and `decoded fps=...` once RTP/H.264
+frames arrive. If those lines do not appear, the sender is not reaching the receiver or the stream caps do not match.
+
 Send a test pattern from another machine with GStreamer:
 
 ```sh

@@ -252,6 +252,10 @@ public:
         status << "UDP RTP/H264 decode listening on 0.0.0.0:" << options.udp_port
                << " output=appsink";
         glide::log(glide::LogLevel::info, "GlideView", status.str());
+        glide::log(
+            glide::LogLevel::warning,
+            "GlideView",
+            "decode-only mode does not display video; openhd-glide must import decoded buffers and own KMS");
         return true;
     }
 
@@ -336,6 +340,10 @@ private:
         }
 
         const auto now = std::chrono::steady_clock::now();
+        if (frames_ == 0 && now - last_waiting_log_ >= std::chrono::seconds(3)) {
+            glide::log(glide::LogLevel::warning, "GlideView", "waiting for decoded RTP/H264 frames; no samples received yet");
+            last_waiting_log_ = now;
+        }
         if (now - last_fps_log_ >= std::chrono::seconds(1)) {
             const auto elapsed = std::chrono::duration<double>(now - last_fps_log_).count();
             const auto fps = static_cast<double>(frames_since_log_) / elapsed;
@@ -374,6 +382,7 @@ private:
     std::uint64_t frames_ {};
     std::uint64_t frames_since_log_ {};
     std::chrono::steady_clock::time_point last_fps_log_ { std::chrono::steady_clock::now() };
+    std::chrono::steady_clock::time_point last_waiting_log_ { std::chrono::steady_clock::now() };
 };
 #endif
 
