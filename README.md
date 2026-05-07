@@ -92,6 +92,20 @@ examples/stream-videotestsrc-to-glide-view.sh <target-ip> 5600
 Use the Pi's actual network IP as `<target-ip>`. For a sender running on the same Pi, use `127.0.0.1`.
 The Linux sender requires a hardware encoder such as `v4l2h264enc` by default. Set
 `GLIDE_ALLOW_SOFTWARE_ENCODER=1` only when you intentionally want a non-performance `x264enc` fallback.
+The script performs a small encoder self-test first. If `v4l2h264enc` fails with `bcm2835-codec ... ret -3` in
+`dmesg`, the Raspberry Pi encoder driver is failing independently of Glide; use another sender with hardware H.264 or
+fix the Pi encoder stack before using it for performance measurements.
+
+To avoid sender-side encoding entirely, stream a downloaded H.264 MP4:
+
+```sh
+examples/stream-h264-file-to-glide-view.sh <target-ip> 5600
+```
+
+This downloads a pre-encoded Big Buck Bunny H.264 1080p60 30-second MP4 by default, then streams only
+`filesrc ! qtdemux ! h264parse ! rtph264pay ! udpsink`. There is no `videotestsrc` and no encoder. To use a 720p60
+H.264 MP4 instead, pass the local file path as the third argument or set `GLIDE_TEST_VIDEO_URL` before running the
+script.
 
 On Windows, use:
 
@@ -101,6 +115,12 @@ examples\stream-videotestsrc-to-glide-view.bat <target-ip> 5600
 
 The Windows sender requires a hardware encoder (`nvh264enc`, `qsvh264enc`, `d3d11h264enc`, `amfh264enc`) by default.
 Set `GLIDE_ALLOW_SOFTWARE_ENCODER=1` only when you intentionally want a non-performance `x264enc` fallback.
+
+Windows can also stream the downloaded H.264 file without encoding:
+
+```bat
+examples\stream-h264-file-to-glide-view.bat <target-ip> 5600
+```
 
 ```sh
 ./build/glide-flow --width 1920 --height 1080
