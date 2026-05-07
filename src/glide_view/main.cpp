@@ -4,6 +4,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdint>
+#include <atomic>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -175,19 +176,25 @@ public:
         auto* capsfilter = make_element("capsfilter", "rtp-caps");
         auto* depay = make_element("rtph264depay", "h264-depay");
         auto* parse = make_element("h264parse", "h264-parse");
+        auto* h264_capsfilter = make_element("capsfilter", "h264-caps");
         auto* input_queue = make_element("queue", "input-queue");
         auto* decoder = make_decoder();
         auto* output_queue = make_element("queue", "output-queue");
         auto* sink = make_element("appsink", "decoded-frame-sink");
 
         if (pipeline_ == nullptr || source == nullptr || capsfilter == nullptr || depay == nullptr || parse == nullptr
-            || input_queue == nullptr || decoder == nullptr || output_queue == nullptr || sink == nullptr) {
+            || h264_capsfilter == nullptr || input_queue == nullptr || decoder == nullptr || output_queue == nullptr
+            || sink == nullptr) {
             stop();
             return false;
         }
 
         g_object_set(source, "port", static_cast<int>(options.udp_port), nullptr);
         set_int_property_if_present(source, "buffer-size", 65536);
+        if (auto* source_pad = gst_element_get_static_pad(source, "src"); source_pad != nullptr) {
+            source_probe_id_ = gst_pad_add_probe(source_pad, GST_PAD_PROBE_TYPE_BUFFER, &VideoPipeline::source_probe, this, nullptr);
+            gst_object_unref(source_pad);
+        }
 
         auto* caps = gst_caps_new_simple(
             "application/x-rtp",
@@ -206,6 +213,19 @@ public:
             nullptr);
         g_object_set(capsfilter, "caps", caps, nullptr);
         gst_caps_unref(caps);
+
+        set_int_property_if_present(parse, "config-interval", -1);
+        auto* h264_caps = gst_caps_new_simple(
+            "video/x-h264",
+            "stream-format",
+            G_TYPE_STRING,
+            "byte-stream",
+            "alignment",
+            G_TYPE_STRING,
+            "au",
+            nullptr);
+        g_object_set(h264_capsfilter, "caps", h264_caps, nullptr);
+        gst_caps_unref(h264_caps);
 
         for (auto* queue : { input_queue, output_queue }) {
             set_int_property_if_present(queue, "max-size-buffers", 1);
@@ -227,13 +247,24 @@ public:
             capsfilter,
             depay,
             parse,
+            h264_capsfilter,
             input_queue,
             decoder,
             output_queue,
             sink,
             nullptr);
 
-        if (!gst_element_link_many(source, capsfilter, depay, parse, input_queue, decoder, output_queue, sink, nullptr)) {
+        if (!gst_element_link_many(
+                source,
+                capsfilter,
+                depay,
+                parse,
+                h264_capsfilter,
+                input_queue,
+                decoder,
+                output_queue,
+                sink,
+                nullptr)) {
             glide::log(glide::LogLevel::error, "GlideView", "failed to link GStreamer UDP decode pipeline");
             stop();
             return false;
@@ -341,8 +372,27 @@ private:
 
         const auto now = std::chrono::steady_clock::now();
         if (frames_ == 0 && now - last_waiting_log_ >= std::chrono::seconds(3)) {
-            glide::log(glide::LogLevel::warning, "GlideView", "waiting for decoded RTP/H264 frames; no samples received yet");
+            const auto packets = source_packets_.load();
+            const auto bytes = source_bytes_.load();
+            if (packets == 0) {
+                glide::log(glide::LogLevel::warning, "GlideView", "no RTP packets received yet; check sender target IP, port, and network path");
+            } else {
+                std::ostringstream stream;
+                stream << "received RTP packets=" << packets << " bytes=" << bytes
+                       << " but no decoded samples yet; check H264 RTP caps/decoder negotiation";
+                glide::log(glide::LogLevel::warning, "GlideView", stream.str());
+            }
             last_waiting_log_ = now;
+        }
+        if (now - last_packet_log_ >= std::chrono::seconds(1)) {
+            const auto packets = source_packets_.load();
+            if (packets > logged_source_packets_) {
+                std::ostringstream stream;
+                stream << "RTP ingress packets=" << packets << " bytes=" << source_bytes_.load();
+                glide::log(glide::LogLevel::info, "GlideView", stream.str());
+                logged_source_packets_ = packets;
+            }
+            last_packet_log_ = now;
         }
         if (now - last_fps_log_ >= std::chrono::seconds(1)) {
             const auto elapsed = std::chrono::duration<double>(now - last_fps_log_).count();
@@ -361,6 +411,16 @@ private:
 
     void stop()
     {
+        if (pipeline_ != nullptr && source_probe_id_ != 0) {
+            if (auto* source = gst_bin_get_by_name(GST_BIN(pipeline_), "udp-source"); source != nullptr) {
+                if (auto* source_pad = gst_element_get_static_pad(source, "src"); source_pad != nullptr) {
+                    gst_pad_remove_probe(source_pad, source_probe_id_);
+                    gst_object_unref(source_pad);
+                }
+                gst_object_unref(source);
+            }
+            source_probe_id_ = 0;
+        }
         if (pipeline_ != nullptr) {
             gst_element_set_state(pipeline_, GST_STATE_NULL);
         }
@@ -378,11 +438,26 @@ private:
     GstElement* pipeline_ {};
     GstElement* sink_ {};
     GstBus* bus_ {};
+    gulong source_probe_id_ {};
     bool logged_first_sample_ {};
     std::uint64_t frames_ {};
     std::uint64_t frames_since_log_ {};
+    std::uint64_t logged_source_packets_ {};
+    std::atomic<std::uint64_t> source_packets_ {};
+    std::atomic<std::uint64_t> source_bytes_ {};
     std::chrono::steady_clock::time_point last_fps_log_ { std::chrono::steady_clock::now() };
+    std::chrono::steady_clock::time_point last_packet_log_ { std::chrono::steady_clock::now() };
     std::chrono::steady_clock::time_point last_waiting_log_ { std::chrono::steady_clock::now() };
+
+    static GstPadProbeReturn source_probe(GstPad*, GstPadProbeInfo* info, gpointer user_data)
+    {
+        auto* self = static_cast<VideoPipeline*>(user_data);
+        if (auto* buffer = gst_pad_probe_info_get_buffer(info); buffer != nullptr) {
+            self->source_packets_.fetch_add(1, std::memory_order_relaxed);
+            self->source_bytes_.fetch_add(gst_buffer_get_size(buffer), std::memory_order_relaxed);
+        }
+        return GST_PAD_PROBE_OK;
+    }
 };
 #endif
 

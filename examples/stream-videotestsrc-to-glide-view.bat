@@ -2,15 +2,23 @@
 setlocal
 
 set TARGET=%1
-if "%TARGET%"=="" set TARGET=192.168.2.2
+if "%TARGET%"=="" (
+  echo usage: %0 ^<target-ip^> [port] 1>&2
+  echo example local test: %0 127.0.0.1 5600 1>&2
+  exit /b 2
+)
 
 set PORT=%2
 if "%PORT%"=="" set PORT=5600
 
+echo Streaming RTP/H264 test video to %TARGET%:%PORT%
+
 gst-launch-1.0 -v ^
   videotestsrc is-live=true pattern=smpte ! ^
-  video/x-raw,width=1280,height=720,framerate=60/1 ! ^
-  x264enc tune=zerolatency speed-preset=ultrafast bitrate=4000 key-int-max=30 bframes=0 ! ^
+  videoconvert ! ^
+  video/x-raw,format=I420,width=1280,height=720,framerate=60/1 ! ^
+  x264enc tune=zerolatency speed-preset=ultrafast bitrate=4000 key-int-max=30 bframes=0 byte-stream=true aud=true ! ^
+  video/x-h264,stream-format=byte-stream,alignment=au,profile=baseline ! ^
   h264parse config-interval=1 ! ^
   rtph264pay pt=96 config-interval=1 ! ^
   udpsink host=%TARGET% port=%PORT% sync=false async=false

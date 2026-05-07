@@ -79,6 +79,8 @@ Send a test pattern from another machine with GStreamer:
 examples/stream-videotestsrc-to-glide-view.sh <target-ip> 5600
 ```
 
+Use the Pi's actual network IP as `<target-ip>`. For a sender running on the same Pi, use `127.0.0.1`.
+
 On Windows, use:
 
 ```bat
