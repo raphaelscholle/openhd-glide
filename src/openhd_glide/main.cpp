@@ -8,6 +8,7 @@
 #include "platform/process_probe.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
@@ -225,14 +226,77 @@ std::string caps_to_string(GstCaps* caps)
     return result;
 }
 
+std::uint32_t align_up(std::uint32_t value, std::uint32_t alignment)
+{
+    return ((value + alignment - 1U) / alignment) * alignment;
+}
+
+std::uint32_t infer_plane_count(std::uint32_t drm_format)
+{
+    if (drm_format == fourcc('Y', 'U', '1', '2')) {
+        return 3;
+    }
+    if (drm_format == fourcc('N', 'V', '1', '2')) {
+        return 2;
+    }
+    if (drm_format == fourcc('X', 'R', '2', '4')) {
+        return 1;
+    }
+    return 0;
+}
+
+bool infer_video_layout(
+    std::uint32_t drm_format,
+    std::uint32_t width,
+    std::uint32_t height,
+    std::uint32_t memory_count,
+    std::array<std::uint32_t, 4>& strides,
+    std::array<std::uint32_t, 4>& offsets)
+{
+    strides = {};
+    offsets = {};
+
+    if (drm_format == fourcc('Y', 'U', '1', '2')) {
+        const auto y_stride = align_up(width, 32);
+        const auto uv_stride = align_up(width / 2U, 16);
+        const auto y_size = y_stride * height;
+        const auto uv_size = uv_stride * ((height + 1U) / 2U);
+        strides[0] = y_stride;
+        strides[1] = uv_stride;
+        strides[2] = uv_stride;
+        if (memory_count == 1) {
+            offsets[1] = y_size;
+            offsets[2] = y_size + uv_size;
+        }
+        return true;
+    }
+
+    if (drm_format == fourcc('N', 'V', '1', '2')) {
+        const auto y_stride = align_up(width, 32);
+        strides[0] = y_stride;
+        strides[1] = y_stride;
+        if (memory_count == 1) {
+            offsets[1] = y_stride * height;
+        }
+        return true;
+    }
+
+    if (drm_format == fourcc('X', 'R', '2', '4')) {
+        strides[0] = align_up(width * 4U, 64);
+        return true;
+    }
+
+    return false;
+}
+
 bool extract_dmabuf_frame(GstSample* sample, glide::dev::DmabufVideoFrame& frame, std::string& error)
 {
     auto* caps = gst_sample_get_caps(sample);
     auto* structure = caps != nullptr ? gst_caps_get_structure(caps, 0) : nullptr;
     auto* buffer = gst_sample_get_buffer(sample);
     auto* meta = buffer != nullptr ? gst_buffer_get_video_meta(buffer) : nullptr;
-    if (structure == nullptr || buffer == nullptr || meta == nullptr) {
-        error = "decoded sample is missing caps, buffer, or video metadata";
+    if (structure == nullptr || buffer == nullptr) {
+        error = "decoded sample is missing caps or buffer";
         return false;
     }
 
@@ -253,7 +317,7 @@ bool extract_dmabuf_frame(GstSample* sample, glide::dev::DmabufVideoFrame& frame
         return false;
     }
 
-    const auto plane_count = meta->n_planes;
+    const auto plane_count = meta != nullptr ? meta->n_planes : infer_plane_count(drm_format);
     if (plane_count == 0 || plane_count > frame.fds.size()) {
         error = "decoded sample has invalid video plane metadata";
         return false;
@@ -272,6 +336,19 @@ bool extract_dmabuf_frame(GstSample* sample, glide::dev::DmabufVideoFrame& frame
     frame.drm_format = drm_format;
     frame.plane_count = plane_count;
 
+    std::array<std::uint32_t, 4> inferred_strides {};
+    std::array<std::uint32_t, 4> inferred_offsets {};
+    if (meta == nullptr && !infer_video_layout(
+                               drm_format,
+                               frame.width,
+                               frame.height,
+                               static_cast<std::uint32_t>(memory_count),
+                               inferred_strides,
+                               inferred_offsets)) {
+        error = "decoded sample is missing video metadata and layout could not be inferred";
+        return false;
+    }
+
     for (std::uint32_t plane = 0; plane < plane_count; ++plane) {
         const auto memory_index = memory_count == 1 ? 0 : plane;
         auto* memory = gst_buffer_peek_memory(buffer, memory_index);
@@ -280,8 +357,8 @@ bool extract_dmabuf_frame(GstSample* sample, glide::dev::DmabufVideoFrame& frame
             return false;
         }
         frame.fds[plane] = gst_dmabuf_memory_get_fd(memory);
-        frame.strides[plane] = static_cast<std::uint32_t>(meta->stride[plane]);
-        frame.offsets[plane] = static_cast<std::uint32_t>(meta->offset[plane]);
+        frame.strides[plane] = meta != nullptr ? static_cast<std::uint32_t>(meta->stride[plane]) : inferred_strides[plane];
+        frame.offsets[plane] = meta != nullptr ? static_cast<std::uint32_t>(meta->offset[plane]) : inferred_offsets[plane];
     }
     return true;
 }
@@ -357,6 +434,7 @@ int run_kms_video_preview(const Options& options)
     auto last_log = std::chrono::steady_clock::now();
     GstSample* scanout_sample {};
     bool logged_caps {};
+    std::uint32_t consecutive_frame_errors {};
     while (stop_requested == 0) {
         while (auto* message = gst_bus_pop_filtered(bus, static_cast<GstMessageType>(GST_MESSAGE_ERROR | GST_MESSAGE_EOS))) {
             if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) {
@@ -394,11 +472,17 @@ int run_kms_video_preview(const Options& options)
         glide::dev::DmabufVideoFrame frame;
         std::string frame_error;
         if (!extract_dmabuf_frame(sample, frame, frame_error)) {
-            glide::log(glide::LogLevel::error, "OpenHD-Glide", frame_error);
+            ++consecutive_frame_errors;
+            glide::log(glide::LogLevel::warning, "OpenHD-Glide", "dropping decoded sample: " + frame_error);
             gst_sample_unref(sample);
-            stop_requested = 1;
-            break;
+            if (consecutive_frame_errors >= 30) {
+                glide::log(glide::LogLevel::error, "OpenHD-Glide", "too many consecutive decoded samples could not be imported");
+                stop_requested = 1;
+                break;
+            }
+            continue;
         }
+        consecutive_frame_errors = 0;
 
         if (output.present(frame)) {
             if (scanout_sample != nullptr) {
