@@ -25,6 +25,7 @@
 
 #if OPENHD_GLIDE_HAS_GSTREAMER
 #include <gst/allocators/gstdmabuf.h>
+#include <gst/allocators/gstfdmemory.h>
 #include <gst/app/gstappsink.h>
 #include <gst/gst.h>
 #include <gst/video/video.h>
@@ -231,6 +232,53 @@ std::uint32_t align_up(std::uint32_t value, std::uint32_t alignment)
     return ((value + alignment - 1U) / alignment) * alignment;
 }
 
+std::string describe_memory(GstMemory* memory)
+{
+    if (memory == nullptr) {
+        return "null-memory";
+    }
+
+    gsize offset {};
+    const auto size = gst_memory_get_sizes(memory, &offset, nullptr);
+    const auto* allocator = memory->allocator;
+    const auto* memory_type = allocator != nullptr && allocator->mem_type != nullptr ? allocator->mem_type : "unknown";
+    std::ostringstream description;
+    description << "type=" << memory_type
+                << " size=" << size
+                << " offset=" << offset
+                << " dmabuf=" << (gst_is_dmabuf_memory(memory) ? "yes" : "no")
+                << " fd=" << (gst_is_fd_memory(memory) ? "yes" : "no");
+    return description.str();
+}
+
+std::string describe_buffer_memories(GstBuffer* buffer)
+{
+    if (buffer == nullptr) {
+        return "buffer=null";
+    }
+    std::ostringstream description;
+    const auto memory_count = gst_buffer_n_memory(buffer);
+    description << "memory_count=" << memory_count;
+    for (guint i = 0; i < memory_count; ++i) {
+        description << " mem[" << i << "]={" << describe_memory(gst_buffer_peek_memory(buffer, i)) << "}";
+    }
+    return description.str();
+}
+
+int fd_from_memory(GstMemory* memory)
+{
+    if (memory == nullptr) {
+        return -1;
+    }
+    if (gst_is_dmabuf_memory(memory)) {
+        return gst_dmabuf_memory_get_fd(memory);
+    }
+    if (gst_is_fd_memory(memory)) {
+        return gst_fd_memory_get_fd(memory);
+    }
+    return -1;
+}
+
 std::uint32_t infer_plane_count(std::uint32_t drm_format)
 {
     if (drm_format == fourcc('Y', 'U', '1', '2')) {
@@ -352,11 +400,12 @@ bool extract_dmabuf_frame(GstSample* sample, glide::dev::DmabufVideoFrame& frame
     for (std::uint32_t plane = 0; plane < plane_count; ++plane) {
         const auto memory_index = memory_count == 1 ? 0 : plane;
         auto* memory = gst_buffer_peek_memory(buffer, memory_index);
-        if (memory == nullptr || !gst_is_dmabuf_memory(memory)) {
-            error = "decoded sample memory is not DMABUF despite DMABUF caps";
+        const auto fd = fd_from_memory(memory);
+        if (fd < 0) {
+            error = "decoded sample memory is not DMABUF/fd-backed despite DMABUF caps; " + describe_buffer_memories(buffer);
             return false;
         }
-        frame.fds[plane] = gst_dmabuf_memory_get_fd(memory);
+        frame.fds[plane] = fd;
         frame.strides[plane] = meta != nullptr ? static_cast<std::uint32_t>(meta->stride[plane]) : inferred_strides[plane];
         frame.offsets[plane] = meta != nullptr ? static_cast<std::uint32_t>(meta->offset[plane]) : inferred_offsets[plane];
     }
@@ -378,26 +427,45 @@ int run_kms_video_preview(const Options& options)
     }
 
     gst_init(nullptr, nullptr);
-    std::ostringstream pipeline_text;
-    pipeline_text
-        << "udpsrc port=" << options.view_udp_port
-        << " caps=\"application/x-rtp,media=(string)video,clock-rate=(int)90000,encoding-name=(string)H264,payload=(int)96\" "
-        << "! rtph264depay "
-        << "! h264parse config-interval=-1 "
-        << "! video/x-h264,stream-format=byte-stream,alignment=au "
-        << "! v4l2h264dec "
-        << "! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream "
-        << "! video/x-raw(memory:DMABuf),format=DMA_DRM "
-        << "! appsink name=video-sink sync=false async=false drop=true max-buffers=4 emit-signals=false";
+    const auto make_pipeline_text = [&](bool force_dmabuf_capture) {
+        std::ostringstream text;
+        text
+            << "udpsrc port=" << options.view_udp_port
+            << " caps=\"application/x-rtp,media=(string)video,clock-rate=(int)90000,encoding-name=(string)H264,payload=(int)96\" "
+            << "! rtph264depay "
+            << "! h264parse config-interval=-1 "
+            << "! video/x-h264,stream-format=byte-stream,alignment=au "
+            << "! v4l2h264dec ";
+        if (force_dmabuf_capture) {
+            text << "capture-io-mode=dmabuf ";
+        }
+        text
+            << "! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream "
+            << "! video/x-raw(memory:DMABuf),format=DMA_DRM "
+            << "! appsink name=video-sink sync=false async=false drop=true max-buffers=4 emit-signals=false";
+        return text.str();
+    };
 
     GError* error {};
-    auto* pipeline = gst_parse_launch(pipeline_text.str().c_str(), &error);
+    const auto forced_pipeline_text = make_pipeline_text(true);
+    auto* pipeline = gst_parse_launch(forced_pipeline_text.c_str(), &error);
     if (pipeline == nullptr) {
-        glide::log(glide::LogLevel::error, "OpenHD-Glide", error != nullptr ? error->message : "failed to create video preview pipeline");
+        glide::log(glide::LogLevel::warning, "OpenHD-Glide", error != nullptr ? error->message : "failed to create forced-DMABUF video preview pipeline");
         if (error != nullptr) {
             g_error_free(error);
+            error = nullptr;
         }
-        return 1;
+
+        const auto fallback_pipeline_text = make_pipeline_text(false);
+        pipeline = gst_parse_launch(fallback_pipeline_text.c_str(), &error);
+        if (pipeline == nullptr) {
+            glide::log(glide::LogLevel::error, "OpenHD-Glide", error != nullptr ? error->message : "failed to create video preview pipeline");
+            if (error != nullptr) {
+                g_error_free(error);
+            }
+            return 1;
+        }
+        glide::log(glide::LogLevel::warning, "OpenHD-Glide", "v4l2h264dec forced DMABUF capture was unavailable; using decoder auto mode");
     }
     if (error != nullptr) {
         glide::log(glide::LogLevel::warning, "OpenHD-Glide", error->message);
@@ -427,6 +495,7 @@ int run_kms_video_preview(const Options& options)
     }
 
     glide::log(glide::LogLevel::info, "OpenHD-Glide", "controller-owned KMS DMABUF video plane running");
+    glide::log(glide::LogLevel::info, "OpenHD-Glide", "KMS video importer build: forced decoder DMABUF capture + fd-backed memory diagnostics");
     glide::log(glide::LogLevel::info, "OpenHD-Glide", "decoded DMABUF frames are imported directly into DRM and scanned out on a KMS plane");
 
     std::uint64_t frames {};
