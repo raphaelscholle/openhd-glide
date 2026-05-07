@@ -45,6 +45,8 @@ The queues are constrained to one buffer and leaky mode to keep latency low. `gl
 
 The current composition limitation is that `glide-flow --kms` still owns fullscreen scanout. For real video-under-OSD composition, `openhd-glide` needs to own KMS, put View's decoded DMABUF on a video plane, and put Flow's render target on an alpha-capable overlay plane above it.
 
+`openhd-glide --kms-video-preview` is the first visible controller-owned video bring-up path. It decodes RTP/H.264 in the controller, requests `video/x-raw(memory:DMABuf),format=DMA_DRM`, imports the decoded DMABUF FDs into DRM framebuffers, and places them on a KMS plane. It currently creates a black primary framebuffer to keep the CRTC active. The next step is to move this DMABUF handoff back across the `glide-view` Unix socket and add Flow/UI overlay planes above the video plane.
+
 ## GlideFlow OSD
 
 The first OSD elements are an FPS counter positioned in the bottom-left corner, a compact performance horizon centered on the render surface, left/right/bottom link overview panels, a left-side speed widget, and a right-side altitude widget. The current implementation includes:

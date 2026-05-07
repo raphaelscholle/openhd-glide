@@ -1,6 +1,7 @@
 #include "common/logging.hpp"
 #include "common/ipc.hpp"
 #include "common/preview_control.hpp"
+#include "dev/kms_dmabuf_video_plane.hpp"
 #include "platform/core_assignment.hpp"
 #include "platform/cpu_topology.hpp"
 #include "platform/drm_probe.hpp"
@@ -11,6 +12,7 @@
 #include <csignal>
 #include <cstdint>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -18,6 +20,13 @@
 #if defined(__linux__)
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
+
+#if OPENHD_GLIDE_HAS_GSTREAMER
+#include <gst/allocators/gstdmabuf.h>
+#include <gst/app/gstappsink.h>
+#include <gst/gst.h>
+#include <gst/video/video.h>
 #endif
 
 namespace {
@@ -32,6 +41,7 @@ void request_stop(int)
 struct Options {
     bool preview_stack {};
     bool kms_stack {};
+    bool kms_video_preview {};
     std::uint32_t preview_width { 1280 };
     std::uint32_t flow_height { 720 };
     std::uint32_t ui_width { 760 };
@@ -55,6 +65,8 @@ Options parse_options(int argc, char** argv)
             options.preview_stack = true;
         } else if (argument == "--kms-stack" || argument == "--kmd-stack") {
             options.kms_stack = true;
+        } else if (argument == "--kms-video-preview") {
+            options.kms_video_preview = true;
         } else if (argument == "--preview-width" && i + 1 < argc) {
             options.preview_width = static_cast<std::uint32_t>(std::stoul(argv[++i]));
         } else if (argument == "--ui-height" && i + 1 < argc) {
@@ -171,6 +183,264 @@ std::vector<std::string> headless_ui_args(const char* executable, const Options&
         "--ipc-socket",
         options.ipc_socket,
     };
+}
+
+#if OPENHD_GLIDE_HAS_GSTREAMER
+constexpr std::uint32_t fourcc(char a, char b, char c, char d)
+{
+    return static_cast<std::uint32_t>(a)
+        | (static_cast<std::uint32_t>(b) << 8U)
+        | (static_cast<std::uint32_t>(c) << 16U)
+        | (static_cast<std::uint32_t>(d) << 24U);
+}
+
+std::uint32_t drm_format_from_name(std::string name)
+{
+    const auto modifier_separator = name.find(':');
+    if (modifier_separator != std::string::npos) {
+        name = name.substr(0, modifier_separator);
+    }
+    if (name == "YU12" || name == "I420") {
+        return fourcc('Y', 'U', '1', '2');
+    }
+    if (name == "NV12") {
+        return fourcc('N', 'V', '1', '2');
+    }
+    if (name == "XR24" || name == "BGRx") {
+        return fourcc('X', 'R', '2', '4');
+    }
+    return 0;
+}
+
+std::string caps_to_string(GstCaps* caps)
+{
+    if (caps == nullptr) {
+        return "unknown-caps";
+    }
+    auto* text = gst_caps_to_string(caps);
+    std::string result = text != nullptr ? text : "unknown-caps";
+    if (text != nullptr) {
+        g_free(text);
+    }
+    return result;
+}
+
+bool extract_dmabuf_frame(GstSample* sample, glide::dev::DmabufVideoFrame& frame, std::string& error)
+{
+    auto* caps = gst_sample_get_caps(sample);
+    auto* structure = caps != nullptr ? gst_caps_get_structure(caps, 0) : nullptr;
+    auto* buffer = gst_sample_get_buffer(sample);
+    auto* meta = buffer != nullptr ? gst_buffer_get_video_meta(buffer) : nullptr;
+    if (structure == nullptr || buffer == nullptr || meta == nullptr) {
+        error = "decoded sample is missing caps, buffer, or video metadata";
+        return false;
+    }
+
+    int width {};
+    int height {};
+    if (!gst_structure_get_int(structure, "width", &width) || !gst_structure_get_int(structure, "height", &height) || width <= 0 || height <= 0) {
+        error = "decoded sample has invalid dimensions";
+        return false;
+    }
+
+    const auto* drm_format_text = gst_structure_get_string(structure, "drm-format");
+    if (drm_format_text == nullptr) {
+        drm_format_text = gst_structure_get_string(structure, "format");
+    }
+    const auto drm_format = drm_format_text != nullptr ? drm_format_from_name(drm_format_text) : 0;
+    if (drm_format == 0) {
+        error = "unsupported decoded DRM format in caps: " + caps_to_string(caps);
+        return false;
+    }
+
+    const auto plane_count = meta->n_planes;
+    if (plane_count == 0 || plane_count > frame.fds.size()) {
+        error = "decoded sample has invalid video plane metadata";
+        return false;
+    }
+
+    const auto memory_count = gst_buffer_n_memory(buffer);
+    if (memory_count == 0) {
+        error = "decoded sample contains no memory";
+        return false;
+    }
+
+    frame = {};
+    frame.fds = { -1, -1, -1, -1 };
+    frame.width = static_cast<std::uint32_t>(width);
+    frame.height = static_cast<std::uint32_t>(height);
+    frame.drm_format = drm_format;
+    frame.plane_count = plane_count;
+
+    for (std::uint32_t plane = 0; plane < plane_count; ++plane) {
+        const auto memory_index = memory_count == 1 ? 0 : plane;
+        auto* memory = gst_buffer_peek_memory(buffer, memory_index);
+        if (memory == nullptr || !gst_is_dmabuf_memory(memory)) {
+            error = "decoded sample memory is not DMABUF despite DMABUF caps";
+            return false;
+        }
+        frame.fds[plane] = gst_dmabuf_memory_get_fd(memory);
+        frame.strides[plane] = static_cast<std::uint32_t>(meta->stride[plane]);
+        frame.offsets[plane] = static_cast<std::uint32_t>(meta->offset[plane]);
+    }
+    return true;
+}
+#endif
+
+int run_kms_video_preview(const Options& options)
+{
+#if OPENHD_GLIDE_HAS_GSTREAMER && OPENHD_GLIDE_DEVICE_KMS
+    stop_requested = 0;
+    signal(SIGINT, request_stop);
+    signal(SIGTERM, request_stop);
+
+    glide::dev::KmsDmabufVideoPlane output;
+    if (!output.create(options.preview_width, options.flow_height, options.view_plane_id)) {
+        glide::log(glide::LogLevel::error, "OpenHD-Glide", output.last_error());
+        return 1;
+    }
+
+    gst_init(nullptr, nullptr);
+    std::ostringstream pipeline_text;
+    pipeline_text
+        << "udpsrc port=" << options.view_udp_port
+        << " caps=\"application/x-rtp,media=(string)video,clock-rate=(int)90000,encoding-name=(string)H264,payload=(int)96\" "
+        << "! rtph264depay "
+        << "! h264parse config-interval=-1 "
+        << "! video/x-h264,stream-format=byte-stream,alignment=au "
+        << "! v4l2h264dec "
+        << "! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream "
+        << "! video/x-raw(memory:DMABuf),format=DMA_DRM "
+        << "! appsink name=video-sink sync=false async=false drop=true max-buffers=4 emit-signals=false";
+
+    GError* error {};
+    auto* pipeline = gst_parse_launch(pipeline_text.str().c_str(), &error);
+    if (pipeline == nullptr) {
+        glide::log(glide::LogLevel::error, "OpenHD-Glide", error != nullptr ? error->message : "failed to create video preview pipeline");
+        if (error != nullptr) {
+            g_error_free(error);
+        }
+        return 1;
+    }
+    if (error != nullptr) {
+        glide::log(glide::LogLevel::warning, "OpenHD-Glide", error->message);
+        g_error_free(error);
+    }
+
+    auto* sink = gst_bin_get_by_name(GST_BIN(pipeline), "video-sink");
+    auto* bus = gst_element_get_bus(pipeline);
+    if (sink == nullptr || bus == nullptr) {
+        glide::log(glide::LogLevel::error, "OpenHD-Glide", "failed to access video preview appsink");
+        if (bus != nullptr) {
+            gst_object_unref(bus);
+        }
+        if (sink != nullptr) {
+            gst_object_unref(sink);
+        }
+        gst_object_unref(pipeline);
+        return 1;
+    }
+
+    if (gst_element_set_state(pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
+        glide::log(glide::LogLevel::error, "OpenHD-Glide", "failed to start controller-owned KMS video preview");
+        gst_object_unref(bus);
+        gst_object_unref(sink);
+        gst_object_unref(pipeline);
+        return 1;
+    }
+
+    glide::log(glide::LogLevel::info, "OpenHD-Glide", "controller-owned KMS DMABUF video plane running");
+    glide::log(glide::LogLevel::info, "OpenHD-Glide", "decoded DMABUF frames are imported directly into DRM and scanned out on a KMS plane");
+
+    std::uint64_t frames {};
+    std::uint64_t frames_since_log {};
+    auto last_log = std::chrono::steady_clock::now();
+    GstSample* scanout_sample {};
+    bool logged_caps {};
+    while (stop_requested == 0) {
+        while (auto* message = gst_bus_pop_filtered(bus, static_cast<GstMessageType>(GST_MESSAGE_ERROR | GST_MESSAGE_EOS))) {
+            if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) {
+                GError* gst_error {};
+                gchar* debug {};
+                gst_message_parse_error(message, &gst_error, &debug);
+                glide::log(glide::LogLevel::error, "OpenHD-Glide", gst_error != nullptr ? gst_error->message : "GStreamer error");
+                if (debug != nullptr) {
+                    glide::log(glide::LogLevel::warning, "OpenHD-Glide", debug);
+                    g_free(debug);
+                }
+                if (gst_error != nullptr) {
+                    g_error_free(gst_error);
+                }
+                gst_message_unref(message);
+                stop_requested = 1;
+                break;
+            }
+            glide::log(glide::LogLevel::warning, "OpenHD-Glide", "video preview pipeline reached EOS");
+            gst_message_unref(message);
+            stop_requested = 1;
+            break;
+        }
+
+        auto* sample = gst_app_sink_try_pull_sample(GST_APP_SINK(sink), GST_SECOND / 20);
+        if (sample == nullptr) {
+            continue;
+        }
+
+        if (!logged_caps) {
+            glide::log(glide::LogLevel::info, "OpenHD-Glide", "first DMABUF video sample caps=" + caps_to_string(gst_sample_get_caps(sample)));
+            logged_caps = true;
+        }
+
+        glide::dev::DmabufVideoFrame frame;
+        std::string frame_error;
+        if (!extract_dmabuf_frame(sample, frame, frame_error)) {
+            glide::log(glide::LogLevel::error, "OpenHD-Glide", frame_error);
+            gst_sample_unref(sample);
+            stop_requested = 1;
+            break;
+        }
+
+        if (output.present(frame)) {
+            if (scanout_sample != nullptr) {
+                gst_sample_unref(scanout_sample);
+            }
+            scanout_sample = sample;
+            ++frames;
+            ++frames_since_log;
+        } else {
+            glide::log(glide::LogLevel::error, "OpenHD-Glide", output.last_error());
+            gst_sample_unref(sample);
+            stop_requested = 1;
+            break;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_log >= std::chrono::seconds(1)) {
+            const auto elapsed = std::chrono::duration<double>(now - last_log).count();
+            std::ostringstream status;
+            status.setf(std::ios::fixed);
+            status.precision(1);
+            status << "KMS DMABUF video plane fps=" << (static_cast<double>(frames_since_log) / elapsed)
+                   << " total_frames=" << frames;
+            glide::log(glide::LogLevel::info, "OpenHD-Glide", status.str());
+            frames_since_log = 0;
+            last_log = now;
+        }
+    }
+
+    gst_element_set_state(pipeline, GST_STATE_NULL);
+    if (scanout_sample != nullptr) {
+        gst_sample_unref(scanout_sample);
+    }
+    gst_object_unref(bus);
+    gst_object_unref(sink);
+    gst_object_unref(pipeline);
+    return 0;
+#else
+    (void)options;
+    glide::log(glide::LogLevel::error, "OpenHD-Glide", "--kms-video-preview requires GStreamer and device KMS support");
+    return 1;
+#endif
 }
 
 #if defined(__linux__)
@@ -443,6 +713,9 @@ int main(int argc, char** argv)
 
     if (options.preview_stack) {
         return run_preview_stack(argv[0], options);
+    }
+    if (options.kms_video_preview) {
+        return run_kms_video_preview(options);
     }
     if (options.kms_stack) {
         return run_kms_stack(argv[0], options);

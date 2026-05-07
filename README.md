@@ -73,6 +73,16 @@ sudo glide-view --udp-video --udp-port 5600
 This command does not display video. It should log `first decoded sample ...` and `decoded fps=...` once RTP/H.264
 frames arrive. If those lines do not appear, the sender is not reaching the receiver or the stream caps do not match.
 
+Temporary controller-owned KMS video preview:
+
+```sh
+sudo openhd-glide --kms-video-preview --view-udp-port 5600 --preview-width 1920 --flow-height 1080
+```
+
+This displays the UDP video without `kmssink` by decoding in `openhd-glide`, requesting DMABUF output from the hardware
+decoder, importing the decoded FD into DRM, and scanning it out on a KMS video plane. It still uses a black primary
+framebuffer only to keep the CRTC active; Flow and UI should become separate overlay planes above this video plane.
+
 Send a test pattern from another machine with GStreamer:
 
 ```sh
