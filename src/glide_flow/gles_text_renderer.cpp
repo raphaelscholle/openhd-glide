@@ -1,0 +1,648 @@
+#include "glide_flow/gles_text_renderer.hpp"
+
+#include "glide_flow/vector_font.hpp"
+
+#include <array>
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <filesystem>
+
+#if OPENHD_GLIDE_HAS_GLESV2
+#include <GLES2/gl2.h>
+#endif
+
+#if OPENHD_GLIDE_HAS_FREETYPE
+#include <ft2build.h>
+#include FT_FREETYPE_H
+#endif
+
+namespace glide::flow {
+namespace {
+
+#if OPENHD_GLIDE_HAS_GLESV2
+constexpr auto vertex_shader_source = R"glsl(
+attribute vec2 a_position;
+
+void main()
+{
+    gl_Position = vec4(a_position, 0.0, 1.0);
+}
+)glsl";
+
+constexpr auto fragment_shader_source = R"glsl(
+precision mediump float;
+uniform vec4 u_color;
+
+void main()
+{
+    gl_FragColor = u_color;
+}
+)glsl";
+
+constexpr auto text_vertex_shader_source = R"glsl(
+attribute vec2 a_position;
+attribute vec2 a_texcoord;
+varying vec2 v_texcoord;
+
+void main()
+{
+    gl_Position = vec4(a_position, 0.0, 1.0);
+    v_texcoord = a_texcoord;
+}
+)glsl";
+
+constexpr auto text_fragment_shader_source = R"glsl(
+precision mediump float;
+uniform sampler2D u_texture;
+uniform vec4 u_color;
+varying vec2 v_texcoord;
+
+void main()
+{
+    float alpha = texture2D(u_texture, v_texcoord).a;
+    gl_FragColor = vec4(u_color.rgb, u_color.a * alpha);
+}
+)glsl";
+
+GLuint compile_shader(GLenum type, const char* source)
+{
+    const GLuint shader = glCreateShader(type);
+    glShaderSource(shader, 1, &source, nullptr);
+    glCompileShader(shader);
+
+    GLint status = GL_FALSE;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &status);
+    if (status != GL_TRUE) {
+        glDeleteShader(shader);
+        return 0;
+    }
+
+    return shader;
+}
+
+float to_ndc_x(float x, SurfaceSize surface)
+{
+    return (x / static_cast<float>(surface.width) * 2.0F) - 1.0F;
+}
+
+float to_ndc_y(float y, SurfaceSize surface)
+{
+    return 1.0F - (y / static_cast<float>(surface.height) * 2.0F);
+}
+
+void draw_quad(GLint position_location, const std::array<GLfloat, 8>& vertices)
+{
+    glVertexAttribPointer(
+        static_cast<GLuint>(position_location),
+        2,
+        GL_FLOAT,
+        GL_FALSE,
+        0,
+        vertices.data());
+    glEnableVertexAttribArray(static_cast<GLuint>(position_location));
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+}
+
+void draw_textured_quad(
+    GLint position_location,
+    GLint texcoord_location,
+    const std::array<GLfloat, 16>& vertices)
+{
+    glVertexAttribPointer(
+        static_cast<GLuint>(position_location),
+        2,
+        GL_FLOAT,
+        GL_FALSE,
+        4 * sizeof(GLfloat),
+        vertices.data());
+    glEnableVertexAttribArray(static_cast<GLuint>(position_location));
+    glVertexAttribPointer(
+        static_cast<GLuint>(texcoord_location),
+        2,
+        GL_FLOAT,
+        GL_FALSE,
+        4 * sizeof(GLfloat),
+        vertices.data() + 2);
+    glEnableVertexAttribArray(static_cast<GLuint>(texcoord_location));
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+}
+
+void draw_stroke_quad(
+    GLint position_location,
+    RenderPoint start,
+    RenderPoint end,
+    float thickness,
+    SurfaceSize surface)
+{
+    const auto dx = end.x - start.x;
+    const auto dy = end.y - start.y;
+    const auto length = std::sqrt((dx * dx) + (dy * dy));
+    const auto half_thickness = thickness * 0.5F;
+
+    if (length < 0.001F) {
+        const std::array<GLfloat, 8> vertices {
+            to_ndc_x(start.x - half_thickness, surface),
+            to_ndc_y(start.y - half_thickness, surface),
+            to_ndc_x(start.x + half_thickness, surface),
+            to_ndc_y(start.y - half_thickness, surface),
+            to_ndc_x(start.x - half_thickness, surface),
+            to_ndc_y(start.y + half_thickness, surface),
+            to_ndc_x(start.x + half_thickness, surface),
+            to_ndc_y(start.y + half_thickness, surface),
+        };
+        draw_quad(position_location, vertices);
+        return;
+    }
+
+    const auto nx = (-dy / length) * half_thickness;
+    const auto ny = (dx / length) * half_thickness;
+    const std::array<GLfloat, 8> vertices {
+        to_ndc_x(start.x + nx, surface),
+        to_ndc_y(start.y + ny, surface),
+        to_ndc_x(start.x - nx, surface),
+        to_ndc_y(start.y - ny, surface),
+        to_ndc_x(end.x + nx, surface),
+        to_ndc_y(end.y + ny, surface),
+        to_ndc_x(end.x - nx, surface),
+        to_ndc_y(end.y - ny, surface),
+    };
+    draw_quad(position_location, vertices);
+}
+#endif
+
+} // namespace
+
+GlesTextRenderer::~GlesTextRenderer()
+{
+#if OPENHD_GLIDE_HAS_GLESV2
+    for (const auto& [_, glyph] : glyph_cache_) {
+        if (glyph.texture != 0) {
+            const GLuint texture = glyph.texture;
+            glDeleteTextures(1, &texture);
+        }
+    }
+    if (text_program_ != 0) {
+        glDeleteProgram(text_program_);
+    }
+    if (program_ != 0) {
+        glDeleteProgram(program_);
+    }
+#endif
+#if OPENHD_GLIDE_HAS_FREETYPE
+    if (freetype_face_ != nullptr) {
+        FT_Done_Face(static_cast<FT_Face>(freetype_face_));
+    }
+    if (freetype_library_ != nullptr) {
+        FT_Done_FreeType(static_cast<FT_Library>(freetype_library_));
+    }
+#endif
+}
+
+bool GlesTextRenderer::available() const
+{
+#if OPENHD_GLIDE_HAS_GLESV2
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool GlesTextRenderer::ensure_initialized()
+{
+#if OPENHD_GLIDE_HAS_GLESV2
+    if (program_ != 0) {
+        return true;
+    }
+
+    const GLuint vertex_shader = compile_shader(GL_VERTEX_SHADER, vertex_shader_source);
+    if (vertex_shader == 0) {
+        last_error_ = "failed to compile FPS vertex shader";
+        return false;
+    }
+
+    const GLuint fragment_shader = compile_shader(GL_FRAGMENT_SHADER, fragment_shader_source);
+    if (fragment_shader == 0) {
+        glDeleteShader(vertex_shader);
+        last_error_ = "failed to compile FPS fragment shader";
+        return false;
+    }
+
+    const GLuint program = glCreateProgram();
+    glAttachShader(program, vertex_shader);
+    glAttachShader(program, fragment_shader);
+    glBindAttribLocation(program, 0, "a_position");
+    glLinkProgram(program);
+
+    glDeleteShader(vertex_shader);
+    glDeleteShader(fragment_shader);
+
+    GLint status = GL_FALSE;
+    glGetProgramiv(program, GL_LINK_STATUS, &status);
+    if (status != GL_TRUE) {
+        glDeleteProgram(program);
+        last_error_ = "failed to link FPS shader program";
+        return false;
+    }
+
+    program_ = program;
+    position_location_ = glGetAttribLocation(program_, "a_position");
+    color_location_ = glGetUniformLocation(program_, "u_color");
+    return position_location_ >= 0 && color_location_ >= 0;
+#else
+    last_error_ = "OpenGL ES 2.0 was not found at build time";
+    return false;
+#endif
+}
+
+bool GlesTextRenderer::ensure_text_initialized()
+{
+#if OPENHD_GLIDE_HAS_GLESV2 && OPENHD_GLIDE_HAS_FREETYPE
+    if (text_program_ != 0 && freetype_face_ != nullptr) {
+        return true;
+    }
+    if (text_init_attempted_) {
+        return false;
+    }
+    text_init_attempted_ = true;
+
+    FT_Library library {};
+    if (FT_Init_FreeType(&library) != 0) {
+        last_error_ = "failed to initialize FreeType";
+        return false;
+    }
+
+    const std::array font_paths {
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+    };
+
+    FT_Face face {};
+    for (const auto* path : font_paths) {
+        if (std::filesystem::exists(path) && FT_New_Face(library, path, 0, &face) == 0) {
+            break;
+        }
+    }
+
+    if (face == nullptr) {
+        FT_Done_FreeType(library);
+        last_error_ = "failed to load a TrueType font for OSD text";
+        return false;
+    }
+
+    const GLuint vertex_shader = compile_shader(GL_VERTEX_SHADER, text_vertex_shader_source);
+    const GLuint fragment_shader = compile_shader(GL_FRAGMENT_SHADER, text_fragment_shader_source);
+    if (vertex_shader == 0 || fragment_shader == 0) {
+        if (vertex_shader != 0) {
+            glDeleteShader(vertex_shader);
+        }
+        if (fragment_shader != 0) {
+            glDeleteShader(fragment_shader);
+        }
+        FT_Done_Face(face);
+        FT_Done_FreeType(library);
+        last_error_ = "failed to compile OSD text shader";
+        return false;
+    }
+
+    const GLuint program = glCreateProgram();
+    glAttachShader(program, vertex_shader);
+    glAttachShader(program, fragment_shader);
+    glBindAttribLocation(program, 0, "a_position");
+    glBindAttribLocation(program, 1, "a_texcoord");
+    glLinkProgram(program);
+    glDeleteShader(vertex_shader);
+    glDeleteShader(fragment_shader);
+
+    GLint status = GL_FALSE;
+    glGetProgramiv(program, GL_LINK_STATUS, &status);
+    if (status != GL_TRUE) {
+        glDeleteProgram(program);
+        FT_Done_Face(face);
+        FT_Done_FreeType(library);
+        last_error_ = "failed to link OSD text shader";
+        return false;
+    }
+
+    freetype_library_ = library;
+    freetype_face_ = face;
+    text_program_ = program;
+    text_position_location_ = glGetAttribLocation(text_program_, "a_position");
+    text_texcoord_location_ = glGetAttribLocation(text_program_, "a_texcoord");
+    text_color_location_ = glGetUniformLocation(text_program_, "u_color");
+    text_sampler_location_ = glGetUniformLocation(text_program_, "u_texture");
+    return text_position_location_ >= 0
+        && text_texcoord_location_ >= 0
+        && text_color_location_ >= 0
+        && text_sampler_location_ >= 0;
+#else
+    return false;
+#endif
+}
+
+GlesTextRenderer::GlyphTexture* GlesTextRenderer::load_glyph(char character, unsigned int pixel_size)
+{
+#if OPENHD_GLIDE_HAS_GLESV2 && OPENHD_GLIDE_HAS_FREETYPE
+    if (!ensure_text_initialized()) {
+        return nullptr;
+    }
+
+    const auto key = (pixel_size << 8U) | static_cast<unsigned char>(character);
+    if (auto existing = glyph_cache_.find(key); existing != glyph_cache_.end()) {
+        return &existing->second;
+    }
+
+    auto* face = static_cast<FT_Face>(freetype_face_);
+    FT_Set_Pixel_Sizes(face, 0, pixel_size);
+    if (FT_Load_Char(face, static_cast<unsigned char>(character), FT_LOAD_RENDER) != 0) {
+        return nullptr;
+    }
+
+    GLuint texture {};
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexImage2D(
+        GL_TEXTURE_2D,
+        0,
+        GL_ALPHA,
+        static_cast<GLsizei>(face->glyph->bitmap.width),
+        static_cast<GLsizei>(face->glyph->bitmap.rows),
+        0,
+        GL_ALPHA,
+        GL_UNSIGNED_BYTE,
+        face->glyph->bitmap.buffer);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    const GlyphTexture glyph {
+        .texture = texture,
+        .width = static_cast<int>(face->glyph->bitmap.width),
+        .height = static_cast<int>(face->glyph->bitmap.rows),
+        .bearing_x = face->glyph->bitmap_left,
+        .bearing_y = face->glyph->bitmap_top,
+        .advance = static_cast<unsigned int>(face->glyph->advance.x),
+    };
+
+    auto [iterator, _] = glyph_cache_.insert({ key, glyph });
+    return &iterator->second;
+#else
+    (void)character;
+    (void)pixel_size;
+    return nullptr;
+#endif
+}
+
+bool GlesTextRenderer::draw_antialiased_text(const TextPlacement& placement, SurfaceSize surface)
+{
+#if OPENHD_GLIDE_HAS_GLESV2 && OPENHD_GLIDE_HAS_FREETYPE
+    if (!ensure_text_initialized()) {
+        return false;
+    }
+
+    const auto pixel_size = static_cast<unsigned int>(std::clamp(placement.scale * 1.35F, 10.0F, 72.0F));
+    glViewport(0, 0, static_cast<GLsizei>(surface.width), static_cast<GLsizei>(surface.height));
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glUseProgram(text_program_);
+    glUniform4f(text_color_location_, 0.92F, 0.96F, 1.0F, 0.98F);
+    glUniform1i(text_sampler_location_, 0);
+    glActiveTexture(GL_TEXTURE0);
+
+    auto x = placement.x;
+    const auto baseline = placement.y;
+    for (const auto character : placement.text) {
+        auto* glyph = load_glyph(character, pixel_size);
+        if (glyph == nullptr) {
+            x += placement.scale * 0.55F;
+            continue;
+        }
+
+        const auto xpos = x + static_cast<float>(glyph->bearing_x);
+        const auto ypos = baseline - static_cast<float>(glyph->bearing_y);
+        const auto width = static_cast<float>(glyph->width);
+        const auto height = static_cast<float>(glyph->height);
+
+        glBindTexture(GL_TEXTURE_2D, glyph->texture);
+        const std::array<GLfloat, 16> vertices {
+            to_ndc_x(xpos, surface),
+            to_ndc_y(ypos, surface),
+            0.0F,
+            0.0F,
+            to_ndc_x(xpos + width, surface),
+            to_ndc_y(ypos, surface),
+            1.0F,
+            0.0F,
+            to_ndc_x(xpos, surface),
+            to_ndc_y(ypos + height, surface),
+            0.0F,
+            1.0F,
+            to_ndc_x(xpos + width, surface),
+            to_ndc_y(ypos + height, surface),
+            1.0F,
+            1.0F,
+        };
+        draw_textured_quad(text_position_location_, text_texcoord_location_, vertices);
+        x += static_cast<float>(glyph->advance >> 6U);
+    }
+
+    return true;
+#else
+    (void)placement;
+    (void)surface;
+    return false;
+#endif
+}
+
+void GlesTextRenderer::clear(float red, float green, float blue, float alpha, SurfaceSize surface)
+{
+#if OPENHD_GLIDE_HAS_GLESV2
+    glViewport(0, 0, static_cast<GLsizei>(surface.width), static_cast<GLsizei>(surface.height));
+    glClearColor(red, green, blue, alpha);
+    glClear(GL_COLOR_BUFFER_BIT);
+#else
+    (void)red;
+    (void)green;
+    (void)blue;
+    (void)alpha;
+    (void)surface;
+    last_error_ = "OpenGL ES 2.0 was not found at build time";
+#endif
+}
+
+void GlesTextRenderer::draw_filled_quad(
+    RenderPoint top_left,
+    RenderPoint top_right,
+    RenderPoint bottom_left,
+    RenderPoint bottom_right,
+    RgbaColor color,
+    SurfaceSize surface)
+{
+#if OPENHD_GLIDE_HAS_GLESV2
+    if (!ensure_initialized()) {
+        return;
+    }
+
+    glViewport(0, 0, static_cast<GLsizei>(surface.width), static_cast<GLsizei>(surface.height));
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glUseProgram(program_);
+    glUniform4f(color_location_, color.red, color.green, color.blue, color.alpha);
+
+    const std::array<GLfloat, 8> vertices {
+        to_ndc_x(top_left.x, surface),
+        to_ndc_y(top_left.y, surface),
+        to_ndc_x(top_right.x, surface),
+        to_ndc_y(top_right.y, surface),
+        to_ndc_x(bottom_left.x, surface),
+        to_ndc_y(bottom_left.y, surface),
+        to_ndc_x(bottom_right.x, surface),
+        to_ndc_y(bottom_right.y, surface),
+    };
+    draw_quad(position_location_, vertices);
+#else
+    (void)top_left;
+    (void)top_right;
+    (void)bottom_left;
+    (void)bottom_right;
+    (void)color;
+    (void)surface;
+    last_error_ = "OpenGL ES 2.0 was not found at build time";
+#endif
+}
+
+void GlesTextRenderer::draw_line(
+    RenderPoint start,
+    RenderPoint end,
+    float thickness,
+    RgbaColor color,
+    SurfaceSize surface)
+{
+#if OPENHD_GLIDE_HAS_GLESV2
+    if (!ensure_initialized()) {
+        return;
+    }
+
+    glViewport(0, 0, static_cast<GLsizei>(surface.width), static_cast<GLsizei>(surface.height));
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glUseProgram(program_);
+    glUniform4f(color_location_, color.red, color.green, color.blue, color.alpha);
+    draw_stroke_quad(position_location_, start, end, thickness, surface);
+#else
+    (void)start;
+    (void)end;
+    (void)thickness;
+    (void)color;
+    (void)surface;
+    last_error_ = "OpenGL ES 2.0 was not found at build time";
+#endif
+}
+
+void GlesTextRenderer::draw_circle_outline(
+    RenderPoint center,
+    float radius,
+    float thickness,
+    RgbaColor color,
+    SurfaceSize surface)
+{
+#if OPENHD_GLIDE_HAS_GLESV2
+    constexpr int segments = 72;
+    constexpr float pi = 3.14159265358979323846F;
+
+    for (int i = 0; i < segments; ++i) {
+        const auto a0 = (static_cast<float>(i) / static_cast<float>(segments)) * 2.0F * pi;
+        const auto a1 = (static_cast<float>(i + 1) / static_cast<float>(segments)) * 2.0F * pi;
+        draw_line(
+            RenderPoint {
+                .x = center.x + std::cos(a0) * radius,
+                .y = center.y + std::sin(a0) * radius,
+            },
+            RenderPoint {
+                .x = center.x + std::cos(a1) * radius,
+                .y = center.y + std::sin(a1) * radius,
+            },
+            thickness,
+            color,
+            surface);
+    }
+#else
+    (void)center;
+    (void)radius;
+    (void)thickness;
+    (void)color;
+    (void)surface;
+    last_error_ = "OpenGL ES 2.0 was not found at build time";
+#endif
+}
+
+void GlesTextRenderer::draw(const TextPlacement& placement, SurfaceSize surface)
+{
+#if OPENHD_GLIDE_HAS_GLESV2
+    if (draw_antialiased_text(placement, surface)) {
+        return;
+    }
+
+    if (!ensure_initialized()) {
+        return;
+    }
+
+    // This assumes an EGL/OpenGL ES context is current. The DRM/EGL surface setup
+    // will own context creation; GlideFlow only submits OSD geometry.
+    glViewport(0, 0, static_cast<GLsizei>(surface.width), static_cast<GLsizei>(surface.height));
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glUseProgram(program_);
+
+    float cursor_x = placement.x;
+    for (const auto character : placement.text) {
+        const auto* glyph = vector_glyph(character);
+        if (glyph == nullptr) {
+            cursor_x += 0.72F * placement.scale;
+            continue;
+        }
+
+        for (const auto& stroke : glyph->strokes) {
+            const RenderPoint shadow_start {
+                .x = cursor_x + (stroke.start.x * placement.scale) + 2.0F,
+                .y = placement.y - (stroke.start.y * placement.scale) + 2.0F,
+            };
+            const RenderPoint shadow_end {
+                .x = cursor_x + (stroke.end.x * placement.scale) + 2.0F,
+                .y = placement.y - (stroke.end.y * placement.scale) + 2.0F,
+            };
+            glUniform4f(color_location_, 0.0F, 0.0F, 0.0F, 0.45F);
+            draw_stroke_quad(position_location_, shadow_start, shadow_end, placement.scale * 0.13F, surface);
+        }
+
+        for (const auto& stroke : glyph->strokes) {
+            const RenderPoint start {
+                .x = cursor_x + (stroke.start.x * placement.scale),
+                .y = placement.y - (stroke.start.y * placement.scale),
+            };
+            const RenderPoint end {
+                .x = cursor_x + (stroke.end.x * placement.scale),
+                .y = placement.y - (stroke.end.y * placement.scale),
+            };
+            glUniform4f(color_location_, 0.92F, 0.96F, 1.0F, 0.96F);
+            draw_stroke_quad(position_location_, start, end, placement.scale * 0.095F, surface);
+        }
+
+        cursor_x += glyph->advance * placement.scale;
+    }
+#else
+    (void)placement;
+    (void)surface;
+    last_error_ = "OpenGL ES 2.0 was not found at build time";
+#endif
+}
+
+std::string GlesTextRenderer::last_error() const
+{
+    return last_error_;
+}
+
+} // namespace glide::flow
