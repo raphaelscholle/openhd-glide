@@ -10,6 +10,7 @@
 #include <thread>
 
 #if OPENHD_GLIDE_HAS_GSTREAMER
+#include <gst/app/gstappsink.h>
 #include <gst/gst.h>
 #endif
 
@@ -95,14 +96,6 @@ void set_int_property_if_present(GstElement* element, const char* name, int valu
     }
 }
 
-void set_int64_property_if_present(GstElement* element, const char* name, gint64 value)
-{
-    auto* object = G_OBJECT(element);
-    if (has_property(object, name)) {
-        g_object_set(object, name, value, nullptr);
-    }
-}
-
 GstElement* make_element(const char* factory, const char* name)
 {
     auto* element = gst_element_factory_make(factory, name);
@@ -128,6 +121,40 @@ GstElement* make_decoder()
     return nullptr;
 }
 
+std::string sample_memory_description(GstSample* sample)
+{
+    auto* buffer = gst_sample_get_buffer(sample);
+    if (buffer == nullptr || gst_buffer_n_memory(buffer) == 0) {
+        return "empty-buffer";
+    }
+
+    auto* memory = gst_buffer_peek_memory(buffer, 0);
+    if (memory == nullptr) {
+        return "unknown-memory";
+    }
+    if (gst_memory_is_type(memory, "DMABuf")) {
+        return "DMABuf";
+    }
+    if (gst_memory_is_type(memory, "GstFdMemory")) {
+        return "fd-memory";
+    }
+    return "system-memory";
+}
+
+std::string sample_caps_description(GstSample* sample)
+{
+    auto* caps = gst_sample_get_caps(sample);
+    if (caps == nullptr) {
+        return "unknown-caps";
+    }
+    auto* text = gst_caps_to_string(caps);
+    std::string result = text != nullptr ? text : "unknown-caps";
+    if (text != nullptr) {
+        g_free(text);
+    }
+    return result;
+}
+
 class VideoPipeline {
 public:
     ~VideoPipeline()
@@ -139,6 +166,10 @@ public:
     {
         gst_init(nullptr, nullptr);
 
+        if (options.plane_id || options.connector_id) {
+            glide::log(glide::LogLevel::warning, "GlideView", "plane/connector ids are ignored in decode-only mode; openhd-glide must own KMS");
+        }
+
         pipeline_ = gst_pipeline_new("openhd-glide-view");
         auto* source = make_element("udpsrc", "udp-source");
         auto* capsfilter = make_element("capsfilter", "rtp-caps");
@@ -147,7 +178,7 @@ public:
         auto* input_queue = make_element("queue", "input-queue");
         auto* decoder = make_decoder();
         auto* output_queue = make_element("queue", "output-queue");
-        auto* sink = make_element("kmssink", "kms-sink");
+        auto* sink = make_element("appsink", "decoded-frame-sink");
 
         if (pipeline_ == nullptr || source == nullptr || capsfilter == nullptr || depay == nullptr || parse == nullptr
             || input_queue == nullptr || decoder == nullptr || output_queue == nullptr || sink == nullptr) {
@@ -186,13 +217,9 @@ public:
         set_bool_property_if_present(sink, "sync", false);
         set_bool_property_if_present(sink, "async", false);
         set_bool_property_if_present(sink, "qos", false);
-        set_int64_property_if_present(sink, "max-lateness", -1);
-        if (options.plane_id) {
-            set_int_property_if_present(sink, "plane-id", *options.plane_id);
-        }
-        if (options.connector_id) {
-            set_int_property_if_present(sink, "connector-id", *options.connector_id);
-        }
+        set_bool_property_if_present(sink, "drop", true);
+        set_bool_property_if_present(sink, "emit-signals", false);
+        set_int_property_if_present(sink, "max-buffers", 1);
 
         gst_bin_add_many(
             GST_BIN(pipeline_),
@@ -207,32 +234,38 @@ public:
             nullptr);
 
         if (!gst_element_link_many(source, capsfilter, depay, parse, input_queue, decoder, output_queue, sink, nullptr)) {
-            glide::log(glide::LogLevel::error, "GlideView", "failed to link GStreamer UDP video pipeline");
+            glide::log(glide::LogLevel::error, "GlideView", "failed to link GStreamer UDP decode pipeline");
             stop();
             return false;
         }
 
+        sink_ = sink;
         bus_ = gst_element_get_bus(pipeline_);
         const auto result = gst_element_set_state(pipeline_, GST_STATE_PLAYING);
         if (result == GST_STATE_CHANGE_FAILURE) {
-            glide::log(glide::LogLevel::error, "GlideView", "failed to start GStreamer UDP video pipeline");
+            glide::log(glide::LogLevel::error, "GlideView", "failed to start GStreamer UDP decode pipeline");
             stop();
             return false;
         }
 
         std::ostringstream status;
-        status << "UDP RTP/H264 video listening on 0.0.0.0:" << options.udp_port;
-        if (options.plane_id) {
-            status << " plane-id=" << *options.plane_id;
-        }
-        if (options.connector_id) {
-            status << " connector-id=" << *options.connector_id;
-        }
+        status << "UDP RTP/H264 decode listening on 0.0.0.0:" << options.udp_port
+               << " output=appsink";
         glide::log(glide::LogLevel::info, "GlideView", status.str());
         return true;
     }
 
     bool poll()
+    {
+        if (!poll_bus()) {
+            return false;
+        }
+        pull_samples();
+        return true;
+    }
+
+private:
+    bool poll_bus()
     {
         if (bus_ == nullptr) {
             return true;
@@ -284,7 +317,40 @@ public:
         return true;
     }
 
-private:
+    void pull_samples()
+    {
+        if (sink_ == nullptr) {
+            return;
+        }
+
+        while (auto* sample = gst_app_sink_try_pull_sample(GST_APP_SINK(sink_), 0)) {
+            if (!logged_first_sample_) {
+                glide::log(glide::LogLevel::info, "GlideView", "first decoded sample caps=" + sample_caps_description(sample));
+                glide::log(glide::LogLevel::info, "GlideView", "first decoded sample memory=" + sample_memory_description(sample));
+                logged_first_sample_ = true;
+            }
+
+            ++frames_;
+            ++frames_since_log_;
+            gst_sample_unref(sample);
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_fps_log_ >= std::chrono::seconds(1)) {
+            const auto elapsed = std::chrono::duration<double>(now - last_fps_log_).count();
+            const auto fps = static_cast<double>(frames_since_log_) / elapsed;
+            if (frames_ > 0) {
+                std::ostringstream stream;
+                stream.setf(std::ios::fixed);
+                stream.precision(1);
+                stream << "decoded fps=" << fps << " total_frames=" << frames_;
+                glide::log(glide::LogLevel::info, "GlideView", stream.str());
+            }
+            frames_since_log_ = 0;
+            last_fps_log_ = now;
+        }
+    }
+
     void stop()
     {
         if (pipeline_ != nullptr) {
@@ -298,10 +364,16 @@ private:
             gst_object_unref(pipeline_);
             pipeline_ = nullptr;
         }
+        sink_ = nullptr;
     }
 
     GstElement* pipeline_ {};
+    GstElement* sink_ {};
     GstBus* bus_ {};
+    bool logged_first_sample_ {};
+    std::uint64_t frames_ {};
+    std::uint64_t frames_since_log_ {};
+    std::chrono::steady_clock::time_point last_fps_log_ { std::chrono::steady_clock::now() };
 };
 #endif
 
@@ -313,7 +385,7 @@ int main(int argc, char** argv)
     signal(SIGTERM, request_stop);
 
     const auto options = parse_options(argc, argv);
-    glide::log(glide::LogLevel::info, "GlideView", "video renderer started");
+    glide::log(glide::LogLevel::info, "GlideView", "video decode worker started");
 
     glide::ipc::Client ipc;
     if (ipc.connect_to(options.ipc_socket)) {
@@ -332,14 +404,14 @@ int main(int argc, char** argv)
             return 1;
         }
         if (ipc.connected()) {
-            ipc.send_line("status glide-view udp-video-ready");
+            ipc.send_line("status glide-view udp-decode-ready");
         }
         while (stop_requested == 0) {
             if (!pipeline.poll()) {
                 return 1;
             }
             poll_ipc(ipc, next_heartbeat);
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
         return 0;
 #else

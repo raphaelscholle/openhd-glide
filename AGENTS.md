@@ -32,7 +32,7 @@ The video path has priority over everything else. `GlideView` should be able to 
 - The WSL preview stack starts a controller-owned Unix socket at `/tmp/openhd-glide.sock` by default. Workers register with `hello <worker>`. `glide-ui` toggles the Flow FPS overlay by sending `set fps 0/1`; the controller broadcasts `state fps 0/1` to `glide-flow`.
 - `glide-ui` has a first LVGL QOpenHD-style sidebar shell: large icon rail, `Find Air Unit` scan panel, and an FPS overlay toggle in the `MISC` panel. In WSL the UI window is sized as a sidebar surface, not a transparent full-screen overlay.
 - On the device stack, `glide-ui --headless` is used until the LVGL shared-buffer/plane backend exists. Do not make the UI a DRM/KMS master.
-- `glide-view --udp-video --udp-port 5600` uses GStreamer to receive RTP/H.264 over UDP and render directly through `kmssink`. It prefers `v4l2h264dec`/`v4l2slh264dec` and warns if it falls back to `avdec_h264`.
+- `glide-view --udp-video --udp-port 5600` uses GStreamer to receive RTP/H.264 over UDP and decode into `appsink`. It must not use `kmssink` because only `openhd-glide` should own KMS. It prefers `v4l2h264dec`/`v4l2slh264dec` and warns if it falls back to `avdec_h264`.
 - Example senders live in `examples/stream-videotestsrc-to-glide-view.sh` and `.bat`.
 
 ## CPU Assignment Policy
@@ -55,11 +55,10 @@ Assignment rules:
 
 ## Next Work
 
-- Add DRM/EGL surface ownership for `glide-flow`.
-- Move `glide-flow --kms` from fullscreen CRTC scanout to explicit plane selection once `glide-view` owns the priority video plane.
-- Make `glide-flow` an alpha overlay plane above `glide-view`; the current fullscreen Flow scanout can hide the video plane.
+- Replace direct DRM/EGL ownership in `glide-flow` with a buffer-producing path once controller-owned KMS composition exists.
+- Add Unix-socket file-descriptor passing so `glide-view` can hand decoded DMABUFs to `openhd-glide`.
+- Move KMS ownership into `openhd-glide` only. `glide-view`, `glide-flow`, and `glide-ui` should produce buffers, not become DRM/KMS master.
+- Replace temporary `glide-flow --kms` fullscreen CRTC scanout with a Flow buffer producer that `openhd-glide` places on an alpha overlay plane above the View plane.
 - Grow the SDL2 preview backend only where it helps developer iteration; keep production assumptions aligned with DRM/KMS.
-- Add process launching and CPU affinity application in `openhd-glide`.
-- Add worker IPC and readiness/heartbeat reporting.
-- Add `glide-view` UDP video ingest and DRM plane rendering.
-- Add LVGL-backed `glide-ui`.
+- Apply computed CPU affinity to launched workers.
+- Extend worker IPC from status/heartbeat/control text messages to FD passing for video and OSD buffers.

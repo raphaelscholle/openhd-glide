@@ -5,7 +5,7 @@ OpenHD-Glide is structured as a controller plus three workload binaries. The con
 ## Processes
 
 - `openhd-glide`: controller process. Performs DRM/KMS and CPU discovery first, then starts and initializes the workload binaries.
-- `glide-view`: video plane worker. Receives video over UDP and renders it to the assigned display target.
+- `glide-view`: video ingest/decode worker. Receives video over UDP and must not become DRM/KMS master.
 - `glide-flow`: OSD worker. Renders telemetry and overlay content with OpenGL ES.
 - `glide-ui`: UI worker. Hosts the interactive UI layer with LVGL; the current development backend is LVGL's SDL window driver.
 
@@ -33,17 +33,17 @@ The probe currently reports all planes exposed through `libdrm` universal planes
 
 ## GlideView Video
 
-`glide-view --udp-video` receives RTP/H.264 on UDP port 5600 by default and renders with GStreamer's `kmssink`. The intended device pipeline is:
+`glide-view --udp-video` receives RTP/H.264 on UDP port 5600 by default and decodes with GStreamer into `appsink`. It intentionally does not use `kmssink`, because `kmssink` would make the View process compete for KMS master. The intended device pipeline is:
 
 - `udpsrc`
 - `rtph264depay`
 - `h264parse`
 - hardware-oriented `v4l2h264dec` or `v4l2slh264dec`
-- `kmssink`
+- `appsink`
 
-The queues are constrained to one buffer and leaky mode to keep latency low. `glide-view` accepts `--plane-id` and `--connector-id` and forwards those to `kmssink` when available. The controller exposes these as `--view-plane-id`, `--view-connector-id`, and `--view-udp-port`.
+The queues are constrained to one buffer and leaky mode to keep latency low. `glide-view` logs decoded frame rate, first-sample caps, and first-sample memory type. The next boundary is Unix-socket fd passing: View should export decoded DMABUFs to `openhd-glide`, and `openhd-glide` should be the only process that imports buffers and programs KMS planes.
 
-The current composition limitation is that `glide-flow --kms` still owns fullscreen scanout. For real video-under-OSD composition, Flow needs to move to an alpha-capable overlay plane above the View plane.
+The current composition limitation is that `glide-flow --kms` still owns fullscreen scanout. For real video-under-OSD composition, `openhd-glide` needs to own KMS, put View's decoded DMABUF on a video plane, and put Flow's render target on an alpha-capable overlay plane above it.
 
 ## GlideFlow OSD
 
@@ -97,7 +97,7 @@ The LVGL UI is intentionally backend-isolated: the current SDL display driver is
 - `glide-flow --kms --stay-alive`
 - `glide-ui --headless`
 
-This mode is intentionally separate from the SDL preview path. It validates device DRM/KMS plane discovery, process startup, CPU assignment, and IPC without creating SDL windows. `glide-flow --kms` creates a fullscreen KMS/GBM/EGL scanout surface on the active connector and renders the current OSD through OpenGL ES. UI remains headless in this path until LVGL can render into a shared-buffer or plane-backed target owned by the controller.
+This mode is intentionally separate from the SDL preview path. It validates device DRM/KMS plane discovery, process startup, CPU assignment, and IPC without creating SDL windows. `glide-flow --kms` currently creates a fullscreen KMS/GBM/EGL scanout surface on the active connector and renders the current OSD through OpenGL ES. That is temporary: the target production model is single KMS ownership in `openhd-glide`, with Flow and View producing buffers rather than taking KMS master. UI remains headless in this path until LVGL can render into a shared-buffer or plane-backed target owned by the controller.
 
 ## CPU Model
 

@@ -144,14 +144,6 @@ std::vector<std::string> view_args(const char* executable, const Options& option
         args.emplace_back("--udp-video");
         args.emplace_back("--udp-port");
         args.emplace_back(std::to_string(options.view_udp_port));
-        if (options.view_plane_id >= 0) {
-            args.emplace_back("--plane-id");
-            args.emplace_back(std::to_string(options.view_plane_id));
-        }
-        if (options.view_connector_id >= 0) {
-            args.emplace_back("--connector-id");
-            args.emplace_back(std::to_string(options.view_connector_id));
-        }
     }
     return args;
 }
@@ -355,15 +347,15 @@ int run_kms_stack(char* argv0, const Options& options)
     }
 
     std::cout << "device KMS stack:\n"
-              << "  glide-view UDP RTP/H264 port=" << options.view_udp_port;
+              << "  glide-view UDP RTP/H264 decode port=" << options.view_udp_port
+              << " (no KMS ownership)\n";
     if (options.view_plane_id >= 0) {
-        std::cout << " plane-id=" << options.view_plane_id;
+        glide::log(glide::LogLevel::warning, "OpenHD-Glide", "--view-plane-id is ignored until openhd-glide owns video plane import");
     }
     if (options.view_connector_id >= 0) {
-        std::cout << " connector-id=" << options.view_connector_id;
+        glide::log(glide::LogLevel::warning, "OpenHD-Glide", "--view-connector-id is ignored until openhd-glide owns video plane import");
     }
-    std::cout << '\n'
-              << "  glide-flow drm/kms mode width=" << options.preview_width
+    std::cout << "  glide-flow drm/kms mode width=" << options.preview_width
               << " height=" << options.flow_height << '\n'
               << "  glide-ui   headless LVGL control worker until shared-buffer UI backend exists\n"
               << "  ipc        " << options.ipc_socket << '\n';
