@@ -23,7 +23,8 @@ public:
 private:
     bool open_card();
     bool choose_connector_and_mode(std::uint32_t requested_width, std::uint32_t requested_height);
-    bool create_gbm();
+    bool create_gbm_device();
+    bool create_gbm_surface(std::uint32_t format);
     bool create_egl();
     bool add_framebuffer(void* bo, std::uint32_t& framebuffer_id);
     void cleanup_scanout();
@@ -40,6 +41,7 @@ private:
     void* gbm_device_ {};
     void* gbm_surface_ {};
     void* egl_display_ {};
+    void* egl_config_ {};
     void* egl_context_ {};
     void* egl_surface_ {};
     void* current_bo_ {};

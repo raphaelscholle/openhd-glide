@@ -11,10 +11,24 @@
 #include <xf86drmMode.h>
 
 #include <array>
+#include <sstream>
 #include <cstring>
 #endif
 
 namespace glide::dev {
+
+#if OPENHD_GLIDE_HAS_KMS_GBM
+namespace {
+
+std::string egl_error_message(const char* prefix)
+{
+    std::ostringstream stream;
+    stream << prefix << " EGL error=0x" << std::hex << eglGetError();
+    return stream.str();
+}
+
+} // namespace
+#endif
 
 bool kms_gles_available()
 {
@@ -38,7 +52,7 @@ bool KmsGlesWindow::create(std::uint32_t requested_width, std::uint32_t requeste
 #if OPENHD_GLIDE_HAS_KMS_GBM
     return open_card()
         && choose_connector_and_mode(requested_width, requested_height)
-        && create_gbm()
+        && create_gbm_device()
         && create_egl();
 #else
     (void)requested_width;
@@ -198,19 +212,23 @@ bool KmsGlesWindow::choose_connector_and_mode(std::uint32_t requested_width, std
     return true;
 }
 
-bool KmsGlesWindow::create_gbm()
+bool KmsGlesWindow::create_gbm_device()
 {
     gbm_device_ = gbm_create_device(drm_fd_);
     if (gbm_device_ == nullptr) {
         last_error_ = "failed to create GBM device";
         return false;
     }
+    return true;
+}
 
+bool KmsGlesWindow::create_gbm_surface(std::uint32_t format)
+{
     gbm_surface_ = gbm_surface_create(
         static_cast<gbm_device*>(gbm_device_),
         surface_.width,
         surface_.height,
-        GBM_FORMAT_XRGB8888,
+        format,
         GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
     if (gbm_surface_ == nullptr) {
         last_error_ = "failed to create GBM scanout surface";
@@ -236,11 +254,11 @@ bool KmsGlesWindow::create_egl()
     }
 
     if (eglInitialize(display, nullptr, nullptr) != EGL_TRUE) {
-        last_error_ = "failed to initialize EGL";
+        last_error_ = egl_error_message("failed to initialize EGL");
         return false;
     }
     if (eglBindAPI(EGL_OPENGL_ES_API) != EGL_TRUE) {
-        last_error_ = "failed to bind OpenGL ES API";
+        last_error_ = egl_error_message("failed to bind OpenGL ES API");
         return false;
     }
 
@@ -256,7 +274,16 @@ bool KmsGlesWindow::create_egl()
     EGLConfig config {};
     EGLint config_count {};
     if (eglChooseConfig(display, config_attributes.data(), &config, 1, &config_count) != EGL_TRUE || config_count == 0) {
-        last_error_ = "failed to choose EGL config";
+        last_error_ = egl_error_message("failed to choose EGL config");
+        return false;
+    }
+
+    EGLint native_visual_id {};
+    if (eglGetConfigAttrib(display, config, EGL_NATIVE_VISUAL_ID, &native_visual_id) != EGL_TRUE || native_visual_id == 0) {
+        native_visual_id = GBM_FORMAT_XRGB8888;
+    }
+
+    if (!create_gbm_surface(static_cast<std::uint32_t>(native_visual_id))) {
         return false;
     }
 
@@ -266,7 +293,7 @@ bool KmsGlesWindow::create_egl()
     };
     EGLContext context = eglCreateContext(display, config, EGL_NO_CONTEXT, context_attributes.data());
     if (context == EGL_NO_CONTEXT) {
-        last_error_ = "failed to create OpenGL ES context";
+        last_error_ = egl_error_message("failed to create OpenGL ES context");
         return false;
     }
 
@@ -277,19 +304,20 @@ bool KmsGlesWindow::create_egl()
         nullptr);
     if (surface == EGL_NO_SURFACE) {
         eglDestroyContext(display, context);
-        last_error_ = "failed to create EGL window surface";
+        last_error_ = egl_error_message("failed to create EGL window surface");
         return false;
     }
 
     if (eglMakeCurrent(display, surface, surface, context) != EGL_TRUE) {
         eglDestroySurface(display, surface);
         eglDestroyContext(display, context);
-        last_error_ = "failed to make EGL context current";
+        last_error_ = egl_error_message("failed to make EGL context current");
         return false;
     }
 
     eglSwapInterval(display, 1);
     egl_display_ = display;
+    egl_config_ = config;
     egl_context_ = context;
     egl_surface_ = surface;
     return true;
