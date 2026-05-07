@@ -20,7 +20,7 @@ For a target device DRM/KMS build:
 
 ```sh
 sudo apt update
-sudo apt install -y build-essential cmake pkg-config libdrm-dev libgles2-mesa-dev libegl1-mesa-dev libfreetype-dev
+sudo apt install -y build-essential cmake pkg-config libdrm-dev libgbm-dev libgles2-mesa-dev libegl1-mesa-dev libfreetype-dev
 cmake --preset device-kms
 cmake --build --preset device-kms -j$(nproc)
 ```
@@ -52,9 +52,8 @@ sudo ./build-kms/openhd-glide --kms-stack --preview-width 1920 --flow-height 108
 ```
 
 `--kmd-stack` is accepted as an alias for `--kms-stack`. The current device path starts the three workers and IPC,
-uses DRM/KMS discovery from the controller, runs `glide-flow` in device mode, and runs `glide-ui` headless until the
-LVGL shared-buffer/plane backend exists. The actual DRM/EGL plane surface for `glide-flow` is still the next rendering
-implementation step, so this mode is for device process/IPC/probe validation first.
+uses DRM/KMS discovery from the controller, runs `glide-flow` through GBM/EGL directly on the active KMS connector,
+and runs `glide-ui` headless until the LVGL shared-buffer/plane backend exists.
 
 ```sh
 ./build/glide-flow --width 1920 --height 1080

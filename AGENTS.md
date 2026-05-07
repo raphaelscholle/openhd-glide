@@ -28,7 +28,7 @@ The video path has priority over everything else. `GlideView` should be able to 
 - A development preview backend exists using SDL2 plus OpenGL ES. It is for WSL/Windows-style development only and does not replace the production DRM/KMS path.
 - `glide-ui` now uses LVGL v9.2.2 with LVGL's SDL backend for WSL development. Do not revive the hand-drawn GLES UI path.
 - `openhd-glide --preview-stack` runs the WSL development stack by launching `glide-flow` first and an LVGL/SDL `glide-ui` sidebar preview over the left side.
-- `openhd-glide --kms-stack` is the target-device stack entry point. It currently validates DRM/KMS probing, process startup, CPU assignment, and Unix-socket IPC. `--kmd-stack` is accepted as a typo-compatible alias.
+- `openhd-glide --kms-stack` is the target-device stack entry point. It validates DRM/KMS probing, process startup, CPU assignment, Unix-socket IPC, and starts `glide-flow` with a direct GBM/EGL KMS scanout surface. `--kmd-stack` is accepted as a typo-compatible alias.
 - The WSL preview stack starts a controller-owned Unix socket at `/tmp/openhd-glide.sock` by default. Workers register with `hello <worker>`. `glide-ui` toggles the Flow FPS overlay by sending `set fps 0/1`; the controller broadcasts `state fps 0/1` to `glide-flow`.
 - `glide-ui` has a first LVGL QOpenHD-style sidebar shell: large icon rail, `Find Air Unit` scan panel, and an FPS overlay toggle in the `MISC` panel. In WSL the UI window is sized as a sidebar surface, not a transparent full-screen overlay.
 - On the device stack, `glide-ui --headless` is used until the LVGL shared-buffer/plane backend exists. Do not make the UI a DRM/KMS master.
@@ -54,7 +54,7 @@ Assignment rules:
 ## Next Work
 
 - Add DRM/EGL surface ownership for `glide-flow`.
-- Replace the temporary `glide-flow --kms` IPC/timing loop with the real DRM/EGL plane surface renderer.
+- Move `glide-flow --kms` from fullscreen CRTC scanout to explicit plane selection once `glide-view` owns the priority video plane.
 - Grow the SDL2 preview backend only where it helps developer iteration; keep production assumptions aligned with DRM/KMS.
 - Add process launching and CPU affinity application in `openhd-glide`.
 - Add worker IPC and readiness/heartbeat reporting.

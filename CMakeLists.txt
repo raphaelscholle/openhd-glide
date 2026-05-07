@@ -48,6 +48,8 @@ endif()
 find_package(PkgConfig QUIET)
 if(PkgConfig_FOUND)
     pkg_check_modules(LIBDRM QUIET libdrm)
+    pkg_check_modules(GBM QUIET gbm)
+    pkg_check_modules(EGL QUIET egl)
     pkg_check_modules(GLESV2 QUIET glesv2)
     pkg_check_modules(SDL2 QUIET sdl2)
     pkg_check_modules(FREETYPE QUIET freetype2)
@@ -85,6 +87,7 @@ function(add_glide_executable target_name source_file)
 endfunction()
 
 add_library(glide_dev
+    src/dev/kms_gles_window.cpp
     src/dev/sdl_gles_window.cpp
 )
 
@@ -106,6 +109,27 @@ if(GLESV2_FOUND)
     target_link_directories(glide_dev PRIVATE ${GLESV2_LIBRARY_DIRS})
 else()
     target_compile_definitions(glide_dev PUBLIC OPENHD_GLIDE_HAS_GLESV2=0)
+endif()
+
+if(LIBDRM_FOUND AND GBM_FOUND AND EGL_FOUND AND GLESV2_FOUND)
+    target_compile_definitions(glide_dev PUBLIC OPENHD_GLIDE_HAS_KMS_GBM=1)
+    target_include_directories(glide_dev PRIVATE
+        ${LIBDRM_INCLUDE_DIRS}
+        ${GBM_INCLUDE_DIRS}
+        ${EGL_INCLUDE_DIRS}
+        ${GLESV2_INCLUDE_DIRS})
+    target_link_libraries(glide_dev PRIVATE
+        ${LIBDRM_LIBRARIES}
+        ${GBM_LIBRARIES}
+        ${EGL_LIBRARIES}
+        ${GLESV2_LIBRARIES})
+    target_link_directories(glide_dev PRIVATE
+        ${LIBDRM_LIBRARY_DIRS}
+        ${GBM_LIBRARY_DIRS}
+        ${EGL_LIBRARY_DIRS}
+        ${GLESV2_LIBRARY_DIRS})
+else()
+    target_compile_definitions(glide_dev PUBLIC OPENHD_GLIDE_HAS_KMS_GBM=0)
 endif()
 
 if(MSVC)

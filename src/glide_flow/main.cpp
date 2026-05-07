@@ -1,6 +1,7 @@
 #include "common/logging.hpp"
 #include "common/ipc.hpp"
 #include "common/preview_control.hpp"
+#include "dev/kms_gles_window.hpp"
 #include "dev/sdl_gles_window.hpp"
 #include "glide_flow/altitude_widget.hpp"
 #include "glide_flow/fps_counter.hpp"
@@ -122,6 +123,7 @@ int main(int argc, char** argv)
     glide::flow::SimulatedLinkOverview simulated_link;
     glide::flow::PerformanceHorizon performance_horizon;
     glide::flow::SimulatedAttitude simulated_attitude;
+    glide::dev::KmsGlesWindow kms_window;
     glide::dev::SdlGlesWindow preview_window;
     glide::ipc::Client ipc;
     auto fps_overlay_enabled = glide::preview_control::fps_overlay_enabled();
@@ -143,7 +145,16 @@ int main(int argc, char** argv)
     if (options.kms) {
 #if OPENHD_GLIDE_DEVICE_KMS
         glide::log(glide::LogLevel::info, "GlideFlow", "DRM/KMS mode requested");
-        glide::log(glide::LogLevel::warning, "GlideFlow", "DRM/EGL plane surface is not implemented yet; running device IPC/timing loop without a display surface");
+        if (!kms_window.create(options.surface.width, options.surface.height)) {
+            glide::log(glide::LogLevel::error, "GlideFlow", kms_window.last_error());
+            return 1;
+        }
+        options.surface = kms_window.surface_size();
+        options.render_gles = true;
+        glide::log(
+            glide::LogLevel::info,
+            "GlideFlow",
+            "DRM/KMS surface ready " + std::to_string(options.surface.width) + "x" + std::to_string(options.surface.height));
 #else
         glide::log(glide::LogLevel::error, "GlideFlow", "DRM/KMS mode is disabled in this build");
         return 1;
@@ -207,6 +218,9 @@ int main(int argc, char** argv)
 
         if (options.preview) {
             preview_window.swap();
+        }
+        if (options.kms) {
+            kms_window.swap();
         }
 
         if (options.preview) {

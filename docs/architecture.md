@@ -83,7 +83,7 @@ The LVGL UI is intentionally backend-isolated: the current SDL display driver is
 - `glide-flow --kms --stay-alive`
 - `glide-ui --headless`
 
-This mode is intentionally separate from the SDL preview path. It validates device DRM/KMS plane discovery, process startup, CPU assignment, and IPC without creating SDL windows. The current `glide-flow --kms` path is a temporary timing/IPC loop and logs that the DRM/EGL plane surface is not implemented yet. The next rendering step is to replace that loop with the real KMS/GBM/EGL surface setup for Flow. UI remains headless in this path until LVGL can render into a shared-buffer or plane-backed target owned by the controller.
+This mode is intentionally separate from the SDL preview path. It validates device DRM/KMS plane discovery, process startup, CPU assignment, and IPC without creating SDL windows. `glide-flow --kms` creates a fullscreen KMS/GBM/EGL scanout surface on the active connector and renders the current OSD through OpenGL ES. UI remains headless in this path until LVGL can render into a shared-buffer or plane-backed target owned by the controller.
 
 ## CPU Model
 
