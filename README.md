@@ -90,12 +90,17 @@ examples/stream-videotestsrc-to-glide-view.sh <target-ip> 5600
 ```
 
 Use the Pi's actual network IP as `<target-ip>`. For a sender running on the same Pi, use `127.0.0.1`.
+The Linux sender requires a hardware encoder such as `v4l2h264enc` by default. Set
+`GLIDE_ALLOW_SOFTWARE_ENCODER=1` only when you intentionally want a non-performance `x264enc` fallback.
 
 On Windows, use:
 
 ```bat
 examples\stream-videotestsrc-to-glide-view.bat <target-ip> 5600
 ```
+
+The Windows sender requires a hardware encoder (`nvh264enc`, `qsvh264enc`, `d3d11h264enc`, `amfh264enc`) by default.
+Set `GLIDE_ALLOW_SOFTWARE_ENCODER=1` only when you intentionally want a non-performance `x264enc` fallback.
 
 ```sh
 ./build/glide-flow --width 1920 --height 1080
