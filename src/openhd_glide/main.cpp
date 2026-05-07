@@ -36,6 +36,9 @@ struct Options {
     std::uint32_t flow_height { 720 };
     std::uint32_t ui_width { 760 };
     std::uint32_t ui_height { 720 };
+    std::uint16_t view_udp_port { 5600 };
+    int view_plane_id { -1 };
+    int view_connector_id { -1 };
     float ui_opacity { 0.35F };
     int preview_x { 80 };
     int preview_y { 40 };
@@ -60,6 +63,12 @@ Options parse_options(int argc, char** argv)
             options.ui_width = static_cast<std::uint32_t>(std::stoul(argv[++i]));
         } else if (argument == "--flow-height" && i + 1 < argc) {
             options.flow_height = static_cast<std::uint32_t>(std::stoul(argv[++i]));
+        } else if (argument == "--view-udp-port" && i + 1 < argc) {
+            options.view_udp_port = static_cast<std::uint16_t>(std::stoul(argv[++i]));
+        } else if (argument == "--view-plane-id" && i + 1 < argc) {
+            options.view_plane_id = std::stoi(argv[++i]);
+        } else if (argument == "--view-connector-id" && i + 1 < argc) {
+            options.view_connector_id = std::stoi(argv[++i]);
         } else if (argument == "--preview-x" && i + 1 < argc) {
             options.preview_x = std::stoi(argv[++i]);
         } else if (argument == "--preview-y" && i + 1 < argc) {
@@ -125,12 +134,26 @@ std::vector<std::string> preview_args(const char* executable, const Options& opt
 
 std::vector<std::string> view_args(const char* executable, const Options& options)
 {
-    return {
+    auto args = std::vector<std::string> {
         executable,
         "--stay-alive",
         "--ipc-socket",
         options.ipc_socket,
     };
+    if (options.kms_stack) {
+        args.emplace_back("--udp-video");
+        args.emplace_back("--udp-port");
+        args.emplace_back(std::to_string(options.view_udp_port));
+        if (options.view_plane_id >= 0) {
+            args.emplace_back("--plane-id");
+            args.emplace_back(std::to_string(options.view_plane_id));
+        }
+        if (options.view_connector_id >= 0) {
+            args.emplace_back("--connector-id");
+            args.emplace_back(std::to_string(options.view_connector_id));
+        }
+    }
+    return args;
 }
 
 std::vector<std::string> kms_flow_args(const char* executable, const Options& options)
@@ -332,7 +355,14 @@ int run_kms_stack(char* argv0, const Options& options)
     }
 
     std::cout << "device KMS stack:\n"
-              << "  glide-view video worker placeholder\n"
+              << "  glide-view UDP RTP/H264 port=" << options.view_udp_port;
+    if (options.view_plane_id >= 0) {
+        std::cout << " plane-id=" << options.view_plane_id;
+    }
+    if (options.view_connector_id >= 0) {
+        std::cout << " connector-id=" << options.view_connector_id;
+    }
+    std::cout << '\n'
               << "  glide-flow drm/kms mode width=" << options.preview_width
               << " height=" << options.flow_height << '\n'
               << "  glide-ui   headless LVGL control worker until shared-buffer UI backend exists\n"

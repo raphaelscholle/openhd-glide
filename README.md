@@ -20,7 +20,7 @@ For a target device DRM/KMS build:
 
 ```sh
 sudo apt update
-sudo apt install -y build-essential cmake pkg-config libdrm-dev libgbm-dev libgles2-mesa-dev libegl1-mesa-dev libfreetype-dev
+sudo apt install -y build-essential cmake pkg-config libdrm-dev libgbm-dev libgles2-mesa-dev libegl1-mesa-dev libfreetype-dev libgstreamer1.0-dev gstreamer1.0-tools gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav
 cmake --preset device-kms
 cmake --build --preset device-kms -j$(nproc)
 ```
@@ -54,6 +54,31 @@ sudo ./build-kms/openhd-glide --kms-stack --preview-width 1920 --flow-height 108
 `--kmd-stack` is accepted as an alias for `--kms-stack`. The current device path starts the three workers and IPC,
 uses DRM/KMS discovery from the controller, runs `glide-flow` through GBM/EGL directly on the active KMS connector,
 and runs `glide-ui` headless until the LVGL shared-buffer/plane backend exists.
+
+`glide-view` listens for RTP/H.264 on UDP port 5600 by default and renders through GStreamer's `kmssink`.
+Select a specific video plane when needed:
+
+```sh
+sudo ./build-kms/openhd-glide --kms-stack --view-udp-port 5600 --view-plane-id 89 --preview-width 1920 --flow-height 1080
+```
+
+Standalone View test:
+
+```sh
+sudo glide-view --udp-video --udp-port 5600
+```
+
+Send a test pattern from another machine with GStreamer:
+
+```sh
+examples/stream-videotestsrc-to-glide-view.sh <target-ip> 5600
+```
+
+On Windows, use:
+
+```bat
+examples\stream-videotestsrc-to-glide-view.bat <target-ip> 5600
+```
 
 ```sh
 ./build/glide-flow --width 1920 --height 1080

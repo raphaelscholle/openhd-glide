@@ -31,6 +31,20 @@ The first hardware probe uses DRM/KMS planes because the target pipeline needs d
 
 The probe currently reports all planes exposed through `libdrm` universal planes. Plane claiming and atomic modesetting are the next step.
 
+## GlideView Video
+
+`glide-view --udp-video` receives RTP/H.264 on UDP port 5600 by default and renders with GStreamer's `kmssink`. The intended device pipeline is:
+
+- `udpsrc`
+- `rtph264depay`
+- `h264parse`
+- hardware-oriented `v4l2h264dec` or `v4l2slh264dec`
+- `kmssink`
+
+The queues are constrained to one buffer and leaky mode to keep latency low. `glide-view` accepts `--plane-id` and `--connector-id` and forwards those to `kmssink` when available. The controller exposes these as `--view-plane-id`, `--view-connector-id`, and `--view-udp-port`.
+
+The current composition limitation is that `glide-flow --kms` still owns fullscreen scanout. For real video-under-OSD composition, Flow needs to move to an alpha-capable overlay plane above the View plane.
+
 ## GlideFlow OSD
 
 The first OSD elements are an FPS counter positioned in the bottom-left corner, a compact performance horizon centered on the render surface, left/right/bottom link overview panels, a left-side speed widget, and a right-side altitude widget. The current implementation includes:
