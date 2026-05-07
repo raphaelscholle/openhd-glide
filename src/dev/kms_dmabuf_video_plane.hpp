@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace glide::dev {
 
@@ -34,6 +35,23 @@ private:
         std::array<std::uint32_t, 4> handles {};
     };
 
+    struct FrameKey {
+        std::uint32_t width {};
+        std::uint32_t height {};
+        std::uint32_t drm_format {};
+        std::uint32_t plane_count {};
+        std::array<std::uint64_t, 4> device_ids {};
+        std::array<std::uint64_t, 4> inodes {};
+        std::array<std::uint32_t, 4> strides {};
+        std::array<std::uint32_t, 4> offsets {};
+    };
+
+    struct CachedFramebuffer {
+        FrameKey key {};
+        ImportedFramebuffer imported {};
+        std::uint64_t last_used {};
+    };
+
     struct DumbBuffer {
         std::uint32_t handle {};
         std::uint32_t framebuffer {};
@@ -47,7 +65,11 @@ private:
     bool create_primary_buffer();
     bool choose_video_plane(std::uint32_t drm_format, int preferred_plane_id);
     bool import_frame(const DmabufVideoFrame& frame, ImportedFramebuffer& imported);
+    bool make_frame_key(const DmabufVideoFrame& frame, FrameKey& key);
+    ImportedFramebuffer* find_or_import_cached_framebuffer(const DmabufVideoFrame& frame);
+    void evict_cached_framebuffer_if_needed();
     void destroy_imported(ImportedFramebuffer& imported);
+    void destroy_framebuffer_cache();
     void destroy_primary_buffer();
     void cleanup();
 
@@ -63,7 +85,9 @@ private:
     void* original_crtc_ {};
     void* mode_ {};
     DumbBuffer primary_ {};
-    ImportedFramebuffer current_ {};
+    std::vector<CachedFramebuffer> framebuffer_cache_;
+    std::uint64_t frame_serial_ {};
+    std::uint32_t current_framebuffer_ {};
     std::string card_path_;
     std::string last_error_;
 };

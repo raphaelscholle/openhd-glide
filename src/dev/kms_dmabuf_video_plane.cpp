@@ -7,6 +7,7 @@
 #include <linux/types.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
@@ -53,13 +54,18 @@ bool KmsDmabufVideoPlane::present(const DmabufVideoFrame& frame)
 {
 #if OPENHD_GLIDE_HAS_KMS_GBM
     if (video_plane_id_ == 0 || video_plane_format_ != frame.drm_format) {
+        if (video_plane_id_ != 0 && drm_fd_ >= 0) {
+            drmModeSetPlane(drm_fd_, video_plane_id_, crtc_id_, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        }
+        destroy_framebuffer_cache();
+        current_framebuffer_ = 0;
         if (!choose_video_plane(frame.drm_format, preferred_plane_id_)) {
             return false;
         }
     }
 
-    ImportedFramebuffer imported;
-    if (!import_frame(frame, imported)) {
+    auto* imported = find_or_import_cached_framebuffer(frame);
+    if (imported == nullptr) {
         return false;
     }
 
@@ -67,7 +73,7 @@ bool KmsDmabufVideoPlane::present(const DmabufVideoFrame& frame)
             drm_fd_,
             video_plane_id_,
             crtc_id_,
-            imported.framebuffer,
+            imported->framebuffer,
             0,
             0,
             0,
@@ -79,12 +85,10 @@ bool KmsDmabufVideoPlane::present(const DmabufVideoFrame& frame)
             frame.height << 16U)
         != 0) {
         last_error_ = "failed to set KMS video plane from DMABUF framebuffer";
-        destroy_imported(imported);
         return false;
     }
 
-    destroy_imported(current_);
-    current_ = imported;
+    current_framebuffer_ = imported->framebuffer;
     return true;
 #else
     (void)frame;
@@ -367,6 +371,96 @@ bool KmsDmabufVideoPlane::import_frame(const DmabufVideoFrame& frame, ImportedFr
     return true;
 }
 
+bool KmsDmabufVideoPlane::make_frame_key(const DmabufVideoFrame& frame, FrameKey& key)
+{
+    if (frame.plane_count == 0 || frame.plane_count > 4) {
+        last_error_ = "invalid DMABUF plane count";
+        return false;
+    }
+
+    key = {};
+    key.width = frame.width;
+    key.height = frame.height;
+    key.drm_format = frame.drm_format;
+    key.plane_count = frame.plane_count;
+    key.strides = frame.strides;
+    key.offsets = frame.offsets;
+
+    for (std::uint32_t i = 0; i < frame.plane_count; ++i) {
+        if (frame.fds[i] < 0) {
+            last_error_ = "decoded DMABUF frame has an invalid fd";
+            return false;
+        }
+        struct stat info {};
+        if (fstat(frame.fds[i], &info) != 0) {
+            last_error_ = "failed to identify decoded DMABUF fd";
+            return false;
+        }
+        key.device_ids[i] = static_cast<std::uint64_t>(info.st_dev);
+        key.inodes[i] = static_cast<std::uint64_t>(info.st_ino);
+    }
+    return true;
+}
+
+KmsDmabufVideoPlane::ImportedFramebuffer* KmsDmabufVideoPlane::find_or_import_cached_framebuffer(const DmabufVideoFrame& frame)
+{
+    FrameKey key;
+    if (!make_frame_key(frame, key)) {
+        return nullptr;
+    }
+
+    ++frame_serial_;
+    for (auto& cached : framebuffer_cache_) {
+        if (cached.key.width == key.width
+            && cached.key.height == key.height
+            && cached.key.drm_format == key.drm_format
+            && cached.key.plane_count == key.plane_count
+            && cached.key.device_ids == key.device_ids
+            && cached.key.inodes == key.inodes
+            && cached.key.strides == key.strides
+            && cached.key.offsets == key.offsets) {
+            cached.last_used = frame_serial_;
+            return &cached.imported;
+        }
+    }
+
+    evict_cached_framebuffer_if_needed();
+
+    CachedFramebuffer cached;
+    cached.key = key;
+    cached.last_used = frame_serial_;
+    if (!import_frame(frame, cached.imported)) {
+        return nullptr;
+    }
+    framebuffer_cache_.push_back(cached);
+    return &framebuffer_cache_.back().imported;
+}
+
+void KmsDmabufVideoPlane::evict_cached_framebuffer_if_needed()
+{
+    constexpr std::size_t max_cached_framebuffers = 12;
+    if (framebuffer_cache_.size() < max_cached_framebuffers) {
+        return;
+    }
+
+    auto victim = framebuffer_cache_.end();
+    for (auto it = framebuffer_cache_.begin(); it != framebuffer_cache_.end(); ++it) {
+        if (it->imported.framebuffer == current_framebuffer_) {
+            continue;
+        }
+        if (victim == framebuffer_cache_.end() || it->last_used < victim->last_used) {
+            victim = it;
+        }
+    }
+    if (victim == framebuffer_cache_.end() && !framebuffer_cache_.empty()) {
+        victim = framebuffer_cache_.begin();
+    }
+    if (victim != framebuffer_cache_.end()) {
+        destroy_imported(victim->imported);
+        framebuffer_cache_.erase(victim);
+    }
+}
+
 void KmsDmabufVideoPlane::destroy_imported(ImportedFramebuffer& imported)
 {
     if (imported.framebuffer != 0 && drm_fd_ >= 0) {
@@ -386,6 +480,14 @@ void KmsDmabufVideoPlane::destroy_imported(ImportedFramebuffer& imported)
         closed.insert(handle);
         handle = 0;
     }
+}
+
+void KmsDmabufVideoPlane::destroy_framebuffer_cache()
+{
+    for (auto& cached : framebuffer_cache_) {
+        destroy_imported(cached.imported);
+    }
+    framebuffer_cache_.clear();
 }
 
 void KmsDmabufVideoPlane::destroy_primary_buffer()
@@ -417,7 +519,8 @@ void KmsDmabufVideoPlane::cleanup()
         auto* crtc = static_cast<drmModeCrtc*>(original_crtc_);
         drmModeSetCrtc(drm_fd_, crtc->crtc_id, crtc->buffer_id, crtc->x, crtc->y, &connector_id_, 1, &crtc->mode);
     }
-    destroy_imported(current_);
+    current_framebuffer_ = 0;
+    destroy_framebuffer_cache();
     destroy_primary_buffer();
     if (original_crtc_ != nullptr) {
         drmModeFreeCrtc(static_cast<drmModeCrtc*>(original_crtc_));
