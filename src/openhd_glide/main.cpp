@@ -31,6 +31,7 @@ void request_stop(int)
 
 struct Options {
     bool preview_stack {};
+    bool kms_stack {};
     std::uint32_t preview_width { 1280 };
     std::uint32_t flow_height { 720 };
     std::uint32_t ui_width { 760 };
@@ -49,6 +50,8 @@ Options parse_options(int argc, char** argv)
         const std::string argument = argv[i];
         if (argument == "--preview-stack") {
             options.preview_stack = true;
+        } else if (argument == "--kms-stack" || argument == "--kmd-stack") {
+            options.kms_stack = true;
         } else if (argument == "--preview-width" && i + 1 < argc) {
             options.preview_width = static_cast<std::uint32_t>(std::stoul(argv[++i]));
         } else if (argument == "--ui-height" && i + 1 < argc) {
@@ -125,6 +128,31 @@ std::vector<std::string> view_args(const char* executable, const Options& option
     return {
         executable,
         "--stay-alive",
+        "--ipc-socket",
+        options.ipc_socket,
+    };
+}
+
+std::vector<std::string> kms_flow_args(const char* executable, const Options& options)
+{
+    return {
+        executable,
+        "--kms",
+        "--stay-alive",
+        "--width",
+        std::to_string(options.preview_width),
+        "--height",
+        std::to_string(options.flow_height),
+        "--ipc-socket",
+        options.ipc_socket,
+    };
+}
+
+std::vector<std::string> headless_ui_args(const char* executable, const Options& options)
+{
+    return {
+        executable,
+        "--headless",
         "--ipc-socket",
         options.ipc_socket,
     };
@@ -259,10 +287,107 @@ int run_preview_stack(char* argv0, const Options& options)
     glide::log(glide::LogLevel::info, "OpenHD-Glide", "preview stack stopped");
     return 0;
 }
+
+int run_kms_stack(char* argv0, const Options& options)
+{
+#if OPENHD_GLIDE_DEVICE_KMS
+    stop_requested = 0;
+    signal(SIGINT, request_stop);
+    signal(SIGTERM, request_stop);
+
+    const auto ui_executable = sibling_executable(argv0, "glide-ui");
+    const auto flow_executable = sibling_executable(argv0, "glide-flow");
+    const auto view_executable = sibling_executable(argv0, "glide-view");
+    const auto flow_args = kms_flow_args(flow_executable.c_str(), options);
+    const auto ui_args = headless_ui_args(ui_executable.c_str(), options);
+    const auto video_args = view_args(view_executable.c_str(), options);
+
+    glide::preview_control::set_fps_overlay_enabled(true);
+    glide::ipc::Server ipc_server;
+    if (!ipc_server.listen_on(options.ipc_socket)) {
+        glide::log(glide::LogLevel::error, "OpenHD-Glide", "failed to start IPC server: " + ipc_server.last_error());
+        return 1;
+    }
+
+    glide::log(glide::LogLevel::info, "OpenHD-Glide", "starting device DRM/KMS stack");
+    const auto view_pid = launch_child(video_args);
+    if (view_pid < 0) {
+        glide::log(glide::LogLevel::error, "OpenHD-Glide", "failed to launch glide-view worker");
+        return 1;
+    }
+
+    const auto flow_pid = launch_child(flow_args);
+    if (flow_pid < 0) {
+        terminate_child(view_pid);
+        glide::log(glide::LogLevel::error, "OpenHD-Glide", "failed to launch glide-flow KMS worker");
+        return 1;
+    }
+
+    const auto ui_pid = launch_child(ui_args);
+    if (ui_pid < 0) {
+        terminate_child(view_pid);
+        terminate_child(flow_pid);
+        glide::log(glide::LogLevel::error, "OpenHD-Glide", "failed to launch glide-ui headless worker");
+        return 1;
+    }
+
+    std::cout << "device KMS stack:\n"
+              << "  glide-view video worker placeholder\n"
+              << "  glide-flow drm/kms mode width=" << options.preview_width
+              << " height=" << options.flow_height << '\n'
+              << "  glide-ui   headless LVGL control worker until shared-buffer UI backend exists\n"
+              << "  ipc        " << options.ipc_socket << '\n';
+
+    bool fps_enabled = true;
+
+    while (stop_requested == 0) {
+        for (const auto& event : ipc_server.poll()) {
+            std::cout << "ipc[" << event.client_id << "] " << event.line << '\n';
+            if (event.line.rfind("hello ", 0) == 0 || event.line == "get fps") {
+                ipc_server.send_line(event.client_id, std::string("state fps ") + (fps_enabled ? "1" : "0"));
+            } else if (event.line == "set fps 0" || event.line == "set fps 1") {
+                fps_enabled = event.line.back() == '1';
+                glide::preview_control::set_fps_overlay_enabled(fps_enabled);
+                ipc_server.broadcast_line(std::string("state fps ") + (fps_enabled ? "1" : "0"));
+            } else if (event.line == "ping") {
+                ipc_server.send_line(event.client_id, "pong");
+            }
+        }
+
+        int status {};
+        const auto exited = waitpid(-1, &status, WNOHANG);
+        if (exited == ui_pid || exited == flow_pid || exited == view_pid || exited < 0) {
+            terminate_child(view_pid);
+            terminate_child(ui_pid);
+            terminate_child(flow_pid);
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    terminate_child(view_pid);
+    terminate_child(ui_pid);
+    terminate_child(flow_pid);
+    waitpid(view_pid, nullptr, 0);
+    waitpid(ui_pid, nullptr, 0);
+    waitpid(flow_pid, nullptr, 0);
+    glide::log(glide::LogLevel::info, "OpenHD-Glide", "device DRM/KMS stack stopped");
+    return 0;
+#else
+    glide::log(glide::LogLevel::error, "OpenHD-Glide", "device DRM/KMS mode is disabled in this build");
+    return 1;
+#endif
+}
 #else
 int run_preview_stack(char*, const Options&)
 {
     glide::log(glide::LogLevel::error, "OpenHD-Glide", "--preview-stack currently requires Linux/WSL process launching");
+    return 1;
+}
+
+int run_kms_stack(char*, const Options&)
+{
+    glide::log(glide::LogLevel::error, "OpenHD-Glide", "--kms-stack requires Linux process launching and DRM/KMS");
     return 1;
 }
 #endif
@@ -296,6 +421,9 @@ int main(int argc, char** argv)
 
     if (options.preview_stack) {
         return run_preview_stack(argv[0], options);
+    }
+    if (options.kms_stack) {
+        return run_kms_stack(argv[0], options);
     }
 
     return 0;

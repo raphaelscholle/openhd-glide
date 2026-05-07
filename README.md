@@ -16,6 +16,22 @@ cmake -S . -B build
 cmake --build build
 ```
 
+For a target device DRM/KMS build:
+
+```sh
+sudo apt update
+sudo apt install -y build-essential cmake pkg-config libdrm-dev libgles2-mesa-dev libegl1-mesa-dev libfreetype-dev
+cmake --preset device-kms
+cmake --build --preset device-kms -j$(nproc)
+```
+
+If the device CMake is too old for presets, use the equivalent direct configure:
+
+```sh
+cmake -S . -B build-kms -DCMAKE_BUILD_TYPE=Release -DOPENHD_GLIDE_DEVICE_KMS=ON
+cmake --build build-kms -j$(nproc)
+```
+
 On Linux, install `libdrm` development headers to enable real DRM plane discovery. Without `libdrm`, or on non-Linux platforms, the probe builds and reports that DRM discovery is unavailable.
 
 Install OpenGL ES 2.0 development files to enable the first `glide-flow` renderer path. Until the DRM/EGL surface is added, `glide-flow` runs the FPS layout path and prints where the top-right counter will render. Passing `--render-gles` submits the FPS glyphs through GLES and requires a current EGL/GLES context.
@@ -28,6 +44,17 @@ Install FreeType development files to enable antialiased TrueType OSD text. With
 ```sh
 ./build/openhd-glide
 ```
+
+Target device KMS stack test:
+
+```sh
+sudo ./build-kms/openhd-glide --kms-stack --preview-width 1920 --flow-height 1080
+```
+
+`--kmd-stack` is accepted as an alias for `--kms-stack`. The current device path starts the three workers and IPC,
+uses DRM/KMS discovery from the controller, runs `glide-flow` in device mode, and runs `glide-ui` headless until the
+LVGL shared-buffer/plane backend exists. The actual DRM/EGL plane surface for `glide-flow` is still the next rendering
+implementation step, so this mode is for device process/IPC/probe validation first.
 
 ```sh
 ./build/glide-flow --width 1920 --height 1080

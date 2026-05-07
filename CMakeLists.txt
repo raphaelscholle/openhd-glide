@@ -16,6 +16,7 @@ if(UNIX AND NOT APPLE)
 endif()
 
 option(OPENHD_GLIDE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+option(OPENHD_GLIDE_DEVICE_KMS "Enable the device-oriented DRM/KMS runtime mode" ON)
 
 add_library(glide_common
     src/common/ipc.cpp
@@ -165,9 +166,19 @@ else()
 endif()
 
 add_glide_executable(openhd-glide src/openhd_glide/main.cpp)
+if(OPENHD_GLIDE_DEVICE_KMS)
+    target_compile_definitions(openhd-glide PRIVATE OPENHD_GLIDE_DEVICE_KMS=1)
+else()
+    target_compile_definitions(openhd-glide PRIVATE OPENHD_GLIDE_DEVICE_KMS=0)
+endif()
 add_glide_executable(glide-view src/glide_view/main.cpp)
 add_executable(glide-ui src/glide_ui/main.cpp)
 target_link_libraries(glide-ui PRIVATE glide_common)
+if(OPENHD_GLIDE_DEVICE_KMS)
+    target_compile_definitions(glide-ui PRIVATE OPENHD_GLIDE_DEVICE_KMS=1)
+else()
+    target_compile_definitions(glide-ui PRIVATE OPENHD_GLIDE_DEVICE_KMS=0)
+endif()
 if(SDL2_FOUND)
     target_compile_definitions(glide-ui PRIVATE OPENHD_GLIDE_HAS_LVGL_SDL=1)
     target_include_directories(glide-ui PRIVATE ${SDL2_INCLUDE_DIRS})
@@ -179,6 +190,11 @@ endif()
 
 add_executable(glide-flow src/glide_flow/main.cpp)
 target_link_libraries(glide-flow PRIVATE glide_flow_core glide_dev)
+if(OPENHD_GLIDE_DEVICE_KMS)
+    target_compile_definitions(glide-flow PRIVATE OPENHD_GLIDE_DEVICE_KMS=1)
+else()
+    target_compile_definitions(glide-flow PRIVATE OPENHD_GLIDE_DEVICE_KMS=0)
+endif()
 
 install(
     TARGETS

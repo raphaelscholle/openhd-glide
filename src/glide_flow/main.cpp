@@ -12,6 +12,7 @@
 #include "glide_flow/speed_widget.hpp"
 
 #include <chrono>
+#include <csignal>
 #include <cstdint>
 #include <iostream>
 #include <sstream>
@@ -19,6 +20,13 @@
 #include <thread>
 
 namespace {
+
+volatile std::sig_atomic_t stop_requested = 0;
+
+void request_stop(int)
+{
+    stop_requested = 1;
+}
 
 struct Options {
     glide::flow::SurfaceSize surface {
@@ -29,6 +37,8 @@ struct Options {
     int y {};
     bool render_gles {};
     bool preview {};
+    bool kms {};
+    bool stay_alive {};
     bool positioned {};
     bool borderless {};
     std::string ipc_socket { glide::ipc::default_socket_path };
@@ -65,6 +75,10 @@ Options parse_options(int argc, char** argv)
         } else if (argument == "--preview") {
             options.preview = true;
             options.render_gles = true;
+        } else if (argument == "--kms" || argument == "--kmd") {
+            options.kms = true;
+        } else if (argument == "--stay-alive") {
+            options.stay_alive = true;
         } else if (argument == "--x" && i + 1 < argc) {
             options.x = std::stoi(argv[++i]);
             options.positioned = true;
@@ -93,6 +107,9 @@ std::string describe_placement(const glide::flow::TextPlacement& placement)
 
 int main(int argc, char** argv)
 {
+    signal(SIGINT, request_stop);
+    signal(SIGTERM, request_stop);
+
     auto options = parse_options(argc, argv);
     glide::flow::FpsCounter fps_counter;
     glide::flow::FpsOverlay fps_overlay;
@@ -123,6 +140,15 @@ int main(int argc, char** argv)
         }
         options.surface = preview_window.surface_size();
     }
+    if (options.kms) {
+#if OPENHD_GLIDE_DEVICE_KMS
+        glide::log(glide::LogLevel::info, "GlideFlow", "DRM/KMS mode requested");
+        glide::log(glide::LogLevel::warning, "GlideFlow", "DRM/EGL plane surface is not implemented yet; running device IPC/timing loop without a display surface");
+#else
+        glide::log(glide::LogLevel::error, "GlideFlow", "DRM/KMS mode is disabled in this build");
+        return 1;
+#endif
+    }
 
     glide::log(glide::LogLevel::info, "GlideFlow", "OSD renderer started");
     if (ipc.connect_to(options.ipc_socket)) {
@@ -140,7 +166,7 @@ int main(int argc, char** argv)
 
     constexpr auto preview_frame_time = std::chrono::microseconds(16667);
 
-    for (unsigned int frame = 0; options.preview || frame < 180; ++frame) {
+    for (unsigned int frame = 0; stop_requested == 0 && (options.preview || options.stay_alive || frame < 180); ++frame) {
         const auto frame_start = std::chrono::steady_clock::now();
 
         if (options.preview && !preview_window.poll()) {

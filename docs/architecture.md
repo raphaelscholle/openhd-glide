@@ -75,6 +75,16 @@ uses before drawing the FPS overlay. The socket path can be changed with `--ipc-
 
 The LVGL UI is intentionally backend-isolated: the current SDL display driver is for WSL/Windows-style iteration. The target backend should render the same LVGL tree into shared buffers or a plane-owned buffer path supplied by `openhd-glide`, without letting `glide-ui` become DRM/KMS master.
 
+## Device KMS Mode
+
+`openhd-glide --kms-stack` is the target-device entry point. It starts the same Unix-socket controller and launches:
+
+- `glide-view --stay-alive`
+- `glide-flow --kms --stay-alive`
+- `glide-ui --headless`
+
+This mode is intentionally separate from the SDL preview path. It validates device DRM/KMS plane discovery, process startup, CPU assignment, and IPC without creating SDL windows. The current `glide-flow --kms` path is a temporary timing/IPC loop and logs that the DRM/EGL plane surface is not implemented yet. The next rendering step is to replace that loop with the real KMS/GBM/EGL surface setup for Flow. UI remains headless in this path until LVGL can render into a shared-buffer or plane-backed target owned by the controller.
+
 ## CPU Model
 
 Each worker is expected to run on a different CPU core where the target hardware makes that useful. The controller uses discovered topology and frequency data to prefer faster online cores for video and rendering workloads.

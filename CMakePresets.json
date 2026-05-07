@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "configurePresets": [
+    {
+      "name": "device-kms",
+      "displayName": "Device DRM/KMS",
+      "description": "Build the target-device runtime with DRM/KMS stack mode enabled.",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build-kms",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "OPENHD_GLIDE_DEVICE_KMS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "device-kms",
+      "configurePreset": "device-kms"
+    }
+  ]
+}

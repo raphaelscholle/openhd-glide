@@ -17,7 +17,6 @@
 #include <string>
 #include <thread>
 
-#if OPENHD_GLIDE_HAS_LVGL_SDL
 namespace {
 
 volatile std::sig_atomic_t stop_requested = 0;
@@ -26,6 +25,59 @@ void request_stop(int)
 {
     stop_requested = 1;
 }
+
+struct HeadlessOptions {
+    std::string ipc_socket { glide::ipc::default_socket_path };
+};
+
+HeadlessOptions parse_headless_options(int argc, char** argv)
+{
+    HeadlessOptions options;
+    for (int i = 1; i < argc; ++i) {
+        const std::string argument = argv[i];
+        if (argument == "--ipc-socket" && i + 1 < argc) {
+            options.ipc_socket = argv[++i];
+        }
+    }
+    return options;
+}
+
+int run_headless_ui(const HeadlessOptions& options)
+{
+    glide::log(glide::LogLevel::info, "GlideUI", "headless control worker started");
+
+    glide::ipc::Client ipc;
+    if (ipc.connect_to(options.ipc_socket)) {
+        ipc.send_line("hello glide-ui");
+        ipc.send_line("status glide-ui ready headless");
+        ipc.send_line("get fps");
+    } else {
+        glide::log(glide::LogLevel::warning, "GlideUI", "IPC controller unavailable");
+    }
+
+    auto next_heartbeat = std::chrono::steady_clock::now();
+    while (stop_requested == 0) {
+        if (ipc.connected()) {
+            for (const auto& line : ipc.poll_lines()) {
+                if (line == "state fps 0" || line == "state fps 1") {
+                    glide::preview_control::set_fps_overlay_enabled(line.back() == '1');
+                }
+            }
+            if (std::chrono::steady_clock::now() >= next_heartbeat) {
+                ipc.send_line("heartbeat glide-ui");
+                next_heartbeat = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    return 0;
+}
+
+} // namespace
+
+#if OPENHD_GLIDE_HAS_LVGL_SDL
+namespace {
 
 struct Options {
     std::uint32_t width { 760 };
@@ -38,6 +90,7 @@ struct Options {
     bool borderless {};
     bool always_on_top {};
     bool transparent_clear {};
+    bool headless {};
     std::string ipc_socket { glide::ipc::default_socket_path };
 };
 
@@ -70,6 +123,8 @@ Options parse_options(int argc, char** argv)
         const std::string argument = argv[i];
         if (argument == "--preview") {
             options.preview = true;
+        } else if (argument == "--headless" || argument == "--device") {
+            options.headless = true;
         } else if (argument == "--width" && i + 1 < argc) {
             options.width = static_cast<std::uint32_t>(std::stoul(argv[++i]));
         } else if (argument == "--height" && i + 1 < argc) {
@@ -398,6 +453,12 @@ int main(int argc, char** argv)
     signal(SIGTERM, request_stop);
 
     const auto options = parse_options(argc, argv);
+    if (options.headless) {
+        return run_headless_ui(HeadlessOptions {
+            .ipc_socket = options.ipc_socket,
+        });
+    }
+
     glide::log(glide::LogLevel::info, "GlideUI", "LVGL UI started");
 
     if (!options.preview) {
@@ -442,9 +503,23 @@ int main(int argc, char** argv)
     return 0;
 }
 #else
-int main()
+int main(int argc, char** argv)
 {
-    glide::log(glide::LogLevel::error, "GlideUI", "LVGL SDL preview requires SDL2 development files");
+    signal(SIGINT, request_stop);
+    signal(SIGTERM, request_stop);
+
+    bool headless {};
+    for (int i = 1; i < argc; ++i) {
+        const std::string argument = argv[i];
+        if (argument == "--headless" || argument == "--device") {
+            headless = true;
+        }
+    }
+    if (headless) {
+        return run_headless_ui(parse_headless_options(argc, argv));
+    }
+
+    glide::log(glide::LogLevel::error, "GlideUI", "LVGL SDL preview requires SDL2 development files; use --headless for device IPC tests");
     return 1;
 }
 #endif
