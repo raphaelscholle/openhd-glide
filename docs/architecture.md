@@ -38,10 +38,10 @@ The probe currently reports all planes exposed through `libdrm` universal planes
 - `udpsrc`
 - `rtph264depay`
 - `h264parse`
-- hardware-oriented `v4l2h264dec` or `v4l2slh264dec`
+- hardware-oriented `v4l2h264dec`, `v4l2slh264dec`, or board-specific decoders such as `omxh264dec` on Allwinner BSP images
 - `appsink`
 
-The queues are constrained to one buffer and leaky mode to keep latency low. `glide-view` logs decoded frame rate, first-sample caps, and first-sample memory type. The next boundary is Unix-socket fd passing: View should export decoded DMABUFs to `openhd-glide`, and `openhd-glide` should be the only process that imports buffers and programs KMS planes.
+The queues are constrained to one buffer and leaky mode to keep latency low. `glide-view` logs decoded frame rate, first-sample caps, and first-sample memory type. On Allwinner BSP images, the OMX path may require root privileges because `/dev/cedar_dev`, `/dev/cedar_dev_ve2`, and DMA heap nodes are often root-only. The next boundary is Unix-socket fd passing: View should export decoded DMABUFs to `openhd-glide`, and `openhd-glide` should be the only process that imports buffers and programs KMS planes.
 
 The current composition limitation is that `glide-flow --kms` still owns fullscreen scanout. For real video-under-OSD composition, `openhd-glide` needs to own KMS, put View's decoded DMABUF on a video plane, and put Flow's render target on an alpha-capable overlay plane above it.
 

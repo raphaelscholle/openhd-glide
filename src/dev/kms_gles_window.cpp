@@ -3,6 +3,7 @@
 #if OPENHD_GLIDE_HAS_KMS_GBM
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
+#include <drm_fourcc.h>
 #include <fcntl.h>
 #include <gbm.h>
 #include <sys/stat.h>
@@ -10,9 +11,10 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
+#include <algorithm>
 #include <array>
-#include <sstream>
 #include <cstring>
+#include <sstream>
 #endif
 
 namespace glide::dev {
@@ -25,6 +27,61 @@ std::string egl_error_message(const char* prefix)
     std::ostringstream stream;
     stream << prefix << " EGL error=0x" << std::hex << eglGetError();
     return stream.str();
+}
+
+bool get_plane_property_value(int drm_fd, std::uint32_t plane_id, const char* name, std::uint64_t& value)
+{
+    auto* properties = drmModeObjectGetProperties(drm_fd, plane_id, DRM_MODE_OBJECT_PLANE);
+    if (properties == nullptr) {
+        return false;
+    }
+
+    bool found {};
+    for (std::uint32_t i = 0; i < properties->count_props; ++i) {
+        auto* property = drmModeGetProperty(drm_fd, properties->props[i]);
+        if (property != nullptr && std::strcmp(property->name, name) == 0) {
+            value = properties->prop_values[i];
+            found = true;
+        }
+        if (property != nullptr) {
+            drmModeFreeProperty(property);
+        }
+        if (found) {
+            break;
+        }
+    }
+
+    drmModeFreeObjectProperties(properties);
+    return found;
+}
+
+bool set_plane_property_to_range_edge(int drm_fd, std::uint32_t plane_id, const char* name, bool maximum)
+{
+    auto* properties = drmModeObjectGetProperties(drm_fd, plane_id, DRM_MODE_OBJECT_PLANE);
+    if (properties == nullptr) {
+        return false;
+    }
+
+    bool set {};
+    for (std::uint32_t i = 0; i < properties->count_props; ++i) {
+        auto* property = drmModeGetProperty(drm_fd, properties->props[i]);
+        if (property != nullptr
+            && std::strcmp(property->name, name) == 0
+            && (property->flags & DRM_MODE_PROP_RANGE) != 0
+            && property->count_values >= 2) {
+            const auto value = maximum ? property->values[1] : property->values[0];
+            set = drmModeObjectSetProperty(drm_fd, plane_id, DRM_MODE_OBJECT_PLANE, property->prop_id, value) == 0;
+        }
+        if (property != nullptr) {
+            drmModeFreeProperty(property);
+        }
+        if (set) {
+            break;
+        }
+    }
+
+    drmModeFreeObjectProperties(properties);
+    return set;
 }
 
 } // namespace
@@ -50,10 +107,31 @@ KmsGlesWindow::~KmsGlesWindow()
 bool KmsGlesWindow::create(std::uint32_t requested_width, std::uint32_t requested_height)
 {
 #if OPENHD_GLIDE_HAS_KMS_GBM
+    overlay_mode_ = false;
     return open_card()
         && choose_connector_and_mode(requested_width, requested_height)
         && create_gbm_device()
-        && create_egl();
+        && create_egl(false);
+#else
+    (void)requested_width;
+    (void)requested_height;
+    last_error_ = "KMS/GBM/EGL support was not found at build time";
+    return false;
+#endif
+}
+
+bool KmsGlesWindow::create_overlay(std::uint32_t requested_width, std::uint32_t requested_height)
+{
+#if OPENHD_GLIDE_HAS_KMS_GBM
+    overlay_mode_ = true;
+    overlay_format_ = DRM_FORMAT_ARGB8888;
+    return open_card()
+        && choose_connector_and_mode(requested_width, requested_height)
+        && choose_overlay_plane(overlay_format_)
+        && configure_overlay_plane()
+        && create_gbm_device()
+        && create_gbm_surface(GBM_FORMAT_ARGB8888)
+        && create_egl(true);
 #else
     (void)requested_width;
     (void)requested_height;
@@ -222,6 +300,52 @@ bool KmsGlesWindow::create_gbm_device()
     return true;
 }
 
+bool KmsGlesWindow::choose_overlay_plane(std::uint32_t format)
+{
+    auto* planes = drmModeGetPlaneResources(drm_fd_);
+    if (planes == nullptr) {
+        last_error_ = "failed to read KMS plane resources";
+        return false;
+    }
+
+    for (std::uint32_t i = 0; i < planes->count_planes; ++i) {
+        auto* plane = drmModeGetPlane(drm_fd_, planes->planes[i]);
+        if (plane == nullptr) {
+            continue;
+        }
+
+        std::uint64_t plane_type {};
+        get_plane_property_value(drm_fd_, plane->plane_id, "type", plane_type);
+        const bool usable_crtc = (plane->possible_crtcs & (1 << crtc_index_)) != 0;
+        const bool supports_format = std::find(plane->formats, plane->formats + plane->count_formats, format) != plane->formats + plane->count_formats;
+        if (usable_crtc && supports_format && plane_type == DRM_PLANE_TYPE_OVERLAY) {
+            overlay_plane_id_ = plane->plane_id;
+            drmModeFreePlane(plane);
+            break;
+        }
+        drmModeFreePlane(plane);
+    }
+
+    drmModeFreePlaneResources(planes);
+    if (overlay_plane_id_ == 0) {
+        last_error_ = "no KMS overlay plane supports ARGB8888 Flow scanout";
+        return false;
+    }
+    return true;
+}
+
+bool KmsGlesWindow::configure_overlay_plane()
+{
+    if (overlay_plane_id_ == 0 || drm_fd_ < 0) {
+        return false;
+    }
+
+    set_plane_property_to_range_edge(drm_fd_, overlay_plane_id_, "zpos", true);
+    set_plane_property_to_range_edge(drm_fd_, overlay_plane_id_, "ZPOS", true);
+    set_plane_property_to_range_edge(drm_fd_, overlay_plane_id_, "alpha", true);
+    return true;
+}
+
 bool KmsGlesWindow::create_gbm_surface(std::uint32_t format)
 {
     gbm_surface_ = gbm_surface_create(
@@ -237,7 +361,7 @@ bool KmsGlesWindow::create_gbm_surface(std::uint32_t format)
     return true;
 }
 
-bool KmsGlesWindow::create_egl()
+bool KmsGlesWindow::create_egl(bool alpha_surface)
 {
     auto get_platform_display = reinterpret_cast<PFNEGLGETPLATFORMDISPLAYEXTPROC>(
         eglGetProcAddress("eglGetPlatformDisplayEXT"));
@@ -268,7 +392,7 @@ bool KmsGlesWindow::create_egl()
         EGL_RED_SIZE, 8,
         EGL_GREEN_SIZE, 8,
         EGL_BLUE_SIZE, 8,
-        EGL_ALPHA_SIZE, 0,
+        EGL_ALPHA_SIZE, alpha_surface ? 8 : 0,
         EGL_NONE,
     };
     EGLConfig config {};
@@ -283,7 +407,7 @@ bool KmsGlesWindow::create_egl()
         native_visual_id = GBM_FORMAT_XRGB8888;
     }
 
-    if (!create_gbm_surface(static_cast<std::uint32_t>(native_visual_id))) {
+    if (gbm_surface_ == nullptr && !create_gbm_surface(static_cast<std::uint32_t>(native_visual_id))) {
         return false;
     }
 
@@ -365,12 +489,35 @@ void KmsGlesWindow::swap()
         return;
     }
 
-    auto* mode = static_cast<drmModeModeInfo*>(mode_);
-    if (drmModeSetCrtc(drm_fd_, crtc_id_, framebuffer_id, 0, 0, &connector_id_, 1, mode) != 0) {
-        drmModeRmFB(drm_fd_, framebuffer_id);
-        gbm_surface_release_buffer(static_cast<gbm_surface*>(gbm_surface_), bo);
-        last_error_ = "failed to set DRM CRTC";
-        return;
+    if (overlay_mode_) {
+        if (drmModeSetPlane(
+                drm_fd_,
+                overlay_plane_id_,
+                crtc_id_,
+                framebuffer_id,
+                0,
+                0,
+                0,
+                surface_.width,
+                surface_.height,
+                0,
+                0,
+                surface_.width << 16U,
+                surface_.height << 16U)
+            != 0) {
+            drmModeRmFB(drm_fd_, framebuffer_id);
+            gbm_surface_release_buffer(static_cast<gbm_surface*>(gbm_surface_), bo);
+            last_error_ = "failed to set DRM overlay plane";
+            return;
+        }
+    } else {
+        auto* mode = static_cast<drmModeModeInfo*>(mode_);
+        if (drmModeSetCrtc(drm_fd_, crtc_id_, framebuffer_id, 0, 0, &connector_id_, 1, mode) != 0) {
+            drmModeRmFB(drm_fd_, framebuffer_id);
+            gbm_surface_release_buffer(static_cast<gbm_surface*>(gbm_surface_), bo);
+            last_error_ = "failed to set DRM CRTC";
+            return;
+        }
     }
 
     if (current_framebuffer_id_ != 0) {
@@ -398,7 +545,10 @@ const std::string& KmsGlesWindow::last_error() const
 void KmsGlesWindow::cleanup_scanout()
 {
 #if OPENHD_GLIDE_HAS_KMS_GBM
-    if (drm_fd_ >= 0 && original_crtc_ != nullptr) {
+    if (drm_fd_ >= 0 && overlay_plane_id_ != 0) {
+        drmModeSetPlane(drm_fd_, overlay_plane_id_, crtc_id_, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    }
+    if (!overlay_mode_ && drm_fd_ >= 0 && original_crtc_ != nullptr) {
         auto* crtc = static_cast<drmModeCrtc*>(original_crtc_);
         drmModeSetCrtc(
             drm_fd_,

@@ -64,6 +64,7 @@ private:
     bool choose_connector_and_mode(std::uint32_t requested_width, std::uint32_t requested_height);
     bool create_primary_buffer();
     bool choose_video_plane(std::uint32_t drm_format, int preferred_plane_id);
+    bool configure_video_plane();
     bool import_frame(const DmabufVideoFrame& frame, ImportedFramebuffer& imported);
     bool make_frame_key(const DmabufVideoFrame& frame, FrameKey& key);
     ImportedFramebuffer* find_or_import_cached_framebuffer(const DmabufVideoFrame& frame);

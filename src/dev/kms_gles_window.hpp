@@ -16,6 +16,7 @@ public:
     KmsGlesWindow& operator=(const KmsGlesWindow&) = delete;
 
     bool create(std::uint32_t requested_width, std::uint32_t requested_height);
+    bool create_overlay(std::uint32_t requested_width, std::uint32_t requested_height);
     void swap();
     flow::SurfaceSize surface_size() const;
     const std::string& last_error() const;
@@ -23,9 +24,11 @@ public:
 private:
     bool open_card();
     bool choose_connector_and_mode(std::uint32_t requested_width, std::uint32_t requested_height);
+    bool choose_overlay_plane(std::uint32_t format);
+    bool configure_overlay_plane();
     bool create_gbm_device();
     bool create_gbm_surface(std::uint32_t format);
-    bool create_egl();
+    bool create_egl(bool alpha_surface);
     bool add_framebuffer(void* bo, std::uint32_t& framebuffer_id);
     void cleanup_scanout();
     void cleanup_egl();
@@ -36,6 +39,9 @@ private:
     std::uint32_t connector_id_ {};
     std::uint32_t crtc_id_ {};
     int crtc_index_ { -1 };
+    std::uint32_t overlay_plane_id_ {};
+    std::uint32_t overlay_format_ {};
+    bool overlay_mode_ {};
     void* original_crtc_ {};
     void* mode_ {};
     void* gbm_device_ {};

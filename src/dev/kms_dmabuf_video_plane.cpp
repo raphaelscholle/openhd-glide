@@ -13,12 +13,79 @@
 #include <xf86drmMode.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <cstring>
 #include <map>
 #include <set>
 #endif
 
 namespace glide::dev {
+
+#if OPENHD_GLIDE_HAS_KMS_GBM
+namespace {
+
+std::string errno_suffix()
+{
+    return std::string(": ") + std::strerror(errno);
+}
+
+bool get_plane_property_value(int drm_fd, std::uint32_t plane_id, const char* name, std::uint64_t& value)
+{
+    auto* properties = drmModeObjectGetProperties(drm_fd, plane_id, DRM_MODE_OBJECT_PLANE);
+    if (properties == nullptr) {
+        return false;
+    }
+
+    bool found {};
+    for (std::uint32_t i = 0; i < properties->count_props; ++i) {
+        auto* property = drmModeGetProperty(drm_fd, properties->props[i]);
+        if (property != nullptr && std::strcmp(property->name, name) == 0) {
+            value = properties->prop_values[i];
+            found = true;
+        }
+        if (property != nullptr) {
+            drmModeFreeProperty(property);
+        }
+        if (found) {
+            break;
+        }
+    }
+
+    drmModeFreeObjectProperties(properties);
+    return found;
+}
+
+bool set_plane_property_to_range_edge(int drm_fd, std::uint32_t plane_id, const char* name, bool maximum)
+{
+    auto* properties = drmModeObjectGetProperties(drm_fd, plane_id, DRM_MODE_OBJECT_PLANE);
+    if (properties == nullptr) {
+        return false;
+    }
+
+    bool set {};
+    for (std::uint32_t i = 0; i < properties->count_props; ++i) {
+        auto* property = drmModeGetProperty(drm_fd, properties->props[i]);
+        if (property != nullptr
+            && std::strcmp(property->name, name) == 0
+            && (property->flags & DRM_MODE_PROP_RANGE) != 0
+            && property->count_values >= 2) {
+            const auto value = maximum ? property->values[1] : property->values[0];
+            set = drmModeObjectSetProperty(drm_fd, plane_id, DRM_MODE_OBJECT_PLANE, property->prop_id, value) == 0;
+        }
+        if (property != nullptr) {
+            drmModeFreeProperty(property);
+        }
+        if (set) {
+            break;
+        }
+    }
+
+    drmModeFreeObjectProperties(properties);
+    return set;
+}
+
+} // namespace
+#endif
 
 bool kms_dmabuf_video_plane_available()
 {
@@ -84,7 +151,7 @@ bool KmsDmabufVideoPlane::present(const DmabufVideoFrame& frame)
             frame.width << 16U,
             frame.height << 16U)
         != 0) {
-        last_error_ = "failed to set KMS video plane from DMABUF framebuffer";
+        last_error_ = "failed to set KMS video plane from DMABUF framebuffer" + errno_suffix();
         return false;
     }
 
@@ -304,6 +371,9 @@ bool KmsDmabufVideoPlane::choose_video_plane(std::uint32_t drm_format, int prefe
     }
 
     std::uint32_t selected {};
+    std::uint32_t selected_type {};
+    constexpr std::uint64_t overlay_plane = DRM_PLANE_TYPE_OVERLAY;
+    constexpr std::uint64_t primary_plane = DRM_PLANE_TYPE_PRIMARY;
     for (std::uint32_t i = 0; i < planes->count_planes; ++i) {
         auto* plane = drmModeGetPlane(drm_fd_, planes->planes[i]);
         if (plane == nullptr) {
@@ -313,9 +383,16 @@ bool KmsDmabufVideoPlane::choose_video_plane(std::uint32_t drm_format, int prefe
         const bool usable_crtc = (plane->possible_crtcs & (1 << crtc_index_)) != 0;
         const bool supports_format = std::find(plane->formats, plane->formats + plane->count_formats, drm_format) != plane->formats + plane->count_formats;
         if (requested && usable_crtc && supports_format) {
-            selected = plane->plane_id;
-            drmModeFreePlane(plane);
-            break;
+            std::uint64_t plane_type {};
+            get_plane_property_value(drm_fd_, plane->plane_id, "type", plane_type);
+            if (selected == 0 || (preferred_plane_id < 0 && selected_type == primary_plane && plane_type == overlay_plane)) {
+                selected = plane->plane_id;
+                selected_type = static_cast<std::uint32_t>(plane_type);
+            }
+            if (preferred_plane_id >= 0 || plane_type == overlay_plane) {
+                drmModeFreePlane(plane);
+                break;
+            }
         }
         drmModeFreePlane(plane);
     }
@@ -328,6 +405,19 @@ bool KmsDmabufVideoPlane::choose_video_plane(std::uint32_t drm_format, int prefe
 
     video_plane_id_ = selected;
     video_plane_format_ = drm_format;
+    configure_video_plane();
+    return true;
+}
+
+bool KmsDmabufVideoPlane::configure_video_plane()
+{
+    if (video_plane_id_ == 0 || drm_fd_ < 0) {
+        return false;
+    }
+
+    set_plane_property_to_range_edge(drm_fd_, video_plane_id_, "zpos", true);
+    set_plane_property_to_range_edge(drm_fd_, video_plane_id_, "ZPOS", true);
+    set_plane_property_to_range_edge(drm_fd_, video_plane_id_, "alpha", true);
     return true;
 }
 
@@ -352,7 +442,7 @@ bool KmsDmabufVideoPlane::import_frame(const DmabufVideoFrame& frame, ImportedFr
             continue;
         }
         if (drmPrimeFDToHandle(drm_fd_, frame.fds[i], &handles[i]) != 0) {
-            last_error_ = "failed to import decoded DMABUF fd into DRM";
+            last_error_ = "failed to import decoded DMABUF fd into DRM" + errno_suffix();
             imported.handles = { handles[0], handles[1], handles[2], handles[3] };
             destroy_imported(imported);
             return false;
@@ -364,7 +454,7 @@ bool KmsDmabufVideoPlane::import_frame(const DmabufVideoFrame& frame, ImportedFr
     std::uint32_t strides[4] { frame.strides[0], frame.strides[1], frame.strides[2], frame.strides[3] };
     std::uint32_t offsets[4] { frame.offsets[0], frame.offsets[1], frame.offsets[2], frame.offsets[3] };
     if (drmModeAddFB2(drm_fd_, frame.width, frame.height, frame.drm_format, handles, strides, offsets, &imported.framebuffer, 0) != 0) {
-        last_error_ = "failed to create DRM framebuffer from decoded DMABUF";
+        last_error_ = "failed to create DRM framebuffer from decoded DMABUF" + errno_suffix();
         destroy_imported(imported);
         return false;
     }

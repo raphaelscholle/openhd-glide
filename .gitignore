@@ -3,3 +3,6 @@ build-kms/
 build-wsl/
 out/
 CMakeUserPresets.json
+*.deb
+examples/media/
+examples/examples/

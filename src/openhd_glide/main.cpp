@@ -1,11 +1,21 @@
 #include "common/logging.hpp"
 #include "common/ipc.hpp"
 #include "common/preview_control.hpp"
+#include "dev/kms_atomic_compositor.hpp"
 #include "dev/kms_dmabuf_video_plane.hpp"
+#include "glide_flow/altitude_widget.hpp"
+#include "glide_flow/fps_counter.hpp"
+#include "glide_flow/fps_overlay.hpp"
+#include "glide_flow/gles_text_renderer.hpp"
+#include "glide_flow/link_overview.hpp"
+#include "glide_flow/performance_horizon.hpp"
+#include "glide_flow/simulated_attitude.hpp"
+#include "glide_flow/speed_widget.hpp"
 #include "platform/core_assignment.hpp"
 #include "platform/cpu_topology.hpp"
 #include "platform/drm_probe.hpp"
 #include "platform/process_probe.hpp"
+#include "video/cedar_rtp_decoder.hpp"
 
 #include <algorithm>
 #include <array>
@@ -56,6 +66,14 @@ struct Options {
     int preview_y { 40 };
     std::string ipc_socket { glide::ipc::default_socket_path };
     bool vertical_stack {};
+    bool flow_overlay { true };
+    double flow_fps {};
+    bool atomic_kms {};
+#if OPENHD_GLIDE_HAS_CEDAR
+    bool native_cedar_video { true };
+#else
+    bool native_cedar_video {};
+#endif
 };
 
 Options parse_options(int argc, char** argv)
@@ -93,6 +111,16 @@ Options parse_options(int argc, char** argv)
             options.ipc_socket = argv[++i];
         } else if (argument == "--vertical-stack") {
             options.vertical_stack = true;
+        } else if (argument == "--native-cedar-video") {
+            options.native_cedar_video = true;
+        } else if (argument == "--gstreamer-video") {
+            options.native_cedar_video = false;
+        } else if (argument == "--no-flow") {
+            options.flow_overlay = false;
+        } else if (argument == "--flow-fps" && i + 1 < argc) {
+            options.flow_fps = std::clamp(std::stod(argv[++i]), 0.0, 240.0);
+        } else if (argument == "--atomic-kms") {
+            options.atomic_kms = true;
         }
     }
     return options;
@@ -208,6 +236,12 @@ std::uint32_t drm_format_from_name(std::string name)
     if (name == "NV12") {
         return fourcc('N', 'V', '1', '2');
     }
+    if (name == "NV21") {
+        return fourcc('N', 'V', '2', '1');
+    }
+    if (name == "YV12") {
+        return fourcc('Y', 'V', '1', '2');
+    }
     if (name == "XR24" || name == "BGRx") {
         return fourcc('X', 'R', '2', '4');
     }
@@ -284,7 +318,13 @@ std::uint32_t infer_plane_count(std::uint32_t drm_format)
     if (drm_format == fourcc('Y', 'U', '1', '2')) {
         return 3;
     }
+    if (drm_format == fourcc('Y', 'V', '1', '2')) {
+        return 3;
+    }
     if (drm_format == fourcc('N', 'V', '1', '2')) {
+        return 2;
+    }
+    if (drm_format == fourcc('N', 'V', '2', '1')) {
         return 2;
     }
     if (drm_format == fourcc('X', 'R', '2', '4')) {
@@ -319,7 +359,32 @@ bool infer_video_layout(
         return true;
     }
 
+    if (drm_format == fourcc('Y', 'V', '1', '2')) {
+        const auto y_stride = align_up(width, 32);
+        const auto uv_stride = align_up(width / 2U, 16);
+        const auto y_size = y_stride * height;
+        const auto uv_size = uv_stride * ((height + 1U) / 2U);
+        strides[0] = y_stride;
+        strides[1] = uv_stride;
+        strides[2] = uv_stride;
+        if (memory_count == 1) {
+            offsets[1] = y_size;
+            offsets[2] = y_size + uv_size;
+        }
+        return true;
+    }
+
     if (drm_format == fourcc('N', 'V', '1', '2')) {
+        const auto y_stride = align_up(width, 32);
+        strides[0] = y_stride;
+        strides[1] = y_stride;
+        if (memory_count == 1) {
+            offsets[1] = y_stride * height;
+        }
+        return true;
+    }
+
+    if (drm_format == fourcc('N', 'V', '2', '1')) {
         const auto y_stride = align_up(width, 32);
         strides[0] = y_stride;
         strides[1] = y_stride;
@@ -415,19 +480,189 @@ bool extract_dmabuf_frame(GstSample* sample, glide::dev::DmabufVideoFrame& frame
 
 int run_kms_video_preview(const Options& options)
 {
-#if OPENHD_GLIDE_HAS_GSTREAMER && OPENHD_GLIDE_DEVICE_KMS
+#if OPENHD_GLIDE_DEVICE_KMS && (OPENHD_GLIDE_HAS_GSTREAMER || OPENHD_GLIDE_HAS_CEDAR)
     stop_requested = 0;
     signal(SIGINT, request_stop);
     signal(SIGTERM, request_stop);
 
-    glide::dev::KmsDmabufVideoPlane output;
-    if (!output.create(options.preview_width, options.flow_height, options.view_plane_id)) {
-        glide::log(glide::LogLevel::error, "OpenHD-Glide", output.last_error());
-        return 1;
+    const bool use_atomic_kms = options.atomic_kms || options.flow_overlay;
+    glide::dev::KmsAtomicCompositor compositor;
+    glide::dev::KmsDmabufVideoPlane legacy_output;
+    if (use_atomic_kms) {
+        if (!compositor.create(options.preview_width, options.flow_height)) {
+            glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
+            return 1;
+        }
+    } else {
+        if (!legacy_output.create(options.preview_width, options.flow_height, options.view_plane_id)) {
+            glide::log(glide::LogLevel::error, "OpenHD-Glide", legacy_output.last_error());
+            return 1;
+        }
     }
 
+    glide::flow::GlesTextRenderer flow_renderer;
+    glide::flow::FpsCounter flow_fps_counter;
+    glide::flow::FpsOverlay flow_fps_overlay;
+    glide::flow::AltitudeWidgetRenderer altitude_widget;
+    glide::flow::SimulatedAltitude simulated_altitude;
+    glide::flow::SpeedWidgetRenderer speed_widget;
+    glide::flow::SimulatedSpeed simulated_speed;
+    glide::flow::LinkOverviewRenderer link_overview;
+    glide::flow::SimulatedLinkOverview simulated_link;
+    glide::flow::PerformanceHorizon performance_horizon;
+    glide::flow::SimulatedAttitude simulated_attitude;
+    auto flow_surface = use_atomic_kms ? compositor.surface_size() : glide::flow::SurfaceSize { options.preview_width, options.flow_height };
+    auto flow_fps_placement = flow_fps_overlay.layout(0.0, flow_surface);
+    bool flow_runtime_logged {};
+    const auto flow_frame_interval = options.flow_fps > 0.0
+        ? std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(1.0 / options.flow_fps))
+        : std::chrono::steady_clock::duration::max();
+    auto next_flow_frame = std::chrono::steady_clock::now();
+
+    const auto render_flow_overlay = [&]() {
+        if (!flow_renderer.available()) {
+            return;
+        }
+        if (!use_atomic_kms) {
+            return;
+        }
+        flow_surface = compositor.surface_size();
+        if (!flow_runtime_logged) {
+            glide::log(glide::LogLevel::info, "OpenHD-Glide", flow_renderer.runtime_description());
+            if (flow_renderer.likely_software_renderer()) {
+                glide::log(glide::LogLevel::warning, "OpenHD-Glide", "Flow OpenGL ES renderer looks like a software fallback");
+            } else {
+                glide::log(glide::LogLevel::info, "OpenHD-Glide", "Flow OpenGL ES renderer appears hardware accelerated");
+            }
+            flow_runtime_logged = true;
+        }
+
+        if (const auto fps = flow_fps_counter.frame()) {
+            flow_fps_placement = flow_fps_overlay.layout(*fps, flow_surface);
+        }
+
+        flow_renderer.clear(0.0F, 0.0F, 0.0F, 0.0F, flow_surface);
+        link_overview.draw(flow_renderer, flow_surface, simulated_link.sample());
+        performance_horizon.draw(flow_renderer, flow_surface, simulated_attitude.sample());
+        speed_widget.draw(flow_renderer, flow_surface, simulated_speed.sample());
+        altitude_widget.draw(flow_renderer, flow_surface, simulated_altitude.sample());
+        flow_renderer.draw(flow_fps_placement, flow_surface);
+    };
+
+    const auto should_update_flow = [&](std::uint64_t presented_frames) {
+        if (presented_frames == 0) {
+            return true;
+        }
+        if (!options.flow_overlay) {
+            return false;
+        }
+        if (options.flow_fps <= 0.0) {
+            return true;
+        }
+        return std::chrono::steady_clock::now() >= next_flow_frame;
+    };
+
+    const auto update_flow_deadline = [&]() {
+        if (options.flow_fps > 0.0) {
+            next_flow_frame = std::chrono::steady_clock::now() + flow_frame_interval;
+        }
+    };
+
+    const auto present_video_frame = [&](const glide::dev::DmabufVideoFrame& frame, std::uint64_t presented_frames) {
+        if (!use_atomic_kms) {
+            if (!legacy_output.present(frame)) {
+                glide::log(glide::LogLevel::error, "OpenHD-Glide", legacy_output.last_error());
+                return false;
+            }
+            return true;
+        }
+
+        const bool update_flow = should_update_flow(presented_frames);
+        if (update_flow) {
+            if (options.flow_overlay) {
+                render_flow_overlay();
+            } else {
+                flow_renderer.clear(0.0F, 0.0F, 0.0F, 0.0F, flow_surface);
+            }
+        }
+        if (!compositor.present(frame, update_flow)) {
+            glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
+            return false;
+        }
+        if (update_flow) {
+            update_flow_deadline();
+        }
+        return true;
+    };
+
+#if OPENHD_GLIDE_HAS_CEDAR
+    if (options.native_cedar_video) {
+        glide::video::CedarRtpDecoder cedar;
+        if (!cedar.start(options.view_udp_port, options.preview_width, options.flow_height, 60)) {
+            glide::log(glide::LogLevel::error, "OpenHD-Glide", cedar.last_error());
+            return 1;
+        }
+
+        glide::log(glide::LogLevel::info, "OpenHD-Glide", "native Cedar RTP/H264 decoder running");
+        glide::log(
+            glide::LogLevel::info,
+            "OpenHD-Glide",
+            use_atomic_kms ? "atomic KMS video+Flow compositor running" : "fast legacy KMS video plane running");
+
+        std::uint64_t frames {};
+        std::uint64_t frames_since_log {};
+        auto last_log = std::chrono::steady_clock::now();
+        while (stop_requested == 0) {
+            glide::dev::DmabufVideoFrame frame;
+            if (!cedar.poll(frame)) {
+                if (!cedar.last_error().empty()) {
+                    glide::log(glide::LogLevel::error, "OpenHD-Glide", cedar.last_error());
+                    return 1;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                continue;
+            }
+
+            if (!present_video_frame(frame, frames)) {
+                return 1;
+            }
+            cedar.mark_presented();
+            ++frames;
+            ++frames_since_log;
+
+            const auto now = std::chrono::steady_clock::now();
+            if (now - last_log >= std::chrono::seconds(1)) {
+                const auto elapsed = std::chrono::duration<double>(now - last_log).count();
+                std::ostringstream status;
+                status.setf(std::ios::fixed);
+                status.precision(1);
+                status << "native Cedar " << (use_atomic_kms ? "atomic video+Flow" : "legacy video")
+                       << " fps=" << (static_cast<double>(frames_since_log) / elapsed)
+                       << " total_frames=" << frames;
+                glide::log(glide::LogLevel::info, "OpenHD-Glide", status.str());
+                frames_since_log = 0;
+                last_log = now;
+            }
+        }
+        return 0;
+    }
+#else
+    if (options.native_cedar_video) {
+        glide::log(glide::LogLevel::error, "OpenHD-Glide", "native Cedar decoder support was not found at build time");
+        return 1;
+    }
+#endif
+
+#if OPENHD_GLIDE_HAS_GSTREAMER
     gst_init(nullptr, nullptr);
-    const auto make_pipeline_text = [&](bool force_dmabuf_capture) {
+    struct DecoderPipelineCandidate {
+        const char* name;
+        const char* factory;
+        const char* decoder;
+        const char* output_caps;
+    };
+
+    const auto make_pipeline_text = [&](const DecoderPipelineCandidate& candidate, bool force_dmabuf_capture) {
         std::ostringstream text;
         text
             << "udpsrc port=" << options.view_udp_port
@@ -435,41 +670,60 @@ int run_kms_video_preview(const Options& options)
             << "! rtph264depay "
             << "! h264parse config-interval=-1 "
             << "! video/x-h264,stream-format=byte-stream,alignment=au "
-            << "! v4l2h264dec ";
-        if (force_dmabuf_capture) {
+            << "! " << candidate.decoder << " ";
+        if (force_dmabuf_capture && std::string(candidate.name) == "v4l2h264dec") {
             text << "capture-io-mode=dmabuf ";
         }
         text
             << "! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream "
-            << "! video/x-raw(memory:DMABuf),format=DMA_DRM "
-            << "! appsink name=video-sink sync=false async=false drop=true max-buffers=4 emit-signals=false";
+            << "! ";
+        if (candidate.output_caps[0] != '\0') {
+            text << candidate.output_caps << " ! ";
+        }
+        text << "appsink name=video-sink sync=false async=false drop=true max-buffers=4 emit-signals=false";
         return text.str();
     };
 
+    const std::array<DecoderPipelineCandidate, 2> candidates { {
+        { "v4l2h264dec", "v4l2h264dec", "v4l2h264dec capture-io-mode=dmabuf", "video/x-raw(memory:DMABuf),format=DMA_DRM" },
+        { "omxh264dec", "omxh264dec", "omxh264dec disable-dma-feature=false", "" },
+    } };
+
     GError* error {};
-    const auto forced_pipeline_text = make_pipeline_text(true);
-    auto* pipeline = gst_parse_launch(forced_pipeline_text.c_str(), &error);
-    if (pipeline == nullptr) {
-        glide::log(glide::LogLevel::warning, "OpenHD-Glide", error != nullptr ? error->message : "failed to create forced-DMABUF video preview pipeline");
+    GstElement* pipeline {};
+    std::string selected_pipeline_name;
+    for (const auto& candidate : candidates) {
+        auto* factory = gst_element_factory_find(candidate.factory);
+        if (factory == nullptr) {
+            glide::log(glide::LogLevel::warning, "OpenHD-Glide", std::string("skipping missing decoder element ") + candidate.factory);
+            continue;
+        }
+        gst_object_unref(factory);
+
+        const auto pipeline_text = make_pipeline_text(candidate, false);
+        pipeline = gst_parse_launch(pipeline_text.c_str(), &error);
+        if (pipeline != nullptr && error == nullptr) {
+            selected_pipeline_name = candidate.name;
+            break;
+        }
+
+        glide::log(
+            glide::LogLevel::warning,
+            "OpenHD-Glide",
+            std::string("failed to create video preview pipeline for ") + candidate.name + ": "
+                + (error != nullptr ? error->message : "unknown parse error"));
         if (error != nullptr) {
             g_error_free(error);
             error = nullptr;
         }
-
-        const auto fallback_pipeline_text = make_pipeline_text(false);
-        pipeline = gst_parse_launch(fallback_pipeline_text.c_str(), &error);
-        if (pipeline == nullptr) {
-            glide::log(glide::LogLevel::error, "OpenHD-Glide", error != nullptr ? error->message : "failed to create video preview pipeline");
-            if (error != nullptr) {
-                g_error_free(error);
-            }
-            return 1;
+        if (pipeline != nullptr) {
+            gst_object_unref(pipeline);
+            pipeline = nullptr;
         }
-        glide::log(glide::LogLevel::warning, "OpenHD-Glide", "v4l2h264dec forced DMABUF capture was unavailable; using decoder auto mode");
     }
-    if (error != nullptr) {
-        glide::log(glide::LogLevel::warning, "OpenHD-Glide", error->message);
-        g_error_free(error);
+    if (pipeline == nullptr) {
+        glide::log(glide::LogLevel::error, "OpenHD-Glide", "failed to create any hardware video preview pipeline");
+        return 1;
     }
 
     auto* sink = gst_bin_get_by_name(GST_BIN(pipeline), "video-sink");
@@ -495,8 +749,13 @@ int run_kms_video_preview(const Options& options)
     }
 
     glide::log(glide::LogLevel::info, "OpenHD-Glide", "controller-owned KMS DMABUF video plane running");
+    glide::log(glide::LogLevel::info, "OpenHD-Glide", "selected decoder pipeline=" + selected_pipeline_name);
     glide::log(glide::LogLevel::info, "OpenHD-Glide", "KMS video importer build: forced decoder DMABUF capture + fd-backed memory diagnostics");
     glide::log(glide::LogLevel::info, "OpenHD-Glide", "decoded DMABUF frames are imported directly into DRM and scanned out on a KMS plane");
+    glide::log(
+        glide::LogLevel::info,
+        "OpenHD-Glide",
+        use_atomic_kms ? "atomic KMS video+Flow compositor running" : "fast legacy KMS video plane running");
 
     std::uint64_t frames {};
     std::uint64_t frames_since_log {};
@@ -534,7 +793,10 @@ int run_kms_video_preview(const Options& options)
         }
 
         if (!logged_caps) {
-            glide::log(glide::LogLevel::info, "OpenHD-Glide", "first DMABUF video sample caps=" + caps_to_string(gst_sample_get_caps(sample)));
+            glide::log(glide::LogLevel::info, "OpenHD-Glide", "first decoded video sample caps=" + caps_to_string(gst_sample_get_caps(sample)));
+            if (auto* buffer = gst_sample_get_buffer(sample); buffer != nullptr) {
+                glide::log(glide::LogLevel::info, "OpenHD-Glide", "first decoded video sample memory=" + describe_buffer_memories(buffer));
+            }
             logged_caps = true;
         }
 
@@ -553,7 +815,7 @@ int run_kms_video_preview(const Options& options)
         }
         consecutive_frame_errors = 0;
 
-        if (output.present(frame)) {
+        if (present_video_frame(frame, frames)) {
             if (scanout_sample != nullptr) {
                 gst_sample_unref(scanout_sample);
             }
@@ -561,7 +823,6 @@ int run_kms_video_preview(const Options& options)
             ++frames;
             ++frames_since_log;
         } else {
-            glide::log(glide::LogLevel::error, "OpenHD-Glide", output.last_error());
             gst_sample_unref(sample);
             stop_requested = 1;
             break;
@@ -590,8 +851,12 @@ int run_kms_video_preview(const Options& options)
     gst_object_unref(pipeline);
     return 0;
 #else
+    glide::log(glide::LogLevel::error, "OpenHD-Glide", "--gstreamer-video requested but GStreamer support was not found at build time");
+    return 1;
+#endif
+#else
     (void)options;
-    glide::log(glide::LogLevel::error, "OpenHD-Glide", "--kms-video-preview requires GStreamer and device KMS support");
+    glide::log(glide::LogLevel::error, "OpenHD-Glide", "--kms-video-preview requires device KMS plus native Cedar or GStreamer support");
     return 1;
 #endif
 }

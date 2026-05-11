@@ -67,16 +67,18 @@ sudo ./build-kms/openhd-glide --kms-stack --view-udp-port 5600 --preview-width 1
 Standalone View decode test:
 
 ```sh
-sudo glide-view --udp-video --udp-port 5600
+sudo ./build-kms/glide-view --udp-video --udp-port 5600
 ```
 
 This command does not display video. It should log `first decoded sample ...` and `decoded fps=...` once RTP/H.264
 frames arrive. If those lines do not appear, the sender is not reaching the receiver or the stream caps do not match.
+On Allwinner BSP images, the hardware path may use `omxh264dec` instead of `v4l2h264dec`, and running under `sudo` is
+often required because the cedar and DMA heap device nodes are root-only by default.
 
 Temporary controller-owned KMS video preview:
 
 ```sh
-sudo openhd-glide --kms-video-preview --view-udp-port 5600 --preview-width 1920 --flow-height 1080
+sudo ./build-kms/openhd-glide --kms-video-preview --view-udp-port 5600 --preview-width 1920 --flow-height 1080
 ```
 
 This displays the UDP video without `kmssink` by decoding in `openhd-glide`, requesting DMABUF output from the hardware

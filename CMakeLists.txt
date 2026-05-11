@@ -56,6 +56,11 @@ if(PkgConfig_FOUND)
     pkg_check_modules(GSTREAMER QUIET gstreamer-1.0 gstreamer-app-1.0 gstreamer-allocators-1.0 gstreamer-video-1.0)
 endif()
 
+find_library(CEDAR_VDECODER_LIBRARY NAMES vdecoder)
+find_library(CEDAR_MEMADAPTER_LIBRARY NAMES MemAdapter)
+find_library(CEDAR_VE_LIBRARY NAMES VE)
+find_library(CEDAR_VIDEOENGINE_LIBRARY NAMES videoengine)
+
 if(SDL2_FOUND)
     set(LV_CONF_PATH ${CMAKE_CURRENT_SOURCE_DIR}/src/glide_ui/lv_conf.h CACHE STRING "" FORCE)
     set(LV_CONF_BUILD_DISABLE_EXAMPLES ON CACHE BOOL "" FORCE)
@@ -88,6 +93,7 @@ function(add_glide_executable target_name source_file)
 endfunction()
 
 add_library(glide_dev
+    src/dev/kms_atomic_compositor.cpp
     src/dev/kms_dmabuf_video_plane.cpp
     src/dev/kms_gles_window.cpp
     src/dev/sdl_gles_window.cpp
@@ -192,7 +198,11 @@ else()
 endif()
 
 add_glide_executable(openhd-glide src/openhd_glide/main.cpp)
-target_link_libraries(openhd-glide PRIVATE glide_dev)
+target_sources(openhd-glide PRIVATE src/video/cedar_rtp_decoder.cpp)
+target_link_libraries(openhd-glide PRIVATE glide_dev glide_flow_core)
+if(LIBDRM_FOUND)
+    target_include_directories(openhd-glide PRIVATE ${LIBDRM_INCLUDE_DIRS})
+endif()
 if(OPENHD_GLIDE_DEVICE_KMS)
     target_compile_definitions(openhd-glide PRIVATE OPENHD_GLIDE_DEVICE_KMS=1)
 else()
@@ -205,6 +215,16 @@ if(GSTREAMER_FOUND)
     target_link_directories(openhd-glide PRIVATE ${GSTREAMER_LIBRARY_DIRS})
 else()
     target_compile_definitions(openhd-glide PRIVATE OPENHD_GLIDE_HAS_GSTREAMER=0)
+endif()
+if(CEDAR_VDECODER_LIBRARY AND CEDAR_MEMADAPTER_LIBRARY AND CEDAR_VE_LIBRARY AND CEDAR_VIDEOENGINE_LIBRARY)
+    target_compile_definitions(openhd-glide PRIVATE OPENHD_GLIDE_HAS_CEDAR=1)
+    target_link_libraries(openhd-glide PRIVATE
+        ${CEDAR_VDECODER_LIBRARY}
+        ${CEDAR_MEMADAPTER_LIBRARY}
+        ${CEDAR_VE_LIBRARY}
+        ${CEDAR_VIDEOENGINE_LIBRARY})
+else()
+    target_compile_definitions(openhd-glide PRIVATE OPENHD_GLIDE_HAS_CEDAR=0)
 endif()
 add_glide_executable(glide-view src/glide_view/main.cpp)
 if(GSTREAMER_FOUND)

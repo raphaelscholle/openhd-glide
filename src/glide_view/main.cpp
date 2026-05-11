@@ -108,9 +108,13 @@ GstElement* make_element(const char* factory, const char* name)
 
 GstElement* make_decoder()
 {
-    for (const auto* factory : { "v4l2h264dec", "v4l2slh264dec", "avdec_h264" }) {
+    for (const auto* factory : { "v4l2h264dec", "v4l2slh264dec", "omxh264dec", "avdec_h264" }) {
         if (auto* decoder = gst_element_factory_make(factory, "decoder"); decoder != nullptr) {
-            if (std::string(factory).find("v4l2") != std::string::npos) {
+            if (std::string(factory).find("omx") != std::string::npos) {
+                set_bool_property_if_present(decoder, "disable-dma-feature", false);
+            }
+
+            if (std::string(factory).find("v4l2") != std::string::npos || std::string(factory).find("omx") != std::string::npos) {
                 glide::log(glide::LogLevel::info, "GlideView", std::string("using hardware-oriented decoder ") + factory);
             } else {
                 glide::log(glide::LogLevel::warning, "GlideView", std::string("using software decoder fallback ") + factory);
