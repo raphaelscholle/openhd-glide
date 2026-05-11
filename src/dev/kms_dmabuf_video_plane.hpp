@@ -25,7 +25,7 @@ public:
     KmsDmabufVideoPlane(const KmsDmabufVideoPlane&) = delete;
     KmsDmabufVideoPlane& operator=(const KmsDmabufVideoPlane&) = delete;
 
-    bool create(std::uint32_t requested_width, std::uint32_t requested_height, int preferred_plane_id = -1);
+    bool create(std::uint32_t requested_width, std::uint32_t requested_height, std::uint32_t requested_refresh_hz = 0, int preferred_plane_id = -1);
     bool present(const DmabufVideoFrame& frame);
     const std::string& last_error() const;
 
@@ -61,7 +61,7 @@ private:
     };
 
     bool open_card();
-    bool choose_connector_and_mode(std::uint32_t requested_width, std::uint32_t requested_height);
+    bool choose_connector_and_mode(std::uint32_t requested_width, std::uint32_t requested_height, std::uint32_t requested_refresh_hz);
     bool create_primary_buffer();
     bool choose_video_plane(std::uint32_t drm_format, int preferred_plane_id);
     bool configure_video_plane();

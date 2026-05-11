@@ -101,11 +101,11 @@ KmsDmabufVideoPlane::~KmsDmabufVideoPlane()
     cleanup();
 }
 
-bool KmsDmabufVideoPlane::create(std::uint32_t requested_width, std::uint32_t requested_height, int preferred_plane_id)
+bool KmsDmabufVideoPlane::create(std::uint32_t requested_width, std::uint32_t requested_height, std::uint32_t requested_refresh_hz, int preferred_plane_id)
 {
 #if OPENHD_GLIDE_HAS_KMS_GBM
     preferred_plane_id_ = preferred_plane_id;
-    if (!open_card() || !choose_connector_and_mode(requested_width, requested_height) || !create_primary_buffer()) {
+    if (!open_card() || !choose_connector_and_mode(requested_width, requested_height, requested_refresh_hz) || !create_primary_buffer()) {
         return false;
     }
     return true;
@@ -213,7 +213,7 @@ bool KmsDmabufVideoPlane::open_card()
     return false;
 }
 
-bool KmsDmabufVideoPlane::choose_connector_and_mode(std::uint32_t requested_width, std::uint32_t requested_height)
+bool KmsDmabufVideoPlane::choose_connector_and_mode(std::uint32_t requested_width, std::uint32_t requested_height, std::uint32_t requested_refresh_hz)
 {
     auto* resources = drmModeGetResources(drm_fd_);
     if (resources == nullptr) {
@@ -242,12 +242,31 @@ bool KmsDmabufVideoPlane::choose_connector_and_mode(std::uint32_t requested_widt
     }
 
     drmModeModeInfo selected_mode = chosen_connector->modes[0];
+    bool found_resolution = false;
+    bool found_exact_refresh = false;
     for (int i = 0; i < chosen_connector->count_modes; ++i) {
         const auto& candidate = chosen_connector->modes[i];
-        if (candidate.hdisplay == requested_width && candidate.vdisplay == requested_height) {
+        if (candidate.hdisplay != requested_width || candidate.vdisplay != requested_height) {
+            continue;
+        }
+        if (!found_resolution) {
             selected_mode = candidate;
+            found_resolution = true;
+        }
+        if (requested_refresh_hz != 0 && static_cast<std::uint32_t>(candidate.vrefresh) == requested_refresh_hz) {
+            selected_mode = candidate;
+            found_exact_refresh = true;
             break;
         }
+        if (requested_refresh_hz == 0 && candidate.vrefresh > selected_mode.vrefresh) {
+            selected_mode = candidate;
+        }
+    }
+    if (found_resolution && requested_refresh_hz != 0 && !found_exact_refresh) {
+        last_error_ = "requested refresh rate is unavailable for the selected resolution";
+        drmModeFreeConnector(chosen_connector);
+        drmModeFreeResources(resources);
+        return false;
     }
 
     drmModeEncoder* selected_encoder {};
