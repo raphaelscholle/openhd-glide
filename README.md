@@ -32,6 +32,24 @@ cmake -S . -B build-kms -DCMAKE_BUILD_TYPE=Release -DOPENHD_GLIDE_DEVICE_KMS=ON
 cmake --build build-kms -j$(nproc)
 ```
 
+Or use the device helper script, which configures, builds, and installs the binaries:
+
+```sh
+scripts/compile-install.sh
+```
+
+To install the common build/runtime dependencies first:
+
+```sh
+scripts/compile-install.sh --deps
+```
+
+The helper accepts environment overrides:
+
+```sh
+GLIDE_BUILD_DIR=build-kms GLIDE_INSTALL_PREFIX=/usr/local GLIDE_JOBS=8 scripts/compile-install.sh
+```
+
 On Linux, install `libdrm` development headers to enable real DRM plane discovery. Without `libdrm`, or on non-Linux platforms, the probe builds and reports that DRM discovery is unavailable.
 
 Install OpenGL ES 2.0 development files to enable the first `glide-flow` renderer path. Until the DRM/EGL surface is added, `glide-flow` runs the FPS layout path and prints where the top-right counter will render. Passing `--render-gles` submits the FPS glyphs through GLES and requires a current EGL/GLES context.
@@ -84,6 +102,34 @@ sudo ./build-kms/openhd-glide --kms-video-preview --view-udp-port 5600 --preview
 This displays the UDP video without `kmssink` by decoding in `openhd-glide`, requesting DMABUF output from the hardware
 decoder, importing the decoded FD into DRM, and scanning it out on a KMS video plane. It still uses a black primary
 framebuffer only to keep the CRTC active; Flow and UI should become separate overlay planes above this video plane.
+
+Example run scripts cover the current device modes. Each script takes the UDP video port as its first optional
+argument, defaulting to `5600`; set `GLIDE_WIDTH` and `GLIDE_HEIGHT` to override the default `1920x1080`.
+
+```sh
+# GStreamer/OMX decode, KMS video plane plus Flow overlay at full video rate.
+examples/run-kms-video-gstreamer-flow.sh 5600
+
+# GStreamer/OMX decode, KMS video plane plus Flow overlay capped to 30 fps.
+examples/run-kms-video-gstreamer-flow-30fps.sh 5600
+
+# GStreamer/OMX decode, fastest video-only legacy KMS plane path.
+examples/run-kms-video-gstreamer-video-only.sh 5600
+
+# Native Cedar RTP/H.264 decode, KMS video plane plus Flow overlay.
+examples/run-kms-video-cedar-flow.sh 5600
+
+# Native Cedar RTP/H.264 decode, fastest video-only legacy KMS plane path.
+examples/run-kms-video-cedar-video-only.sh 5600
+
+# Standalone glide-view decode-only test.
+examples/run-glide-view-decode-only.sh 5600
+
+# Multi-process KMS stack smoke test.
+examples/run-kms-stack.sh 5600
+```
+
+Installed helper scripts are placed in `${CMAKE_INSTALL_PREFIX}/share/openhd-glide/examples`.
 
 Send a test pattern from another machine with GStreamer:
 

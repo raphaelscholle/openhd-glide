@@ -269,3 +269,17 @@ install(
         glide-ui
     RUNTIME DESTINATION bin
 )
+
+install(
+    PROGRAMS
+        examples/run-glide-view-decode-only.sh
+        examples/run-kms-stack.sh
+        examples/run-kms-video-cedar-flow.sh
+        examples/run-kms-video-cedar-video-only.sh
+        examples/run-kms-video-gstreamer-flow.sh
+        examples/run-kms-video-gstreamer-flow-30fps.sh
+        examples/run-kms-video-gstreamer-video-only.sh
+        examples/stream-h264-file-to-glide-view.sh
+        examples/stream-videotestsrc-to-glide-view.sh
+    DESTINATION share/openhd-glide/examples
+)
