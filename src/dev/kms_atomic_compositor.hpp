@@ -18,7 +18,7 @@ public:
     KmsAtomicCompositor(const KmsAtomicCompositor&) = delete;
     KmsAtomicCompositor& operator=(const KmsAtomicCompositor&) = delete;
 
-    bool create(std::uint32_t requested_width, std::uint32_t requested_height);
+    bool create(std::uint32_t requested_width, std::uint32_t requested_height, std::uint32_t requested_refresh_hz = 0);
     bool present(const DmabufVideoFrame& video_frame, bool update_flow_frame);
     flow::SurfaceSize surface_size() const;
     const std::string& last_error() const;
@@ -55,7 +55,7 @@ private:
     };
 
     bool open_card();
-    bool choose_connector_and_mode(std::uint32_t requested_width, std::uint32_t requested_height);
+    bool choose_connector_and_mode(std::uint32_t requested_width, std::uint32_t requested_height, std::uint32_t requested_refresh_hz);
     bool create_primary_buffer();
     bool choose_video_plane(std::uint32_t drm_format);
     bool choose_flow_plane();
