@@ -56,6 +56,7 @@ struct Options {
     bool kms_video_preview {};
     std::uint32_t preview_width { 1280 };
     std::uint32_t flow_height { 720 };
+    std::uint32_t display_refresh_hz {};
     std::uint32_t ui_width { 760 };
     std::uint32_t ui_height { 720 };
     std::uint16_t view_udp_port { 5600 };
@@ -95,6 +96,8 @@ Options parse_options(int argc, char** argv)
             options.ui_width = static_cast<std::uint32_t>(std::stoul(argv[++i]));
         } else if (argument == "--flow-height" && i + 1 < argc) {
             options.flow_height = static_cast<std::uint32_t>(std::stoul(argv[++i]));
+        } else if (argument == "--display-refresh-hz" && i + 1 < argc) {
+            options.display_refresh_hz = static_cast<std::uint32_t>(std::stoul(argv[++i]));
         } else if (argument == "--view-udp-port" && i + 1 < argc) {
             options.view_udp_port = static_cast<std::uint16_t>(std::stoul(argv[++i]));
         } else if (argument == "--view-plane-id" && i + 1 < argc) {
@@ -489,12 +492,12 @@ int run_kms_video_preview(const Options& options)
     glide::dev::KmsAtomicCompositor compositor;
     glide::dev::KmsDmabufVideoPlane legacy_output;
     if (use_atomic_kms) {
-        if (!compositor.create(options.preview_width, options.flow_height)) {
+        if (!compositor.create(options.preview_width, options.flow_height, options.display_refresh_hz)) {
             glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
             return 1;
         }
     } else {
-        if (!legacy_output.create(options.preview_width, options.flow_height, options.view_plane_id)) {
+        if (!legacy_output.create(options.preview_width, options.flow_height, options.display_refresh_hz, options.view_plane_id)) {
             glide::log(glide::LogLevel::error, "OpenHD-Glide", legacy_output.last_error());
             return 1;
         }
