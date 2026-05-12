@@ -1,4 +1,5 @@
 #include "dev/kms_atomic_compositor.hpp"
+#include "common/logging.hpp"
 
 #if OPENHD_GLIDE_HAS_KMS_GBM
 #include <EGL/egl.h>
@@ -358,6 +359,25 @@ bool KmsAtomicCompositor::choose_connector_and_mode(std::uint32_t requested_widt
         drmModeFreeConnector(chosen_connector);
         drmModeFreeResources(resources);
         return false;
+    }
+    if (found_resolution) {
+        glide::log(
+            glide::LogLevel::info,
+            "OpenHD-Glide",
+            "atomic KMS mode selected "
+                + std::to_string(selected_mode.hdisplay) + "x" + std::to_string(selected_mode.vdisplay)
+                + "@" + std::to_string(selected_mode.vrefresh)
+                + "Hz on connector " + std::to_string(chosen_connector->connector_id)
+                + (requested_refresh_hz != 0 ? (" (requested " + std::to_string(requested_refresh_hz) + "Hz)") : " (highest refresh auto-selection)"));
+    } else {
+        glide::log(
+            glide::LogLevel::warning,
+            "OpenHD-Glide",
+            "no exact resolution match for requested "
+                + std::to_string(requested_width) + "x" + std::to_string(requested_height)
+                + "; using connector default mode "
+                + std::to_string(selected_mode.hdisplay) + "x" + std::to_string(selected_mode.vdisplay)
+                + "@" + std::to_string(selected_mode.vrefresh) + "Hz");
     }
 
     drmModeEncoder* selected_encoder {};
