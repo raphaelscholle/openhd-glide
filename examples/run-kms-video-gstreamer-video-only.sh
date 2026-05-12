@@ -16,6 +16,7 @@ fi
 PORT="${1:-5600}"
 WIDTH="${GLIDE_WIDTH:-1920}"
 HEIGHT="${GLIDE_HEIGHT:-1080}"
+DISPLAY_HZ="${GLIDE_DISPLAY_HZ:-0}"
 
 exec sudo "$BIN" \
   --kms-video-preview \
@@ -23,4 +24,5 @@ exec sudo "$BIN" \
   --no-flow \
   --view-udp-port "$PORT" \
   --preview-width "$WIDTH" \
-  --flow-height "$HEIGHT"
+  --flow-height "$HEIGHT" \
+  --display-refresh-hz "$DISPLAY_HZ"
