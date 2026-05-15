@@ -68,6 +68,8 @@ if(OPENHD_GLIDE_PREFER_SYSTEM_MESA AND UNIX AND NOT APPLE)
         set(GBM_LIBRARY_DIRS "")
         set(EGL_LIBRARY_DIRS "")
         set(GLESV2_LIBRARY_DIRS "")
+        set(CMAKE_BUILD_RPATH "/usr/lib/aarch64-linux-gnu")
+        set(CMAKE_INSTALL_RPATH "/usr/lib/aarch64-linux-gnu")
     endif()
 endif()
 
