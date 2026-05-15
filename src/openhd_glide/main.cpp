@@ -74,6 +74,7 @@ struct Options {
     bool vblank_wait {};
     bool native_cedar_video {};
     bool async_flow { true };
+    bool flow_debug_solid {};
 };
 
 Options parse_options(int argc, char** argv)
@@ -133,6 +134,8 @@ Options parse_options(int argc, char** argv)
             options.async_flow = true;
         } else if (argument == "--sync-flow") {
             options.async_flow = false;
+        } else if (argument == "--flow-debug-solid") {
+            options.flow_debug_solid = true;
         }
     }
     return options;
@@ -583,6 +586,15 @@ int run_kms_video_preview(const Options& options)
         }
 
         flow_renderer.clear(0.0F, 0.0F, 0.0F, 0.0F, flow_surface);
+        if (options.flow_debug_solid) {
+            flow_renderer.draw_filled_quad(
+                { 0.0F, 0.0F },
+                { static_cast<float>(flow_surface.width), 0.0F },
+                { 0.0F, static_cast<float>(flow_surface.height) },
+                { static_cast<float>(flow_surface.width), static_cast<float>(flow_surface.height) },
+                { .red = 1.0F, .green = 0.0F, .blue = 0.75F, .alpha = 0.55F },
+                flow_surface);
+        }
         link_overview.draw(flow_renderer, flow_surface, simulated_link.sample());
         performance_horizon.draw(flow_renderer, flow_surface, simulated_attitude.sample());
         speed_widget.draw(flow_renderer, flow_surface, simulated_speed.sample());
@@ -615,7 +627,7 @@ int run_kms_video_preview(const Options& options)
             return 1;
         }
 
-        async_flow_thread = std::thread([&compositor, flow_frame_interval, flow_fps = options.flow_fps]() {
+        async_flow_thread = std::thread([&compositor, flow_frame_interval, flow_fps = options.flow_fps, flow_debug_solid = options.flow_debug_solid]() {
             if (!compositor.make_flow_context_current()) {
                 glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
                 stop_requested = 1;
@@ -656,6 +668,15 @@ int run_kms_video_preview(const Options& options)
                     }
 
                     renderer.clear(0.0F, 0.0F, 0.0F, 0.0F, surface);
+                    if (flow_debug_solid) {
+                        renderer.draw_filled_quad(
+                            { 0.0F, 0.0F },
+                            { static_cast<float>(surface.width), 0.0F },
+                            { 0.0F, static_cast<float>(surface.height) },
+                            { static_cast<float>(surface.width), static_cast<float>(surface.height) },
+                            { .red = 1.0F, .green = 0.0F, .blue = 0.75F, .alpha = 0.55F },
+                            surface);
+                    }
                     links.draw(renderer, surface, simulated_link.sample());
                     horizon.draw(renderer, surface, simulated_attitude.sample());
                     speed.draw(renderer, surface, simulated_speed.sample());

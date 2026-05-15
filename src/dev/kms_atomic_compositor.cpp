@@ -1056,7 +1056,7 @@ bool KmsAtomicCompositor::commit(const DmabufVideoFrame& video_frame, std::uint3
         ok = ok && add_optional_range_edge_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "zpos", true, last_error_);
         ok = ok && add_optional_range_edge_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "ZPOS", true, last_error_);
         ok = ok && add_optional_range_edge_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "alpha", true, last_error_);
-        ok = ok && add_optional_enum_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "pixel blend mode", "Pre-multiplied", last_error_);
+        ok = ok && add_optional_enum_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "pixel blend mode", "Coverage", last_error_);
     }
 
     ok = ok && add_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "FB_ID", primary_.framebuffer, last_error_);
