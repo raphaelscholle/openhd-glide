@@ -57,6 +57,7 @@ bool CedarRtpDecoder::poll(glide::dev::DmabufVideoFrame& frame)
 #if OPENHD_GLIDE_HAS_CEDAR
     last_error_.clear();
     access_unit_submitted_this_poll_ = false;
+    bool got_frame {};
     std::uint8_t packet[65536];
     for (;;) {
         const auto received = recv(socket_fd_, packet, sizeof(packet), MSG_DONTWAIT);
@@ -73,11 +74,17 @@ bool CedarRtpDecoder::poll(glide::dev::DmabufVideoFrame& frame)
         if (!handle_rtp_packet(packet, static_cast<std::size_t>(received))) {
             return false;
         }
-        if (access_unit_submitted_this_poll_ && drain_picture(frame)) {
-            return true;
+        if (access_unit_submitted_this_poll_) {
+            if (drain_picture(frame)) {
+                got_frame = true;
+            }
+            access_unit_submitted_this_poll_ = false;
         }
     }
 
+    if (got_frame) {
+        return true;
+    }
     return drain_picture(frame);
 #else
     (void)frame;
@@ -99,6 +106,7 @@ std::string CedarRtpDecoder::stats() const
 #if OPENHD_GLIDE_HAS_CEDAR
     return "rtp_packets=" + std::to_string(packets_)
         + " rtp_sequence_gaps=" + std::to_string(rtp_sequence_gaps_)
+        + " late_or_duplicate_packets=" + std::to_string(late_or_duplicate_packets_)
         + " dropped_incomplete_fragments=" + std::to_string(dropped_incomplete_fragments_)
         + " dropped_waiting_for_idr=" + std::to_string(dropped_waiting_for_idr_)
         + " access_units=" + std::to_string(access_units_)
@@ -223,7 +231,7 @@ bool CedarRtpDecoder::init_socket(std::uint16_t udp_port)
         return false;
     }
 
-    const int receive_buffer = 8 * 1024 * 1024;
+    const int receive_buffer = 32 * 1024 * 1024;
     setsockopt(socket_fd_, SOL_SOCKET, SO_RCVBUF, &receive_buffer, sizeof(receive_buffer));
 
     sockaddr_in address {};
@@ -346,10 +354,17 @@ bool CedarRtpDecoder::append_h264_payload(const std::uint8_t* payload, std::size
         dropping_timestamp_ = false;
     }
 
-    if (have_sequence_ && sequence != expected_sequence_) {
-        ++rtp_sequence_gaps_;
-        reset_access_unit();
-        require_idr_ = true;
+    if (have_sequence_) {
+        const auto sequence_delta = static_cast<std::int16_t>(sequence - expected_sequence_);
+        if (sequence_delta < 0) {
+            ++late_or_duplicate_packets_;
+            return true;
+        }
+        if (sequence_delta > 0) {
+            ++rtp_sequence_gaps_;
+            reset_access_unit();
+            require_idr_ = true;
+        }
     }
     expected_sequence_ = static_cast<std::uint16_t>(sequence + 1U);
     have_sequence_ = true;

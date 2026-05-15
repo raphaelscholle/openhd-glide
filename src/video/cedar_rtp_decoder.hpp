@@ -62,6 +62,7 @@ private:
     VideoPicture* current_picture_ {};
     std::uint64_t packets_ {};
     std::uint64_t rtp_sequence_gaps_ {};
+    std::uint64_t late_or_duplicate_packets_ {};
     std::uint64_t dropped_incomplete_fragments_ {};
     std::uint64_t dropped_waiting_for_idr_ {};
     std::uint64_t access_units_ {};
