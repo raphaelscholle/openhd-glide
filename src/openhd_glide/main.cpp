@@ -69,8 +69,9 @@ struct Options {
     bool vertical_stack {};
     bool flow_overlay { true };
     double flow_fps {};
+    double present_fps {};
     bool atomic_kms {};
-    bool vblank_wait { true };
+    bool vblank_wait {};
     bool native_cedar_video {};
 };
 
@@ -119,8 +120,12 @@ Options parse_options(int argc, char** argv)
             options.flow_overlay = false;
         } else if (argument == "--flow-fps" && i + 1 < argc) {
             options.flow_fps = std::clamp(std::stod(argv[++i]), 0.0, 240.0);
+        } else if (argument == "--present-fps" && i + 1 < argc) {
+            options.present_fps = std::clamp(std::stod(argv[++i]), 0.0, 240.0);
         } else if (argument == "--atomic-kms") {
             options.atomic_kms = true;
+        } else if (argument == "--vblank-wait") {
+            options.vblank_wait = true;
         } else if (argument == "--no-vblank-wait") {
             options.vblank_wait = false;
         }
@@ -775,6 +780,20 @@ int run_kms_video_preview(const Options& options)
     std::uint64_t frames_since_log {};
     std::uint64_t stale_samples_dropped {};
     std::uint64_t stale_samples_dropped_since_log {};
+    const double requested_present_fps = options.present_fps > 0.0
+        ? options.present_fps
+        : static_cast<double>(options.display_refresh_hz);
+    const bool software_present_pacing = !use_atomic_kms && !options.vblank_wait && requested_present_fps > 0.0;
+    const auto present_interval = software_present_pacing
+        ? std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(1.0 / requested_present_fps))
+        : std::chrono::steady_clock::duration::zero();
+    auto next_present = std::chrono::steady_clock::now();
+    if (software_present_pacing) {
+        glide::log(
+            glide::LogLevel::info,
+            "OpenHD-Glide",
+            "legacy video plane software present pacing enabled at " + std::to_string(requested_present_fps) + " fps");
+    }
     auto last_log = std::chrono::steady_clock::now();
     GstSample* scanout_sample {};
     bool logged_caps {};
@@ -813,6 +832,23 @@ int run_kms_video_preview(const Options& options)
             ++stale_samples_dropped;
             ++stale_samples_dropped_since_log;
         }
+        if (software_present_pacing) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now + present_interval < next_present) {
+                next_present = now;
+            }
+            if (now < next_present) {
+                std::this_thread::sleep_until(next_present);
+                while (auto* newer_sample = gst_app_sink_try_pull_sample(GST_APP_SINK(sink), 0)) {
+                    gst_sample_unref(sample);
+                    sample = newer_sample;
+                    ++stale_samples_dropped;
+                    ++stale_samples_dropped_since_log;
+                }
+            } else if (now - next_present > present_interval) {
+                next_present = now;
+            }
+        }
 
         if (!logged_caps) {
             glide::log(glide::LogLevel::info, "OpenHD-Glide", "first decoded video sample caps=" + caps_to_string(gst_sample_get_caps(sample)));
@@ -844,6 +880,9 @@ int run_kms_video_preview(const Options& options)
             scanout_sample = sample;
             ++frames;
             ++frames_since_log;
+            if (software_present_pacing) {
+                next_present += present_interval;
+            }
         } else {
             gst_sample_unref(sample);
             stop_requested = 1;

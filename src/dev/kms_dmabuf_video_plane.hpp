@@ -91,7 +91,7 @@ private:
     std::vector<CachedFramebuffer> framebuffer_cache_;
     std::uint64_t frame_serial_ {};
     std::uint32_t current_framebuffer_ {};
-    bool vblank_wait_enabled_ { true };
+    bool vblank_wait_enabled_ {};
     bool vblank_wait_failed_ {};
     std::string card_path_;
     std::string last_error_;
