@@ -35,6 +35,8 @@ private:
     bool submit_access_unit();
     bool drain_picture(glide::dev::DmabufVideoFrame& frame);
     bool picture_to_frame(VideoPicture* picture, glide::dev::DmabufVideoFrame& frame);
+    void cache_parameter_set(const std::uint8_t* nal, std::size_t size);
+    void append_cached_parameter_sets();
     void reset_access_unit();
     void return_picture(VideoPicture*& picture);
     void cleanup();
@@ -52,12 +54,16 @@ private:
     std::uint32_t fu_timestamp_ {};
     bool access_unit_has_vcl_ {};
     bool dropping_timestamp_ {};
+    bool require_idr_ { true };
     std::uint32_t drop_timestamp_ {};
+    std::vector<std::uint8_t> sps_;
+    std::vector<std::uint8_t> pps_;
     VideoPicture* pending_picture_ {};
     VideoPicture* current_picture_ {};
     std::uint64_t packets_ {};
     std::uint64_t rtp_sequence_gaps_ {};
     std::uint64_t dropped_incomplete_fragments_ {};
+    std::uint64_t dropped_waiting_for_idr_ {};
     std::uint64_t access_units_ {};
     std::uint64_t decoded_frames_ {};
     std::uint64_t dropped_access_units_ {};

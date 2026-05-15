@@ -100,6 +100,7 @@ std::string CedarRtpDecoder::stats() const
     return "rtp_packets=" + std::to_string(packets_)
         + " rtp_sequence_gaps=" + std::to_string(rtp_sequence_gaps_)
         + " dropped_incomplete_fragments=" + std::to_string(dropped_incomplete_fragments_)
+        + " dropped_waiting_for_idr=" + std::to_string(dropped_waiting_for_idr_)
         + " access_units=" + std::to_string(access_units_)
         + " dropped_access_units=" + std::to_string(dropped_access_units_)
         + " decoded_frames=" + std::to_string(decoded_frames_);
@@ -348,6 +349,7 @@ bool CedarRtpDecoder::append_h264_payload(const std::uint8_t* payload, std::size
     if (have_sequence_ && sequence != expected_sequence_) {
         ++rtp_sequence_gaps_;
         reset_access_unit();
+        require_idr_ = true;
     }
     expected_sequence_ = static_cast<std::uint16_t>(sequence + 1U);
     have_sequence_ = true;
@@ -365,13 +367,25 @@ bool CedarRtpDecoder::append_h264_payload(const std::uint8_t* payload, std::size
     const auto nal_type = payload[0] & 0x1FU;
     if (nal_type >= 1 && nal_type <= 23) {
         fu_started_ = false;
+        cache_parameter_set(payload, size);
         if (nal_is_vcl(nal_type)) {
+            if (require_idr_ && nal_type != 5) {
+                reset_access_unit();
+                dropping_timestamp_ = true;
+                drop_timestamp_ = timestamp;
+                ++dropped_waiting_for_idr_;
+                return true;
+            }
             if (!access_unit_has_vcl_ && !first_slice_starts_frame(payload, size)) {
                 reset_access_unit();
                 dropping_timestamp_ = true;
                 drop_timestamp_ = timestamp;
                 ++dropped_incomplete_fragments_;
                 return true;
+            }
+            if (nal_type == 5) {
+                append_cached_parameter_sets();
+                require_idr_ = false;
             }
             access_unit_has_vcl_ = true;
         }
@@ -388,13 +402,25 @@ bool CedarRtpDecoder::append_h264_payload(const std::uint8_t* payload, std::size
                 break;
             }
             const auto stap_nal_type = payload[offset] & 0x1FU;
+            cache_parameter_set(payload + offset, nal_size);
             if (nal_is_vcl(stap_nal_type)) {
+                if (require_idr_ && stap_nal_type != 5) {
+                    reset_access_unit();
+                    dropping_timestamp_ = true;
+                    drop_timestamp_ = timestamp;
+                    ++dropped_waiting_for_idr_;
+                    return true;
+                }
                 if (!access_unit_has_vcl_ && !first_slice_starts_frame(payload + offset, nal_size)) {
                     reset_access_unit();
                     dropping_timestamp_ = true;
                     drop_timestamp_ = timestamp;
                     ++dropped_incomplete_fragments_;
                     return true;
+                }
+                if (stap_nal_type == 5) {
+                    append_cached_parameter_sets();
+                    require_idr_ = false;
                 }
                 access_unit_has_vcl_ = true;
             }
@@ -412,6 +438,13 @@ bool CedarRtpDecoder::append_h264_payload(const std::uint8_t* payload, std::size
         if (start) {
             const auto reconstructed_nal_type = reconstructed & 0x1FU;
             if (nal_is_vcl(reconstructed_nal_type)) {
+                if (require_idr_ && reconstructed_nal_type != 5) {
+                    reset_access_unit();
+                    dropping_timestamp_ = true;
+                    drop_timestamp_ = timestamp;
+                    ++dropped_waiting_for_idr_;
+                    return true;
+                }
                 std::vector<std::uint8_t> first_fragment_nal;
                 first_fragment_nal.reserve(size - 1U);
                 first_fragment_nal.push_back(reconstructed);
@@ -422,6 +455,10 @@ bool CedarRtpDecoder::append_h264_payload(const std::uint8_t* payload, std::size
                     drop_timestamp_ = timestamp;
                     ++dropped_incomplete_fragments_;
                     return true;
+                }
+                if (reconstructed_nal_type == 5) {
+                    append_cached_parameter_sets();
+                    require_idr_ = false;
                 }
                 access_unit_has_vcl_ = true;
             }
@@ -577,6 +614,33 @@ bool CedarRtpDecoder::picture_to_frame(VideoPicture* picture, glide::dev::Dmabuf
     default:
         last_error_ = "unsupported Cedar output pixel format " + std::to_string(picture->ePixelFormat);
         return false;
+    }
+}
+
+void CedarRtpDecoder::cache_parameter_set(const std::uint8_t* nal, std::size_t size)
+{
+    if (nal == nullptr || size == 0) {
+        return;
+    }
+    const auto nal_type = nal[0] & 0x1FU;
+    if (nal_type == 7) {
+        sps_.assign(nal, nal + size);
+    } else if (nal_type == 8) {
+        pps_.assign(nal, nal + size);
+    }
+}
+
+void CedarRtpDecoder::append_cached_parameter_sets()
+{
+    if (!sps_.empty()) {
+        append_aud_if_needed(access_unit_);
+        append_start_code(access_unit_);
+        access_unit_.insert(access_unit_.end(), sps_.begin(), sps_.end());
+    }
+    if (!pps_.empty()) {
+        append_aud_if_needed(access_unit_);
+        append_start_code(access_unit_);
+        access_unit_.insert(access_unit_.end(), pps_.begin(), pps_.end());
     }
 }
 
