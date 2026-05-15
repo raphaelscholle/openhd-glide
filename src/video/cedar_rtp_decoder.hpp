@@ -3,6 +3,7 @@
 #include "dev/kms_dmabuf_video_plane.hpp"
 
 #include <cstdint>
+#include <deque>
 #include <string>
 #include <vector>
 
@@ -60,6 +61,7 @@ private:
     std::vector<std::uint8_t> pps_;
     VideoPicture* pending_picture_ {};
     VideoPicture* current_picture_ {};
+    std::deque<VideoPicture*> ready_pictures_;
     std::uint64_t packets_ {};
     std::uint64_t rtp_sequence_gaps_ {};
     std::uint64_t late_or_duplicate_packets_ {};

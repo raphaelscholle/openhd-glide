@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <sstream>
@@ -165,6 +166,19 @@ std::uint32_t plane_type(int drm_fd, std::uint32_t plane_id)
 bool plane_supports_format(drmModePlane* plane, std::uint32_t format)
 {
     return std::find(plane->formats, plane->formats + plane->count_formats, format) != plane->formats + plane->count_formats;
+}
+
+void configure_mesa_runtime_for_board()
+{
+    if (access("/usr/lib/aarch64-linux-gnu/dri/sun4i-drm_dri.so", R_OK) != 0) {
+        return;
+    }
+    if (std::getenv("LIBGL_DRIVERS_PATH") == nullptr) {
+        setenv("LIBGL_DRIVERS_PATH", "/usr/lib/aarch64-linux-gnu/dri", 0);
+    }
+    if (std::getenv("MESA_LOADER_DRIVER_OVERRIDE") == nullptr) {
+        setenv("MESA_LOADER_DRIVER_OVERRIDE", "sun4i-drm", 0);
+    }
 }
 
 } // namespace
@@ -616,6 +630,8 @@ bool KmsAtomicCompositor::create_flow_surface()
 
 bool KmsAtomicCompositor::create_egl()
 {
+    configure_mesa_runtime_for_board();
+
     auto get_platform_display = reinterpret_cast<PFNEGLGETPLATFORMDISPLAYEXTPROC>(
         eglGetProcAddress("eglGetPlatformDisplayEXT"));
     EGLDisplay display = EGL_NO_DISPLAY;

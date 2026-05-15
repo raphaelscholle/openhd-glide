@@ -16,10 +16,14 @@ fi
 PORT="${1:-5600}"
 WIDTH="${GLIDE_WIDTH:-1920}"
 HEIGHT="${GLIDE_HEIGHT:-1080}"
-FLOW_FPS="${GLIDE_FLOW_FPS:-0}"
+FLOW_FPS="${GLIDE_FLOW_FPS:-1}"
 DISPLAY_HZ="${GLIDE_DISPLAY_HZ:-120}"
 
-exec sudo "$BIN" \
+exec sudo env \
+  LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-/usr/lib/aarch64-linux-gnu}" \
+  LIBGL_DRIVERS_PATH="${LIBGL_DRIVERS_PATH:-/usr/lib/aarch64-linux-gnu/dri}" \
+  MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-sun4i-drm}" \
+  "$BIN" \
   --kms-video-preview \
   --native-cedar-video \
   --view-udp-port "$PORT" \

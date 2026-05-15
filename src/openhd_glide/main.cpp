@@ -68,7 +68,7 @@ struct Options {
     std::string ipc_socket { glide::ipc::default_socket_path };
     bool vertical_stack {};
     bool flow_overlay { true };
-    double flow_fps {};
+    double flow_fps { 1.0 };
     double present_fps {};
     bool atomic_kms {};
     bool vblank_wait {};
@@ -309,6 +309,16 @@ std::string describe_buffer_memories(GstBuffer* buffer)
         description << " mem[" << i << "]={" << describe_memory(gst_buffer_peek_memory(buffer, i)) << "}";
     }
     return description.str();
+}
+
+std::string fourcc_to_string(std::uint32_t format)
+{
+    std::string text(4, ' ');
+    text[0] = static_cast<char>(format & 0xFFU);
+    text[1] = static_cast<char>((format >> 8U) & 0xFFU);
+    text[2] = static_cast<char>((format >> 16U) & 0xFFU);
+    text[3] = static_cast<char>((format >> 24U) & 0xFFU);
+    return text;
 }
 
 int fd_from_memory(GstMemory* memory)
@@ -681,6 +691,7 @@ int run_kms_video_preview(const Options& options)
         std::ostringstream text;
         text
             << "udpsrc port=" << options.view_udp_port
+            << " buffer-size=33554432 "
             << " caps=\"application/x-rtp,media=(string)video,clock-rate=(int)90000,encoding-name=(string)H264,payload=(int)96\" "
             << "! rtph264depay "
             << "! h264parse config-interval=-1 "
@@ -857,7 +868,6 @@ int run_kms_video_preview(const Options& options)
             if (auto* buffer = gst_sample_get_buffer(sample); buffer != nullptr) {
                 glide::log(glide::LogLevel::info, "OpenHD-Glide", "first decoded video sample memory=" + describe_buffer_memories(buffer));
             }
-            logged_caps = true;
         }
 
         glide::dev::DmabufVideoFrame frame;
@@ -872,6 +882,21 @@ int run_kms_video_preview(const Options& options)
                 break;
             }
             continue;
+        }
+        if (!logged_caps) {
+            std::ostringstream layout;
+            layout << "first imported DMABUF layout format=" << fourcc_to_string(frame.drm_format)
+                   << " width=" << frame.width
+                   << " height=" << frame.height
+                   << " planes=" << frame.plane_count;
+            for (std::uint32_t i = 0; i < frame.plane_count; ++i) {
+                layout << " plane" << i
+                       << "{fd=" << frame.fds[i]
+                       << " stride=" << frame.strides[i]
+                       << " offset=" << frame.offsets[i] << "}";
+            }
+            glide::log(glide::LogLevel::info, "OpenHD-Glide", layout.str());
+            logged_caps = true;
         }
         consecutive_frame_errors = 0;
 

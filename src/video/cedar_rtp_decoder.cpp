@@ -18,7 +18,6 @@ extern "C" {
 
 #include <algorithm>
 #include <cerrno>
-#include <chrono>
 #include <cstring>
 #include <iterator>
 #endif
@@ -59,8 +58,6 @@ bool CedarRtpDecoder::poll(glide::dev::DmabufVideoFrame& frame)
     last_error_.clear();
     access_unit_submitted_this_poll_ = false;
     bool got_frame {};
-    std::uint32_t packets_after_frame {};
-    const auto poll_start = std::chrono::steady_clock::now();
     std::uint8_t packet[65536];
     for (;;) {
         const auto received = recv(socket_fd_, packet, sizeof(packet), MSG_DONTWAIT);
@@ -83,13 +80,6 @@ bool CedarRtpDecoder::poll(glide::dev::DmabufVideoFrame& frame)
             }
             access_unit_submitted_this_poll_ = false;
         }
-        if (got_frame) {
-            ++packets_after_frame;
-            const auto elapsed = std::chrono::steady_clock::now() - poll_start;
-            if (packets_after_frame >= 32U || elapsed >= std::chrono::milliseconds(2)) {
-                return true;
-            }
-        }
     }
 
     if (got_frame) {
@@ -106,8 +96,6 @@ void CedarRtpDecoder::mark_presented()
 {
 #if OPENHD_GLIDE_HAS_CEDAR
     return_picture(current_picture_);
-    current_picture_ = pending_picture_;
-    pending_picture_ = nullptr;
 #endif
 }
 
@@ -283,16 +271,16 @@ bool CedarRtpDecoder::init_decoder(std::uint32_t width, std::uint32_t height, st
     stream_info.nHeight = static_cast<int>(height);
     stream_info.nFrameRate = static_cast<int>(fps);
     stream_info.nFrameDuration = fps > 0 ? static_cast<int>(1000000U / fps) : 16667;
-    stream_info.bIsFramePackage = 1;
+    stream_info.bIsFramePackage = 0;
 
     VConfig config {};
     config.eOutputPixelFormat = PIXEL_FORMAT_NV21;
     config.nVbvBufferSize = 16 * 1024 * 1024;
-    config.nFrameBufferNum = 4;
-    config.nDisplayHoldingFrameBufferNum = 1;
+    config.nFrameBufferNum = 10;
+    config.nDisplayHoldingFrameBufferNum = 0;
     config.nDecodeSmoothFrameBufferNum = 0;
     config.bDisable3D = 1;
-    config.bNoBFrames = 0;
+    config.bNoBFrames = 1;
     config.memops = memops_;
     config.veOpsS = veops_;
     config.nVeFreq = 624;
@@ -587,17 +575,27 @@ bool CedarRtpDecoder::drain_picture(glide::dev::DmabufVideoFrame& frame)
 {
     bool got_picture {};
     while (auto* picture = RequestPicture(decoder_, 0)) {
-        return_picture(pending_picture_);
-        pending_picture_ = picture;
+        ready_pictures_.push_back(picture);
         got_picture = true;
+        ++decoded_frames_;
     }
-    if (!got_picture || pending_picture_ == nullptr) {
+    while (ready_pictures_.size() > 6U) {
+        auto* stale_picture = ready_pictures_.front();
+        ready_pictures_.pop_front();
+        return_picture(stale_picture);
+    }
+    if (!got_picture && ready_pictures_.empty()) {
         return false;
     }
-    if (!picture_to_frame(pending_picture_, frame)) {
+    if (current_picture_ != nullptr || ready_pictures_.empty()) {
         return false;
     }
-    ++decoded_frames_;
+
+    current_picture_ = ready_pictures_.front();
+    ready_pictures_.pop_front();
+    if (!picture_to_frame(current_picture_, frame)) {
+        return false;
+    }
     return true;
 }
 
@@ -681,6 +679,11 @@ void CedarRtpDecoder::cleanup()
 {
     return_picture(pending_picture_);
     return_picture(current_picture_);
+    while (!ready_pictures_.empty()) {
+        auto* picture = ready_pictures_.front();
+        ready_pictures_.pop_front();
+        return_picture(picture);
+    }
     if (decoder_ != nullptr) {
         DestroyVideoDecoder(decoder_);
         decoder_ = nullptr;
