@@ -1,6 +1,8 @@
 #include "dev/kms_gles_window.hpp"
 
 #if OPENHD_GLIDE_HAS_KMS_GBM
+#include "common/logging.hpp"
+
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <drm_fourcc.h>
@@ -104,29 +106,30 @@ KmsGlesWindow::~KmsGlesWindow()
     cleanup_drm();
 }
 
-bool KmsGlesWindow::create(std::uint32_t requested_width, std::uint32_t requested_height)
+bool KmsGlesWindow::create(std::uint32_t requested_width, std::uint32_t requested_height, std::uint32_t requested_refresh_hz)
 {
 #if OPENHD_GLIDE_HAS_KMS_GBM
     overlay_mode_ = false;
     return open_card()
-        && choose_connector_and_mode(requested_width, requested_height)
+        && choose_connector_and_mode(requested_width, requested_height, requested_refresh_hz)
         && create_gbm_device()
         && create_egl(false);
 #else
     (void)requested_width;
     (void)requested_height;
+    (void)requested_refresh_hz;
     last_error_ = "KMS/GBM/EGL support was not found at build time";
     return false;
 #endif
 }
 
-bool KmsGlesWindow::create_overlay(std::uint32_t requested_width, std::uint32_t requested_height)
+bool KmsGlesWindow::create_overlay(std::uint32_t requested_width, std::uint32_t requested_height, std::uint32_t requested_refresh_hz)
 {
 #if OPENHD_GLIDE_HAS_KMS_GBM
     overlay_mode_ = true;
     overlay_format_ = DRM_FORMAT_ARGB8888;
     return open_card()
-        && choose_connector_and_mode(requested_width, requested_height)
+        && choose_connector_and_mode(requested_width, requested_height, requested_refresh_hz)
         && choose_overlay_plane(overlay_format_)
         && configure_overlay_plane()
         && create_gbm_device()
@@ -135,6 +138,7 @@ bool KmsGlesWindow::create_overlay(std::uint32_t requested_width, std::uint32_t 
 #else
     (void)requested_width;
     (void)requested_height;
+    (void)requested_refresh_hz;
     last_error_ = "KMS/GBM/EGL support was not found at build time";
     return false;
 #endif
@@ -184,7 +188,7 @@ bool KmsGlesWindow::open_card()
     return false;
 }
 
-bool KmsGlesWindow::choose_connector_and_mode(std::uint32_t requested_width, std::uint32_t requested_height)
+bool KmsGlesWindow::choose_connector_and_mode(std::uint32_t requested_width, std::uint32_t requested_height, std::uint32_t requested_refresh_hz)
 {
     auto* resources = drmModeGetResources(drm_fd_);
     if (resources == nullptr) {
@@ -213,12 +217,50 @@ bool KmsGlesWindow::choose_connector_and_mode(std::uint32_t requested_width, std
     }
 
     drmModeModeInfo selected_mode = chosen_connector->modes[0];
+    bool found_resolution = false;
+    bool found_exact_refresh = false;
     for (int i = 0; i < chosen_connector->count_modes; ++i) {
         const auto& candidate = chosen_connector->modes[i];
-        if (candidate.hdisplay == requested_width && candidate.vdisplay == requested_height) {
+        if (candidate.hdisplay != requested_width || candidate.vdisplay != requested_height) {
+            continue;
+        }
+        if (!found_resolution) {
             selected_mode = candidate;
+            found_resolution = true;
+        }
+        if (requested_refresh_hz != 0 && static_cast<std::uint32_t>(candidate.vrefresh) == requested_refresh_hz) {
+            selected_mode = candidate;
+            found_exact_refresh = true;
             break;
         }
+        if (requested_refresh_hz == 0 && candidate.vrefresh > selected_mode.vrefresh) {
+            selected_mode = candidate;
+        }
+    }
+    if (found_resolution && requested_refresh_hz != 0 && !found_exact_refresh) {
+        last_error_ = "requested refresh rate is unavailable for the selected resolution";
+        drmModeFreeConnector(chosen_connector);
+        drmModeFreeResources(resources);
+        return false;
+    }
+    if (found_resolution) {
+        glide::log(
+            glide::LogLevel::info,
+            "GlideFlow",
+            "KMS mode selected "
+                + std::to_string(selected_mode.hdisplay) + "x" + std::to_string(selected_mode.vdisplay)
+                + "@" + std::to_string(selected_mode.vrefresh)
+                + "Hz on connector " + std::to_string(chosen_connector->connector_id)
+                + (requested_refresh_hz != 0 ? (" (requested " + std::to_string(requested_refresh_hz) + "Hz)") : " (highest refresh auto-selection)"));
+    } else {
+        glide::log(
+            glide::LogLevel::warning,
+            "GlideFlow",
+            "no exact resolution match for requested "
+                + std::to_string(requested_width) + "x" + std::to_string(requested_height)
+                + "; using connector default mode "
+                + std::to_string(selected_mode.hdisplay) + "x" + std::to_string(selected_mode.vdisplay)
+                + "@" + std::to_string(selected_mode.vrefresh) + "Hz");
     }
 
     drmModeEncoder* selected_encoder {};

@@ -42,6 +42,7 @@ struct Options {
     bool stay_alive {};
     bool positioned {};
     bool borderless {};
+    std::uint32_t display_refresh_hz {};
     std::string ipc_socket { glide::ipc::default_socket_path };
 };
 
@@ -88,6 +89,8 @@ Options parse_options(int argc, char** argv)
             options.positioned = true;
         } else if (argument == "--borderless") {
             options.borderless = true;
+        } else if (argument == "--display-refresh-hz" && i + 1 < argc) {
+            options.display_refresh_hz = static_cast<std::uint32_t>(std::stoul(argv[++i]));
         } else if (argument == "--ipc-socket" && i + 1 < argc) {
             options.ipc_socket = argv[++i];
         }
@@ -145,7 +148,7 @@ int main(int argc, char** argv)
     if (options.kms) {
 #if OPENHD_GLIDE_DEVICE_KMS
         glide::log(glide::LogLevel::info, "GlideFlow", "DRM/KMS mode requested");
-        if (!kms_window.create(options.surface.width, options.surface.height)) {
+        if (!kms_window.create(options.surface.width, options.surface.height, options.display_refresh_hz)) {
             glide::log(glide::LogLevel::error, "GlideFlow", kms_window.last_error());
             return 1;
         }

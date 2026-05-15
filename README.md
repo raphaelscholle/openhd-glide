@@ -66,7 +66,7 @@ Install FreeType development files to enable antialiased TrueType OSD text. With
 Target device KMS stack test:
 
 ```sh
-sudo ./build-kms/openhd-glide --kms-stack --preview-width 1920 --flow-height 1080
+sudo ./build-kms/openhd-glide --kms-stack --preview-width 1920 --flow-height 1080 --display-refresh-hz 120
 ```
 
 `--kmd-stack` is accepted as an alias for `--kms-stack`. The current device path starts the three workers and IPC,
@@ -79,7 +79,7 @@ Unix-socket FD passing so `glide-view` can hand decoded DMABUFs to `openhd-glide
 buffers and programs KMS planes.
 
 ```sh
-sudo ./build-kms/openhd-glide --kms-stack --view-udp-port 5600 --preview-width 1920 --flow-height 1080
+sudo ./build-kms/openhd-glide --kms-stack --view-udp-port 5600 --preview-width 1920 --flow-height 1080 --display-refresh-hz 120
 ```
 
 Standalone View decode test:
@@ -105,6 +105,7 @@ framebuffer only to keep the CRTC active; Flow and UI should become separate ove
 
 Example run scripts cover the current device modes. Each script takes the UDP video port as its first optional
 argument, defaulting to `5600`; set `GLIDE_WIDTH` and `GLIDE_HEIGHT` to override the default `1920x1080`.
+Device KMS scripts default to `GLIDE_DISPLAY_HZ=120`; override it if the panel should use a different mode.
 
 ```sh
 # GStreamer/OMX decode, KMS video plane plus Flow overlay at full video rate.

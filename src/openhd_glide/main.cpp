@@ -195,7 +195,7 @@ std::vector<std::string> view_args(const char* executable, const Options& option
 
 std::vector<std::string> kms_flow_args(const char* executable, const Options& options)
 {
-    return {
+    auto args = std::vector<std::string> {
         executable,
         "--kms",
         "--stay-alive",
@@ -206,6 +206,11 @@ std::vector<std::string> kms_flow_args(const char* executable, const Options& op
         "--ipc-socket",
         options.ipc_socket,
     };
+    if (options.display_refresh_hz != 0) {
+        args.emplace_back("--display-refresh-hz");
+        args.emplace_back(std::to_string(options.display_refresh_hz));
+    }
+    return args;
 }
 
 std::vector<std::string> headless_ui_args(const char* executable, const Options& options)
@@ -1047,7 +1052,13 @@ int run_kms_stack(char* argv0, const Options& options)
         glide::log(glide::LogLevel::warning, "OpenHD-Glide", "--view-connector-id is ignored until openhd-glide owns video plane import");
     }
     std::cout << "  glide-flow drm/kms mode width=" << options.preview_width
-              << " height=" << options.flow_height << '\n'
+              << " height=" << options.flow_height;
+    if (options.display_refresh_hz != 0) {
+        std::cout << " refresh=" << options.display_refresh_hz << "Hz";
+    } else {
+        std::cout << " refresh=highest available";
+    }
+    std::cout << '\n'
               << "  glide-ui   headless LVGL control worker until shared-buffer UI backend exists\n"
               << "  ipc        " << options.ipc_socket << '\n';
 

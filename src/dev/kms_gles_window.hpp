@@ -15,15 +15,15 @@ public:
     KmsGlesWindow(const KmsGlesWindow&) = delete;
     KmsGlesWindow& operator=(const KmsGlesWindow&) = delete;
 
-    bool create(std::uint32_t requested_width, std::uint32_t requested_height);
-    bool create_overlay(std::uint32_t requested_width, std::uint32_t requested_height);
+    bool create(std::uint32_t requested_width, std::uint32_t requested_height, std::uint32_t requested_refresh_hz = 0);
+    bool create_overlay(std::uint32_t requested_width, std::uint32_t requested_height, std::uint32_t requested_refresh_hz = 0);
     void swap();
     flow::SurfaceSize surface_size() const;
     const std::string& last_error() const;
 
 private:
     bool open_card();
-    bool choose_connector_and_mode(std::uint32_t requested_width, std::uint32_t requested_height);
+    bool choose_connector_and_mode(std::uint32_t requested_width, std::uint32_t requested_height, std::uint32_t requested_refresh_hz);
     bool choose_overlay_plane(std::uint32_t format);
     bool configure_overlay_plane();
     bool create_gbm_device();

@@ -16,9 +16,11 @@ fi
 PORT="${1:-5600}"
 WIDTH="${GLIDE_WIDTH:-1920}"
 HEIGHT="${GLIDE_HEIGHT:-1080}"
+DISPLAY_HZ="${GLIDE_DISPLAY_HZ:-120}"
 
 exec sudo "$BIN" \
   --kms-stack \
   --view-udp-port "$PORT" \
   --preview-width "$WIDTH" \
-  --flow-height "$HEIGHT"
+  --flow-height "$HEIGHT" \
+  --display-refresh-hz "$DISPLAY_HZ"
