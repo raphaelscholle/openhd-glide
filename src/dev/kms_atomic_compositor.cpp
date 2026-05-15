@@ -464,6 +464,8 @@ bool KmsAtomicCompositor::publish_solid_flow_frame(std::uint32_t argb)
             static_cast<unsigned char*>(solid_flow_.map) + static_cast<std::size_t>(y) * solid_flow_.pitch);
         std::fill(row, row + surface_.width, argb);
     }
+    msync(solid_flow_.map, solid_flow_.size, MS_SYNC);
+    drmModeDirtyFB(drm_fd_, solid_flow_.framebuffer, nullptr, 0);
 
     std::lock_guard<std::mutex> lock(flow_framebuffer_mutex_);
     if (pending_flow_framebuffer_ != 0 && !pending_flow_is_solid_dumb_) {
