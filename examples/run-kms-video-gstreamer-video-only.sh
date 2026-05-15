@@ -16,7 +16,7 @@ fi
 PORT="${1:-5600}"
 WIDTH="${GLIDE_WIDTH:-1920}"
 HEIGHT="${GLIDE_HEIGHT:-1080}"
-DISPLAY_HZ="${GLIDE_DISPLAY_HZ:-0}"
+DISPLAY_HZ="${GLIDE_DISPLAY_HZ:-120}"
 
 exec sudo "$BIN" \
   --kms-video-preview \

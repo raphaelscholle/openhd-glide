@@ -27,6 +27,7 @@ public:
 
     bool create(std::uint32_t requested_width, std::uint32_t requested_height, std::uint32_t requested_refresh_hz = 0, int preferred_plane_id = -1);
     bool present(const DmabufVideoFrame& frame);
+    void set_vblank_wait_enabled(bool enabled);
     const std::string& last_error() const;
 
 private:
@@ -69,6 +70,7 @@ private:
     bool make_frame_key(const DmabufVideoFrame& frame, FrameKey& key);
     ImportedFramebuffer* find_or_import_cached_framebuffer(const DmabufVideoFrame& frame);
     void evict_cached_framebuffer_if_needed();
+    void wait_for_vblank();
     void destroy_imported(ImportedFramebuffer& imported);
     void destroy_framebuffer_cache();
     void destroy_primary_buffer();
@@ -89,6 +91,8 @@ private:
     std::vector<CachedFramebuffer> framebuffer_cache_;
     std::uint64_t frame_serial_ {};
     std::uint32_t current_framebuffer_ {};
+    bool vblank_wait_enabled_ { true };
+    bool vblank_wait_failed_ {};
     std::string card_path_;
     std::string last_error_;
 };

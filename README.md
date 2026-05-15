@@ -96,12 +96,13 @@ often required because the cedar and DMA heap device nodes are root-only by defa
 Temporary controller-owned KMS video preview:
 
 ```sh
-sudo ./build-kms/openhd-glide --kms-video-preview --view-udp-port 5600 --preview-width 1920 --flow-height 1080
+sudo ./build-kms/openhd-glide --kms-video-preview --gstreamer-video --no-flow --view-udp-port 5600 --preview-width 1920 --flow-height 1080 --display-refresh-hz 120
 ```
 
-This displays the UDP video without `kmssink` by decoding in `openhd-glide`, requesting DMABUF output from the hardware
-decoder, importing the decoded FD into DRM, and scanning it out on a KMS video plane. It still uses a black primary
-framebuffer only to keep the CRTC active; Flow and UI should become separate overlay planes above this video plane.
+This displays the UDP video without `kmssink` by decoding through GStreamer in `openhd-glide`, requesting DMABUF output
+from the hardware decoder, importing the decoded FD into DRM, and scanning it out on a KMS video plane. It still uses a
+black primary framebuffer only to keep the CRTC active; Flow and UI should become separate overlay planes above this
+video plane. Native Cedar remains available only through the explicit `--native-cedar-video` flag.
 
 Example run scripts cover the current device modes. Each script takes the UDP video port as its first optional
 argument, defaulting to `5600`; set `GLIDE_WIDTH` and `GLIDE_HEIGHT` to override the default `1920x1080`.
@@ -117,10 +118,10 @@ examples/run-kms-video-gstreamer-flow-30fps.sh 5600
 # GStreamer/OMX decode, fastest video-only legacy KMS plane path.
 examples/run-kms-video-gstreamer-video-only.sh 5600
 
-# Native Cedar RTP/H.264 decode, KMS video plane plus Flow overlay.
+# Native Cedar RTP/H.264 decode debugging path, KMS video plane plus Flow overlay.
 examples/run-kms-video-cedar-flow.sh 5600
 
-# Native Cedar RTP/H.264 decode, fastest video-only legacy KMS plane path.
+# Native Cedar RTP/H.264 decode debugging path, fastest video-only legacy KMS plane path.
 examples/run-kms-video-cedar-video-only.sh 5600
 
 # Standalone glide-view decode-only test.

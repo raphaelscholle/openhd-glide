@@ -70,11 +70,8 @@ struct Options {
     bool flow_overlay { true };
     double flow_fps {};
     bool atomic_kms {};
-#if OPENHD_GLIDE_HAS_CEDAR
-    bool native_cedar_video { true };
-#else
+    bool vblank_wait { true };
     bool native_cedar_video {};
-#endif
 };
 
 Options parse_options(int argc, char** argv)
@@ -124,6 +121,8 @@ Options parse_options(int argc, char** argv)
             options.flow_fps = std::clamp(std::stod(argv[++i]), 0.0, 240.0);
         } else if (argument == "--atomic-kms") {
             options.atomic_kms = true;
+        } else if (argument == "--no-vblank-wait") {
+            options.vblank_wait = false;
         }
     }
     return options;
@@ -506,6 +505,7 @@ int run_kms_video_preview(const Options& options)
             glide::log(glide::LogLevel::error, "OpenHD-Glide", legacy_output.last_error());
             return 1;
         }
+        legacy_output.set_vblank_wait_enabled(options.vblank_wait);
     }
 
     glide::flow::GlesTextRenderer flow_renderer;
@@ -688,7 +688,7 @@ int run_kms_video_preview(const Options& options)
         if (candidate.output_caps[0] != '\0') {
             text << candidate.output_caps << " ! ";
         }
-        text << "appsink name=video-sink sync=false async=false drop=true max-buffers=4 emit-signals=false";
+        text << "appsink name=video-sink sync=false async=false drop=true max-buffers=1 emit-signals=false";
         return text.str();
     };
 
@@ -764,9 +764,17 @@ int run_kms_video_preview(const Options& options)
         glide::LogLevel::info,
         "OpenHD-Glide",
         use_atomic_kms ? "atomic KMS video+Flow compositor running" : "fast legacy KMS video plane running");
+    if (!use_atomic_kms) {
+        glide::log(
+            glide::LogLevel::info,
+            "OpenHD-Glide",
+            options.vblank_wait ? "legacy video plane updates are paced to DRM vblank" : "legacy video plane vblank pacing is disabled");
+    }
 
     std::uint64_t frames {};
     std::uint64_t frames_since_log {};
+    std::uint64_t stale_samples_dropped {};
+    std::uint64_t stale_samples_dropped_since_log {};
     auto last_log = std::chrono::steady_clock::now();
     GstSample* scanout_sample {};
     bool logged_caps {};
@@ -798,6 +806,12 @@ int run_kms_video_preview(const Options& options)
         auto* sample = gst_app_sink_try_pull_sample(GST_APP_SINK(sink), GST_SECOND / 20);
         if (sample == nullptr) {
             continue;
+        }
+        while (auto* newer_sample = gst_app_sink_try_pull_sample(GST_APP_SINK(sink), 0)) {
+            gst_sample_unref(sample);
+            sample = newer_sample;
+            ++stale_samples_dropped;
+            ++stale_samples_dropped_since_log;
         }
 
         if (!logged_caps) {
@@ -843,9 +857,12 @@ int run_kms_video_preview(const Options& options)
             status.setf(std::ios::fixed);
             status.precision(1);
             status << "KMS DMABUF video plane fps=" << (static_cast<double>(frames_since_log) / elapsed)
-                   << " total_frames=" << frames;
+                   << " total_frames=" << frames
+                   << " stale_samples_dropped=" << stale_samples_dropped_since_log
+                   << " total_stale_samples_dropped=" << stale_samples_dropped;
             glide::log(glide::LogLevel::info, "OpenHD-Glide", status.str());
             frames_since_log = 0;
+            stale_samples_dropped_since_log = 0;
             last_log = now;
         }
     }

@@ -157,11 +157,17 @@ bool KmsDmabufVideoPlane::present(const DmabufVideoFrame& frame)
     }
 
     current_framebuffer_ = imported->framebuffer;
+    wait_for_vblank();
     return true;
 #else
     (void)frame;
     return false;
 #endif
+}
+
+void KmsDmabufVideoPlane::set_vblank_wait_enabled(bool enabled)
+{
+    vblank_wait_enabled_ = enabled;
 }
 
 const std::string& KmsDmabufVideoPlane::last_error() const
@@ -587,6 +593,25 @@ void KmsDmabufVideoPlane::evict_cached_framebuffer_if_needed()
     if (victim != framebuffer_cache_.end()) {
         destroy_imported(victim->imported);
         framebuffer_cache_.erase(victim);
+    }
+}
+
+void KmsDmabufVideoPlane::wait_for_vblank()
+{
+    if (!vblank_wait_enabled_ || vblank_wait_failed_ || drm_fd_ < 0) {
+        return;
+    }
+
+    drmVBlank vblank {};
+    vblank.request.type = DRM_VBLANK_RELATIVE;
+    if (crtc_index_ > 0) {
+        vblank.request.type = static_cast<drmVBlankSeqType>(
+            vblank.request.type | ((crtc_index_ << DRM_VBLANK_HIGH_CRTC_SHIFT) & DRM_VBLANK_HIGH_CRTC_MASK));
+    }
+    vblank.request.sequence = 1;
+    if (drmWaitVBlank(drm_fd_, &vblank) != 0) {
+        vblank_wait_failed_ = true;
+        glide::log(glide::LogLevel::warning, "OpenHD-Glide", "DRM vblank wait failed; continuing with immediate plane updates" + errno_suffix());
     }
 }
 
