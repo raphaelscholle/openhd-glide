@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,9 @@ public:
 
     bool create(std::uint32_t requested_width, std::uint32_t requested_height, std::uint32_t requested_refresh_hz = 0);
     bool present(const DmabufVideoFrame& video_frame, bool update_flow_frame);
+    bool make_flow_context_current();
+    bool release_flow_context();
+    bool publish_rendered_flow_frame();
     flow::SurfaceSize surface_size() const;
     const std::string& last_error() const;
 
@@ -96,6 +100,9 @@ private:
     void* egl_surface_ {};
     void* current_flow_bo_ {};
     std::uint32_t current_flow_framebuffer_ {};
+    void* pending_flow_bo_ {};
+    std::uint32_t pending_flow_framebuffer_ {};
+    std::mutex flow_framebuffer_mutex_;
     std::vector<CachedFramebuffer> video_framebuffer_cache_;
     std::uint64_t frame_serial_ {};
     std::string card_path_;

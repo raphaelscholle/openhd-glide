@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <mutex>
 #include <sstream>
 #endif
 
@@ -314,14 +315,21 @@ bool KmsAtomicCompositor::present(const DmabufVideoFrame& video_frame, bool upda
         return false;
     }
 
-    if (current_flow_framebuffer_ == 0) {
-        update_flow_frame = true;
-    }
-
     std::uint32_t flow_framebuffer { current_flow_framebuffer_ };
     void* flow_bo {};
     if (update_flow_frame && !lock_flow_framebuffer(flow_framebuffer, flow_bo)) {
         return false;
+    }
+    if (!update_flow_frame) {
+        std::lock_guard<std::mutex> lock(flow_framebuffer_mutex_);
+        if (pending_flow_framebuffer_ != 0) {
+            flow_framebuffer = pending_flow_framebuffer_;
+            flow_bo = pending_flow_bo_;
+            pending_flow_framebuffer_ = 0;
+            pending_flow_bo_ = nullptr;
+        } else {
+            flow_framebuffer = current_flow_framebuffer_;
+        }
     }
 
     if (!commit(video_frame, video->framebuffer, flow_framebuffer)) {
@@ -345,6 +353,69 @@ bool KmsAtomicCompositor::present(const DmabufVideoFrame& video_frame, bool upda
     return true;
 #else
     (void)video_frame;
+    return false;
+#endif
+}
+
+bool KmsAtomicCompositor::make_flow_context_current()
+{
+#if OPENHD_GLIDE_HAS_KMS_GBM
+    auto display = static_cast<EGLDisplay>(egl_display_);
+    auto surface = static_cast<EGLSurface>(egl_surface_);
+    auto context = static_cast<EGLContext>(egl_context_);
+    if (display == EGL_NO_DISPLAY || surface == EGL_NO_SURFACE || context == EGL_NO_CONTEXT) {
+        last_error_ = "Flow EGL context is unavailable";
+        return false;
+    }
+    if (eglMakeCurrent(display, surface, surface, context) != EGL_TRUE) {
+        last_error_ = egl_error_message("failed to make Flow EGL context current");
+        return false;
+    }
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool KmsAtomicCompositor::release_flow_context()
+{
+#if OPENHD_GLIDE_HAS_KMS_GBM
+    auto display = static_cast<EGLDisplay>(egl_display_);
+    if (display == EGL_NO_DISPLAY) {
+        return true;
+    }
+    if (eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT) != EGL_TRUE) {
+        last_error_ = egl_error_message("failed to release Flow EGL context");
+        return false;
+    }
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool KmsAtomicCompositor::publish_rendered_flow_frame()
+{
+#if OPENHD_GLIDE_HAS_KMS_GBM
+    std::uint32_t framebuffer {};
+    void* bo {};
+    if (!lock_flow_framebuffer(framebuffer, bo)) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(flow_framebuffer_mutex_);
+    if (pending_flow_framebuffer_ != 0) {
+        drmModeRmFB(drm_fd_, pending_flow_framebuffer_);
+        pending_flow_framebuffer_ = 0;
+    }
+    if (pending_flow_bo_ != nullptr) {
+        gbm_surface_release_buffer(static_cast<gbm_surface*>(gbm_surface_), static_cast<gbm_bo*>(pending_flow_bo_));
+        pending_flow_bo_ = nullptr;
+    }
+    pending_flow_framebuffer_ = framebuffer;
+    pending_flow_bo_ = bo;
+    return true;
+#else
     return false;
 #endif
 }
@@ -1010,16 +1081,18 @@ bool KmsAtomicCompositor::commit(const DmabufVideoFrame& video_frame, std::uint3
     ok = ok && add_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_W", surface_.width, last_error_);
     ok = ok && add_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_H", surface_.height, last_error_);
 
-    ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "FB_ID", flow_framebuffer, last_error_);
-    ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_ID", crtc_id_, last_error_);
-    ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_X", 0, last_error_);
-    ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_Y", 0, last_error_);
-    ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_W", surface_.width << 16U, last_error_);
-    ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_H", surface_.height << 16U, last_error_);
-    ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_X", 0, last_error_);
-    ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_Y", 0, last_error_);
-    ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_W", surface_.width, last_error_);
-    ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_H", surface_.height, last_error_);
+    if (flow_framebuffer != 0) {
+        ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "FB_ID", flow_framebuffer, last_error_);
+        ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_ID", crtc_id_, last_error_);
+        ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_X", 0, last_error_);
+        ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_Y", 0, last_error_);
+        ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_W", surface_.width << 16U, last_error_);
+        ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_H", surface_.height << 16U, last_error_);
+        ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_X", 0, last_error_);
+        ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_Y", 0, last_error_);
+        ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_W", surface_.width, last_error_);
+        ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_H", surface_.height, last_error_);
+    }
 
     if (!ok) {
         drmModeAtomicFree(request);
@@ -1100,6 +1173,14 @@ void KmsAtomicCompositor::cleanup()
     if (original_crtc_ != nullptr) {
         drmModeFreeCrtc(static_cast<drmModeCrtc*>(original_crtc_));
         original_crtc_ = nullptr;
+    }
+    if (pending_flow_framebuffer_ != 0 && drm_fd_ >= 0) {
+        drmModeRmFB(drm_fd_, pending_flow_framebuffer_);
+        pending_flow_framebuffer_ = 0;
+    }
+    if (pending_flow_bo_ != nullptr && gbm_surface_ != nullptr) {
+        gbm_surface_release_buffer(static_cast<gbm_surface*>(gbm_surface_), static_cast<gbm_bo*>(pending_flow_bo_));
+        pending_flow_bo_ = nullptr;
     }
     if (current_flow_framebuffer_ != 0 && drm_fd_ >= 0) {
         drmModeRmFB(drm_fd_, current_flow_framebuffer_);

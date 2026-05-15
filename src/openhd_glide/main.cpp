@@ -73,6 +73,7 @@ struct Options {
     bool atomic_kms {};
     bool vblank_wait {};
     bool native_cedar_video {};
+    bool async_flow { true };
 };
 
 Options parse_options(int argc, char** argv)
@@ -128,6 +129,10 @@ Options parse_options(int argc, char** argv)
             options.vblank_wait = true;
         } else if (argument == "--no-vblank-wait") {
             options.vblank_wait = false;
+        } else if (argument == "--async-flow") {
+            options.async_flow = true;
+        } else if (argument == "--sync-flow") {
+            options.async_flow = false;
         }
     }
     return options;
@@ -523,6 +528,19 @@ int run_kms_video_preview(const Options& options)
         legacy_output.set_vblank_wait_enabled(options.vblank_wait);
     }
 
+    const bool async_flow = use_atomic_kms && options.flow_overlay && options.async_flow;
+    std::thread async_flow_thread;
+    struct ScopedThreadJoin {
+        std::thread& thread;
+        ~ScopedThreadJoin()
+        {
+            if (thread.joinable()) {
+                stop_requested = 1;
+                thread.join();
+            }
+        }
+    } async_flow_join { async_flow_thread };
+
     glide::flow::GlesTextRenderer flow_renderer;
     glide::flow::FpsCounter flow_fps_counter;
     glide::flow::FpsOverlay flow_fps_overlay;
@@ -591,6 +609,89 @@ int run_kms_video_preview(const Options& options)
         }
     };
 
+    if (async_flow) {
+        if (!compositor.release_flow_context()) {
+            glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
+            return 1;
+        }
+
+        async_flow_thread = std::thread([&compositor, flow_frame_interval, flow_fps = options.flow_fps]() {
+            if (!compositor.make_flow_context_current()) {
+                glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
+                stop_requested = 1;
+                return;
+            }
+
+            {
+                glide::flow::GlesTextRenderer renderer;
+                glide::flow::FpsCounter fps_counter;
+                glide::flow::FpsOverlay fps_overlay;
+                glide::flow::AltitudeWidgetRenderer altitude;
+                glide::flow::SimulatedAltitude simulated_altitude;
+                glide::flow::SpeedWidgetRenderer speed;
+                glide::flow::SimulatedSpeed simulated_speed;
+                glide::flow::LinkOverviewRenderer links;
+                glide::flow::SimulatedLinkOverview simulated_link;
+                glide::flow::PerformanceHorizon horizon;
+                glide::flow::SimulatedAttitude simulated_attitude;
+                auto surface = compositor.surface_size();
+                auto fps_placement = fps_overlay.layout(0.0, surface);
+                bool runtime_logged {};
+                auto next_frame = std::chrono::steady_clock::now();
+
+                while (stop_requested == 0) {
+                    surface = compositor.surface_size();
+                    if (!runtime_logged) {
+                        glide::log(glide::LogLevel::info, "OpenHD-Glide", renderer.runtime_description());
+                        if (renderer.likely_software_renderer()) {
+                            glide::log(glide::LogLevel::warning, "OpenHD-Glide", "Flow OpenGL ES renderer looks like a software fallback");
+                        } else {
+                            glide::log(glide::LogLevel::info, "OpenHD-Glide", "Flow OpenGL ES renderer appears hardware accelerated");
+                        }
+                        runtime_logged = true;
+                    }
+
+                    if (const auto fps = fps_counter.frame()) {
+                        fps_placement = fps_overlay.layout(*fps, surface);
+                    }
+
+                    renderer.clear(0.0F, 0.0F, 0.0F, 0.0F, surface);
+                    links.draw(renderer, surface, simulated_link.sample());
+                    horizon.draw(renderer, surface, simulated_attitude.sample());
+                    speed.draw(renderer, surface, simulated_speed.sample());
+                    altitude.draw(renderer, surface, simulated_altitude.sample());
+                    renderer.draw(fps_placement, surface);
+
+                    if (!compositor.publish_rendered_flow_frame()) {
+                        glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
+                        stop_requested = 1;
+                        break;
+                    }
+
+                    if (flow_fps > 0.0) {
+                        next_frame += flow_frame_interval;
+                        const auto now = std::chrono::steady_clock::now();
+                        if (now + flow_frame_interval < next_frame) {
+                            next_frame = now + flow_frame_interval;
+                        }
+                        if (now < next_frame) {
+                            std::this_thread::sleep_until(next_frame);
+                        }
+                    } else {
+                        std::this_thread::yield();
+                    }
+                }
+            }
+
+            compositor.release_flow_context();
+        });
+
+        glide::log(
+            glide::LogLevel::info,
+            "OpenHD-Glide",
+            "Flow overlay rendering is decoupled from video presentation at " + std::to_string(options.flow_fps) + " fps");
+    }
+
     const auto present_video_frame = [&](const glide::dev::DmabufVideoFrame& frame, std::uint64_t presented_frames) {
         if (!use_atomic_kms) {
             if (!legacy_output.present(frame)) {
@@ -600,7 +701,7 @@ int run_kms_video_preview(const Options& options)
             return true;
         }
 
-        const bool update_flow = should_update_flow(presented_frames);
+        const bool update_flow = !async_flow && should_update_flow(presented_frames);
         if (update_flow) {
             if (options.flow_overlay) {
                 render_flow_overlay();
