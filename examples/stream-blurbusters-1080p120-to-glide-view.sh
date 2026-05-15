@@ -181,7 +181,11 @@ if [ -z "$RESTART_SECONDS" ] && [ -n "$DISCOVER_INFO" ]; then
   fi
 fi
 if [ -z "$RESTART_SECONDS" ]; then
-  RESTART_SECONDS="40"
+  if [ "$VIDEO_FILE" = "$DEFAULT_VIDEO_FILE" ]; then
+    RESTART_SECONDS="34"
+  else
+    RESTART_SECONDS="40"
+  fi
 fi
 if [ "$RESTART_SECONDS" = "0" ]; then
   RESTART_SECONDS=""
