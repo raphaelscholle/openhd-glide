@@ -21,6 +21,7 @@
 #include <atomic>
 #include <array>
 #include <chrono>
+#include <cctype>
 #include <csignal>
 #include <cstdint>
 #include <iostream>
@@ -61,6 +62,7 @@ struct Options {
     std::uint32_t ui_width { 760 };
     std::uint32_t ui_height { 720 };
     std::uint16_t view_udp_port { 5600 };
+    std::string view_udp_codec { "h264" };
     int view_plane_id { -1 };
     int flow_plane_id { -1 };
     int view_connector_id { -1 };
@@ -102,6 +104,9 @@ Options parse_options(int argc, char** argv)
             options.display_refresh_hz = static_cast<std::uint32_t>(std::stoul(argv[++i]));
         } else if (argument == "--view-udp-port" && i + 1 < argc) {
             options.view_udp_port = static_cast<std::uint16_t>(std::stoul(argv[++i]));
+        } else if (argument == "--view-udp-codec" && i + 1 < argc) {
+            options.view_udp_codec = argv[++i];
+            std::transform(options.view_udp_codec.begin(), options.view_udp_codec.end(), options.view_udp_codec.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         } else if (argument == "--view-plane-id" && i + 1 < argc) {
             options.view_plane_id = std::stoi(argv[++i]);
         } else if (argument == "--flow-plane-id" && i + 1 < argc) {
@@ -832,17 +837,26 @@ int run_kms_video_preview(const Options& options)
         const char* output_caps;
     };
 
+    const bool use_h265 = options.view_udp_codec == "h265" || options.view_udp_codec == "hevc";
+    const bool use_h264 = options.view_udp_codec == "h264";
+    if (!use_h264 && !use_h265) {
+        glide::log(glide::LogLevel::error, "OpenHD-Glide", "unsupported --view-udp-codec value; use h264 or h265");
+        return 1;
+    }
+
     const auto make_pipeline_text = [&](const DecoderPipelineCandidate& candidate, bool force_dmabuf_capture) {
         std::ostringstream text;
         text
             << "udpsrc port=" << options.view_udp_port
             << " buffer-size=33554432 "
-            << " caps=\"application/x-rtp,media=(string)video,clock-rate=(int)90000,encoding-name=(string)H264,payload=(int)96\" "
-            << "! rtph264depay "
-            << "! h264parse config-interval=-1 "
-            << "! video/x-h264,stream-format=byte-stream,alignment=au "
+            << " caps=\"application/x-rtp,media=(string)video,clock-rate=(int)90000,encoding-name=(string)"
+            << (use_h265 ? "H265" : "H264")
+            << ",payload=(int)96\" "
+            << "! " << (use_h265 ? "rtph265depay" : "rtph264depay") << " "
+            << "! " << (use_h265 ? "h265parse" : "h264parse") << " config-interval=-1 "
+            << "! " << (use_h265 ? "video/x-h265" : "video/x-h264") << ",stream-format=byte-stream,alignment=au "
             << "! " << candidate.decoder << " ";
-        if (force_dmabuf_capture && std::string(candidate.name) == "v4l2h264dec") {
+        if (force_dmabuf_capture && std::string(candidate.name) == (use_h265 ? "v4l2h265dec" : "v4l2h264dec")) {
             text << "capture-io-mode=dmabuf ";
         }
         text
@@ -855,10 +869,15 @@ int run_kms_video_preview(const Options& options)
         return text.str();
     };
 
-    const std::array<DecoderPipelineCandidate, 2> candidates { {
-        { "v4l2h264dec", "v4l2h264dec", "v4l2h264dec capture-io-mode=dmabuf", "video/x-raw(memory:DMABuf),format=DMA_DRM" },
-        { "omxh264dec", "omxh264dec", "omxh264dec disable-dma-feature=false", "" },
-    } };
+    const std::array<DecoderPipelineCandidate, 2> candidates = use_h265
+        ? std::array<DecoderPipelineCandidate, 2> { {
+            { "v4l2h265dec", "v4l2h265dec", "v4l2h265dec capture-io-mode=dmabuf", "video/x-raw(memory:DMABuf),format=DMA_DRM" },
+            { "omxh265dec", "omxh265dec", "omxh265dec disable-dma-feature=false", "" },
+        } }
+        : std::array<DecoderPipelineCandidate, 2> { {
+            { "v4l2h264dec", "v4l2h264dec", "v4l2h264dec capture-io-mode=dmabuf", "video/x-raw(memory:DMABuf),format=DMA_DRM" },
+            { "omxh264dec", "omxh264dec", "omxh264dec disable-dma-feature=false", "" },
+        } };
 
     GError* error {};
     GstElement* pipeline {};
@@ -920,7 +939,7 @@ int run_kms_video_preview(const Options& options)
     }
 
     glide::log(glide::LogLevel::info, "OpenHD-Glide", "controller-owned KMS DMABUF video plane running");
-    glide::log(glide::LogLevel::info, "OpenHD-Glide", "selected decoder pipeline=" + selected_pipeline_name);
+    glide::log(glide::LogLevel::info, "OpenHD-Glide", "selected decoder pipeline=" + selected_pipeline_name + " codec=" + (use_h265 ? std::string("h265") : std::string("h264")));
     glide::log(glide::LogLevel::info, "OpenHD-Glide", "KMS video importer build: forced decoder DMABUF capture + fd-backed memory diagnostics");
     glide::log(glide::LogLevel::info, "OpenHD-Glide", "decoded DMABUF frames are imported directly into DRM and scanned out on a KMS plane");
     glide::preview_control::set_fps_overlay_enabled(true);
@@ -1277,7 +1296,7 @@ int run_kms_stack(char* argv0, const Options& options)
     }
 
     std::cout << "device KMS stack:\n"
-              << "  glide-view UDP RTP/H264 decode port=" << options.view_udp_port
+              << "  glide-view UDP RTP/" << (options.view_udp_codec == "h265" || options.view_udp_codec == "hevc" ? "H265" : "H264") << " decode port=" << options.view_udp_port
               << " (no KMS ownership)\n";
     if (options.view_plane_id >= 0) {
         glide::log(glide::LogLevel::warning, "OpenHD-Glide", "--view-plane-id is ignored until openhd-glide owns video plane import");
