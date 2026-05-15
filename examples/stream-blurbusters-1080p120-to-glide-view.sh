@@ -199,7 +199,7 @@ echo "  payloader=${RTP_PAY}" >&2
 echo "  restart-guard=${RESTART_SECONDS:-disabled}" >&2
 
 GST_CMD=(
-  gst-launch-1.0 -e
+  gst-launch-1.0
   filesrc "location=${VIDEO_FILE}" !
   qtdemux name=demux
   demux.video_0 !
@@ -214,7 +214,7 @@ GST_CMD=(
 while :; do
   STATUS=0
   if [ -n "$RESTART_SECONDS" ] && command -v timeout >/dev/null 2>&1; then
-    timeout -s INT "$RESTART_SECONDS" "${GST_CMD[@]}" || STATUS="$?"
+    timeout -s TERM "$RESTART_SECONDS" "${GST_CMD[@]}" || STATUS="$?"
   else
     "${GST_CMD[@]}" || STATUS="$?"
   fi
