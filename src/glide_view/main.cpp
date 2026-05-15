@@ -31,6 +31,7 @@ struct Options {
     std::optional<int> connector_id;
     bool stay_alive {};
     bool udp_video {};
+    std::string udp_codec { "auto" };
 };
 
 Options parse_options(int argc, char** argv)
@@ -44,6 +45,8 @@ Options parse_options(int argc, char** argv)
             options.stay_alive = true;
         } else if (argument == "--udp-video") {
             options.udp_video = true;
+        } else if (argument == "--udp-codec" && i + 1 < argc) {
+            options.udp_codec = argv[++i];
         } else if (argument == "--udp-port" && i + 1 < argc) {
             options.udp_port = static_cast<std::uint16_t>(std::stoul(argv[++i]));
             options.udp_video = true;
@@ -106,9 +109,14 @@ GstElement* make_element(const char* factory, const char* name)
     return element;
 }
 
-GstElement* make_decoder()
+GstElement* make_decoder(const std::string& codec)
 {
-    for (const auto* factory : { "v4l2h264dec", "v4l2slh264dec", "omxh264dec", "avdec_h264" }) {
+    const bool h265 = codec == "h265";
+    const auto* codec_label = h265 ? "H.265" : "H.264";
+    const std::initializer_list<const char*> factories = h265
+        ? std::initializer_list<const char*>{ "v4l2h265dec", "v4l2slh265dec", "omxh265dec", "avdec_h265" }
+        : std::initializer_list<const char*>{ "v4l2h264dec", "v4l2slh264dec", "omxh264dec", "avdec_h264" };
+    for (const auto* factory : factories) {
         if (auto* decoder = gst_element_factory_make(factory, "decoder"); decoder != nullptr) {
             if (std::string(factory).find("omx") != std::string::npos) {
                 set_bool_property_if_present(decoder, "disable-dma-feature", false);
@@ -122,7 +130,7 @@ GstElement* make_decoder()
             return decoder;
         }
     }
-    glide::log(glide::LogLevel::error, "GlideView", "no H.264 decoder found; install Raspberry Pi/GStreamer codec plugins");
+    glide::log(glide::LogLevel::error, "GlideView", std::string("no ")+codec_label+" decoder found; install GStreamer codec plugins");
     return nullptr;
 }
 
@@ -178,16 +186,26 @@ public:
         pipeline_ = gst_pipeline_new("openhd-glide-view");
         auto* source = make_element("udpsrc", "udp-source");
         auto* capsfilter = make_element("capsfilter", "rtp-caps");
-        auto* depay = make_element("rtph264depay", "h264-depay");
-        auto* parse = make_element("h264parse", "h264-parse");
-        auto* h264_capsfilter = make_element("capsfilter", "h264-caps");
+        const bool force_h265 = options.udp_codec == "h265";
+        const bool force_h264 = options.udp_codec == "h264";
+        const bool auto_codec = options.udp_codec == "auto" || options.udp_codec.empty();
+        const bool use_h265 = force_h265;
+        if (!auto_codec && !force_h264 && !force_h265) {
+            glide::log(glide::LogLevel::error, "GlideView", "unsupported --udp-codec value; use auto, h264, or h265");
+            stop();
+            return false;
+        }
+
+        auto* depay = make_element(use_h265 ? "rtph265depay" : "rtph264depay", use_h265 ? "h265-depay" : "h264-depay");
+        auto* parse = make_element(use_h265 ? "h265parse" : "h264parse", use_h265 ? "h265-parse" : "h264-parse");
+        auto* video_capsfilter = make_element("capsfilter", "video-caps");
         auto* input_queue = make_element("queue", "input-queue");
-        auto* decoder = make_decoder();
+        auto* decoder = make_decoder(use_h265 ? "h265" : "h264");
         auto* output_queue = make_element("queue", "output-queue");
         auto* sink = make_element("appsink", "decoded-frame-sink");
 
         if (pipeline_ == nullptr || source == nullptr || capsfilter == nullptr || depay == nullptr || parse == nullptr
-            || h264_capsfilter == nullptr || input_queue == nullptr || decoder == nullptr || output_queue == nullptr
+            || video_capsfilter == nullptr || input_queue == nullptr || decoder == nullptr || output_queue == nullptr
             || sink == nullptr) {
             stop();
             return false;
@@ -210,7 +228,7 @@ public:
             90000,
             "encoding-name",
             G_TYPE_STRING,
-            "H264",
+            use_h265 ? "H265" : "H264",
             "payload",
             G_TYPE_INT,
             96,
@@ -220,7 +238,7 @@ public:
 
         set_int_property_if_present(parse, "config-interval", -1);
         auto* h264_caps = gst_caps_new_simple(
-            "video/x-h264",
+            use_h265 ? "video/x-h265" : "video/x-h264",
             "stream-format",
             G_TYPE_STRING,
             "byte-stream",
@@ -228,7 +246,7 @@ public:
             G_TYPE_STRING,
             "au",
             nullptr);
-        g_object_set(h264_capsfilter, "caps", h264_caps, nullptr);
+        g_object_set(video_capsfilter, "caps", h264_caps, nullptr);
         gst_caps_unref(h264_caps);
 
         for (auto* queue : { input_queue, output_queue }) {
@@ -251,7 +269,7 @@ public:
             capsfilter,
             depay,
             parse,
-            h264_capsfilter,
+            video_capsfilter,
             input_queue,
             decoder,
             output_queue,
@@ -263,7 +281,7 @@ public:
                 capsfilter,
                 depay,
                 parse,
-                h264_capsfilter,
+                video_capsfilter,
                 input_queue,
                 decoder,
                 output_queue,
@@ -284,7 +302,7 @@ public:
         }
 
         std::ostringstream status;
-        status << "UDP RTP/H264 decode listening on 0.0.0.0:" << options.udp_port
+        status << "UDP RTP/" << (use_h265 ? "H265" : "H264") << " decode listening on 0.0.0.0:" << options.udp_port
                << " output=appsink";
         glide::log(glide::LogLevel::info, "GlideView", status.str());
         glide::log(
