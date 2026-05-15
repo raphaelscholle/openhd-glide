@@ -348,6 +348,8 @@ bool KmsGlesWindow::choose_connector_and_mode(std::uint32_t requested_width, std
 
 bool KmsGlesWindow::create_gbm_device()
 {
+    configure_mesa_runtime_for_board();
+
     gbm_device_ = gbm_create_device(drm_fd_);
     if (gbm_device_ == nullptr) {
         last_error_ = "failed to create GBM device";

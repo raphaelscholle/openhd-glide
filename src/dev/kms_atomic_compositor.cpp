@@ -605,6 +605,8 @@ bool KmsAtomicCompositor::choose_flow_plane()
 
 bool KmsAtomicCompositor::create_gbm_device()
 {
+    configure_mesa_runtime_for_board();
+
     gbm_device_ = gbm_create_device(drm_fd_);
     if (gbm_device_ == nullptr) {
         last_error_ = "failed to create GBM device";
