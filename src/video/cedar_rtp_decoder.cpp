@@ -18,6 +18,7 @@ extern "C" {
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstring>
 #include <iterator>
 #endif
@@ -58,6 +59,8 @@ bool CedarRtpDecoder::poll(glide::dev::DmabufVideoFrame& frame)
     last_error_.clear();
     access_unit_submitted_this_poll_ = false;
     bool got_frame {};
+    std::uint32_t packets_after_frame {};
+    const auto poll_start = std::chrono::steady_clock::now();
     std::uint8_t packet[65536];
     for (;;) {
         const auto received = recv(socket_fd_, packet, sizeof(packet), MSG_DONTWAIT);
@@ -79,6 +82,13 @@ bool CedarRtpDecoder::poll(glide::dev::DmabufVideoFrame& frame)
                 got_frame = true;
             }
             access_unit_submitted_this_poll_ = false;
+        }
+        if (got_frame) {
+            ++packets_after_frame;
+            const auto elapsed = std::chrono::steady_clock::now() - poll_start;
+            if (packets_after_frame >= 32U || elapsed >= std::chrono::milliseconds(2)) {
+                return true;
+            }
         }
     }
 
