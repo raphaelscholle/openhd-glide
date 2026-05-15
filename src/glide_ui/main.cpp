@@ -238,10 +238,10 @@ void sync_fps_controls(UiState& state)
 
     if (state.fps_enabled) {
         lv_obj_add_state(state.fps_switch, LV_STATE_CHECKED);
-        lv_label_set_text(state.fps_label, "FPS overlay enabled");
+        lv_label_set_text(state.fps_label, "KMS video plane FPS enabled");
     } else {
         lv_obj_remove_state(state.fps_switch, LV_STATE_CHECKED);
-        lv_label_set_text(state.fps_label, "FPS overlay disabled");
+        lv_label_set_text(state.fps_label, "KMS video plane FPS disabled");
     }
 }
 
@@ -295,7 +295,7 @@ void build_misc_panel(UiState& state)
     lv_obj_set_style_pad_all(state.panel_body, 42, 0);
     lv_obj_set_style_pad_row(state.panel_body, 20, 0);
 
-    auto* section = label(state.panel_body, "Flow Overlay", &lv_font_montserrat_28);
+    auto* section = label(state.panel_body, "Video Plane FPS", &lv_font_montserrat_28);
     lv_obj_set_width(section, LV_PCT(100));
 
     auto* row = lv_obj_create(state.panel_body);
@@ -306,7 +306,7 @@ void build_misc_panel(UiState& state)
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    state.fps_label = label(row, "FPS overlay enabled", &lv_font_montserrat_22);
+    state.fps_label = label(row, "KMS video plane FPS enabled", &lv_font_montserrat_22);
     state.fps_switch = lv_switch_create(row);
     lv_obj_set_size(state.fps_switch, 72, 36);
     lv_obj_add_event_cb(
