@@ -94,6 +94,7 @@ private:
     std::uint32_t video_plane_id_ {};
     std::uint32_t video_plane_format_ {};
     std::uint32_t flow_plane_id_ {};
+    bool video_on_primary_ {};
     int preferred_video_plane_id_ { -1 };
     int preferred_flow_plane_id_ { -1 };
     std::uint32_t mode_blob_id_ {};
