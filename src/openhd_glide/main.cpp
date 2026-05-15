@@ -872,7 +872,7 @@ int run_kms_video_preview(const Options& options)
     const std::array<DecoderPipelineCandidate, 2> candidates = use_h265
         ? std::array<DecoderPipelineCandidate, 2> { {
             { "v4l2h265dec", "v4l2h265dec", "v4l2h265dec capture-io-mode=dmabuf", "video/x-raw(memory:DMABuf),format=DMA_DRM" },
-            { "omxh265dec", "omxh265dec", "omxh265dec disable-dma-feature=false", "" },
+            { "omxhevcvideodec", "omxhevcvideodec", "omxhevcvideodec disable-dma-feature=false", "" },
         } }
         : std::array<DecoderPipelineCandidate, 2> { {
             { "v4l2h264dec", "v4l2h264dec", "v4l2h264dec capture-io-mode=dmabuf", "video/x-raw(memory:DMABuf),format=DMA_DRM" },
