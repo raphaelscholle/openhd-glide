@@ -24,7 +24,7 @@ fi
 download_file() {
   mkdir -p "$(dirname "$VIDEO_FILE")"
 
-  echo "Downloading 1080p120 test video:" >&2
+  echo "Downloading test video:" >&2
   echo "  ${VIDEO_URL}" >&2
   echo "  -> ${VIDEO_FILE}" >&2
 
@@ -45,8 +45,11 @@ fi
 detect_codec() {
   RTP_PAY=""
   PARSE=""
-  CAPS=""
+  RAW_CAPS=""
+  OUT_CAPS=""
   ENCODING_NAME=""
+
+  lower="$(printf "%s" "$VIDEO_FILE" | tr '[:upper:]' '[:lower:]')"
 
   if command -v gst-discoverer-1.0 >/dev/null 2>&1; then
     info="$(gst-discoverer-1.0 "$VIDEO_FILE" 2>/dev/null || true)"
@@ -54,7 +57,8 @@ detect_codec() {
     if printf "%s" "$info" | grep -Eiq "H\.265|HEVC|video/x-h265"; then
       RTP_PAY="rtph265pay"
       PARSE="h265parse"
-      CAPS="video/x-h265,stream-format=byte-stream,alignment=au"
+      RAW_CAPS="video/x-h265"
+      OUT_CAPS="video/x-h265,stream-format=byte-stream,alignment=au"
       ENCODING_NAME="H265"
       return
     fi
@@ -62,23 +66,26 @@ detect_codec() {
     if printf "%s" "$info" | grep -Eiq "H\.264|AVC|video/x-h264"; then
       RTP_PAY="rtph264pay"
       PARSE="h264parse"
-      CAPS="video/x-h264,stream-format=byte-stream,alignment=au"
+      RAW_CAPS="video/x-h264"
+      OUT_CAPS="video/x-h264,stream-format=byte-stream,alignment=au"
       ENCODING_NAME="H264"
       return
     fi
   fi
 
-  case "${VIDEO_FILE,,}" in
-    *.h265|*.hevc|*.265)
+  case "$lower" in
+    *h265*|*hevc*|*.h265|*.hevc|*.265)
       RTP_PAY="rtph265pay"
       PARSE="h265parse"
-      CAPS="video/x-h265,stream-format=byte-stream,alignment=au"
+      RAW_CAPS="video/x-h265"
+      OUT_CAPS="video/x-h265,stream-format=byte-stream,alignment=au"
       ENCODING_NAME="H265"
       ;;
     *)
       RTP_PAY="rtph264pay"
       PARSE="h264parse"
-      CAPS="video/x-h264,stream-format=byte-stream,alignment=au"
+      RAW_CAPS="video/x-h264"
+      OUT_CAPS="video/x-h264,stream-format=byte-stream,alignment=au"
       ENCODING_NAME="H264"
       ;;
   esac
@@ -93,12 +100,13 @@ echo "  parser=${PARSE}" >&2
 echo "  payloader=${RTP_PAY}" >&2
 
 while :; do
-  gst-launch-1.0 -e -q \
+  gst-launch-1.0 -e \
     filesrc location="$VIDEO_FILE" ! \
     qtdemux name=demux \
       demux. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=0 ! \
-        "$CAPS" ! \
+        "$RAW_CAPS" ! \
         ${PARSE} config-interval=1 ! \
+        "$OUT_CAPS" ! \
         ${RTP_PAY} pt=96 config-interval=1 mtu=1200 ! \
         udpsink host="$TARGET" port="$PORT" sync="$SINK_SYNC" async=false \
       demux. ! queue ! fakesink sync=false
