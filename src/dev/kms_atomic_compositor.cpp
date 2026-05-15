@@ -262,6 +262,18 @@ bool plane_supports_format(drmModePlane* plane, std::uint32_t format)
     return std::find(plane->formats, plane->formats + plane->count_formats, format) != plane->formats + plane->count_formats;
 }
 
+std::string fourcc_string(std::uint32_t format)
+{
+    std::array<char, 5> text {
+        static_cast<char>(format & 0xffU),
+        static_cast<char>((format >> 8U) & 0xffU),
+        static_cast<char>((format >> 16U) & 0xffU),
+        static_cast<char>((format >> 24U) & 0xffU),
+        '\0',
+    };
+    return text.data();
+}
+
 void configure_mesa_runtime_for_board()
 {
     if (access("/usr/lib/aarch64-linux-gnu/dri/sun4i-drm_dri.so", R_OK) != 0) {
@@ -278,9 +290,16 @@ void configure_mesa_runtime_for_board()
 } // namespace
 #endif
 
-bool KmsAtomicCompositor::create(std::uint32_t requested_width, std::uint32_t requested_height, std::uint32_t requested_refresh_hz)
+bool KmsAtomicCompositor::create(
+    std::uint32_t requested_width,
+    std::uint32_t requested_height,
+    std::uint32_t requested_refresh_hz,
+    int preferred_video_plane_id,
+    int preferred_flow_plane_id)
 {
 #if OPENHD_GLIDE_HAS_KMS_GBM
+    preferred_video_plane_id_ = preferred_video_plane_id;
+    preferred_flow_plane_id_ = preferred_flow_plane_id;
     return open_card()
         && choose_connector_and_mode(requested_width, requested_height, requested_refresh_hz)
         && create_primary_buffer()
@@ -290,6 +309,9 @@ bool KmsAtomicCompositor::create(std::uint32_t requested_width, std::uint32_t re
 #else
     (void)requested_width;
     (void)requested_height;
+    (void)requested_refresh_hz;
+    (void)preferred_video_plane_id;
+    (void)preferred_flow_plane_id;
     last_error_ = "atomic KMS compositor support was not found at build time";
     return false;
 #endif
@@ -743,20 +765,44 @@ bool KmsAtomicCompositor::choose_video_plane(std::uint32_t drm_format)
         return false;
     }
 
-    for (std::uint32_t i = 0; i < planes->count_planes; ++i) {
+    auto try_plane = [&](drmModePlane* plane) {
+        const auto type = plane_type(drm_fd_, plane->plane_id);
+        const bool usable_crtc = (plane->possible_crtcs & (1 << crtc_index_)) != 0;
+        const bool reserved_for_flow = preferred_flow_plane_id_ >= 0 && plane->plane_id == static_cast<std::uint32_t>(preferred_flow_plane_id_);
+        const bool available = plane->plane_id != primary_plane_id_ && plane->plane_id != flow_plane_id_ && !reserved_for_flow;
+        if (usable_crtc && available && plane_supports_format(plane, drm_format) && type == DRM_PLANE_TYPE_OVERLAY) {
+            video_plane_id_ = plane->plane_id;
+            video_plane_format_ = drm_format;
+            return true;
+        }
+        return false;
+    };
+
+    if (preferred_video_plane_id_ >= 0) {
+        auto* plane = drmModeGetPlane(drm_fd_, static_cast<std::uint32_t>(preferred_video_plane_id_));
+        if (plane != nullptr) {
+            if (try_plane(plane)) {
+                drmModeFreePlane(plane);
+            } else {
+                drmModeFreePlane(plane);
+                drmModeFreePlaneResources(planes);
+                last_error_ = "preferred KMS video plane " + std::to_string(preferred_video_plane_id_)
+                    + " cannot scan out decoded " + fourcc_string(drm_format) + " on the selected CRTC";
+                return false;
+            }
+        } else {
+            drmModeFreePlaneResources(planes);
+            last_error_ = "preferred KMS video plane " + std::to_string(preferred_video_plane_id_) + " does not exist";
+            return false;
+        }
+    }
+
+    for (std::uint32_t i = 0; i < planes->count_planes && video_plane_id_ == 0; ++i) {
         auto* plane = drmModeGetPlane(drm_fd_, planes->planes[i]);
         if (plane == nullptr) {
             continue;
         }
-        const auto type = plane_type(drm_fd_, plane->plane_id);
-        const bool usable_crtc = (plane->possible_crtcs & (1 << crtc_index_)) != 0;
-        const bool available = plane->plane_id != primary_plane_id_ && plane->plane_id != flow_plane_id_;
-        if (usable_crtc && available && plane_supports_format(plane, drm_format) && type == DRM_PLANE_TYPE_OVERLAY) {
-            video_plane_id_ = plane->plane_id;
-            video_plane_format_ = drm_format;
-            drmModeFreePlane(plane);
-            break;
-        }
+        try_plane(plane);
         drmModeFreePlane(plane);
     }
 
@@ -768,6 +814,10 @@ bool KmsAtomicCompositor::choose_video_plane(std::uint32_t drm_format)
     set_range_edge(drm_fd_, video_plane_id_, DRM_MODE_OBJECT_PLANE, "zpos", false);
     set_range_edge(drm_fd_, video_plane_id_, DRM_MODE_OBJECT_PLANE, "ZPOS", false);
     set_range_edge(drm_fd_, video_plane_id_, DRM_MODE_OBJECT_PLANE, "alpha", true);
+    glide::log(
+        glide::LogLevel::info,
+        "OpenHD-Glide",
+        "selected KMS video plane " + std::to_string(video_plane_id_) + " for decoded " + fourcc_string(drm_format));
     return true;
 }
 
@@ -779,18 +829,41 @@ bool KmsAtomicCompositor::choose_flow_plane()
         return false;
     }
 
-    for (std::uint32_t i = 0; i < planes->count_planes; ++i) {
+    auto try_plane = [&](drmModePlane* plane) {
+        const auto type = plane_type(drm_fd_, plane->plane_id);
+        const bool usable_crtc = (plane->possible_crtcs & (1 << crtc_index_)) != 0;
+        const bool available = plane->plane_id != primary_plane_id_ && plane->plane_id != video_plane_id_;
+        return usable_crtc && available && plane_supports_format(plane, DRM_FORMAT_ARGB8888) && type == DRM_PLANE_TYPE_OVERLAY;
+    };
+
+    if (preferred_flow_plane_id_ >= 0) {
+        auto* plane = drmModeGetPlane(drm_fd_, static_cast<std::uint32_t>(preferred_flow_plane_id_));
+        if (plane != nullptr) {
+            if (try_plane(plane)) {
+                flow_plane_id_ = plane->plane_id;
+                drmModeFreePlane(plane);
+            } else {
+                drmModeFreePlane(plane);
+                drmModeFreePlaneResources(planes);
+                last_error_ = "preferred KMS Flow plane " + std::to_string(preferred_flow_plane_id_)
+                    + " cannot scan out ARGB8888 on the selected CRTC";
+                return false;
+            }
+        } else {
+            drmModeFreePlaneResources(planes);
+            last_error_ = "preferred KMS Flow plane " + std::to_string(preferred_flow_plane_id_) + " does not exist";
+            return false;
+        }
+    }
+
+    for (std::uint32_t i = 0; i < planes->count_planes && preferred_flow_plane_id_ < 0; ++i) {
         auto* plane = drmModeGetPlane(drm_fd_, planes->planes[i]);
         if (plane == nullptr) {
             continue;
         }
-        const auto type = plane_type(drm_fd_, plane->plane_id);
-        const bool usable_crtc = (plane->possible_crtcs & (1 << crtc_index_)) != 0;
-        const bool available = plane->plane_id != primary_plane_id_ && plane->plane_id != video_plane_id_;
-        if (usable_crtc && available && plane_supports_format(plane, DRM_FORMAT_ARGB8888) && type == DRM_PLANE_TYPE_OVERLAY) {
+
+        if (try_plane(plane)) {
             flow_plane_id_ = plane->plane_id;
-            drmModeFreePlane(plane);
-            break;
         }
         drmModeFreePlane(plane);
     }
@@ -803,6 +876,10 @@ bool KmsAtomicCompositor::choose_flow_plane()
     set_range_edge(drm_fd_, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "zpos", true);
     set_range_edge(drm_fd_, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "ZPOS", true);
     set_range_edge(drm_fd_, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "alpha", true);
+    glide::log(
+        glide::LogLevel::info,
+        "OpenHD-Glide",
+        "selected KMS Flow plane " + std::to_string(flow_plane_id_) + " for ARGB8888 overlay");
     return true;
 }
 

@@ -61,6 +61,7 @@ struct Options {
     std::uint32_t ui_height { 720 };
     std::uint16_t view_udp_port { 5600 };
     int view_plane_id { -1 };
+    int flow_plane_id { -1 };
     int view_connector_id { -1 };
     float ui_opacity { 0.35F };
     int preview_x { 80 };
@@ -102,6 +103,8 @@ Options parse_options(int argc, char** argv)
             options.view_udp_port = static_cast<std::uint16_t>(std::stoul(argv[++i]));
         } else if (argument == "--view-plane-id" && i + 1 < argc) {
             options.view_plane_id = std::stoi(argv[++i]);
+        } else if (argument == "--flow-plane-id" && i + 1 < argc) {
+            options.flow_plane_id = std::stoi(argv[++i]);
         } else if (argument == "--view-connector-id" && i + 1 < argc) {
             options.view_connector_id = std::stoi(argv[++i]);
         } else if (argument == "--preview-x" && i + 1 < argc) {
@@ -519,7 +522,12 @@ int run_kms_video_preview(const Options& options)
     glide::dev::KmsAtomicCompositor compositor;
     glide::dev::KmsDmabufVideoPlane legacy_output;
     if (use_atomic_kms) {
-        if (!compositor.create(options.preview_width, options.flow_height, options.display_refresh_hz)) {
+        if (!compositor.create(
+                options.preview_width,
+                options.flow_height,
+                options.display_refresh_hz,
+                options.view_plane_id,
+                options.flow_plane_id)) {
             glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
             return 1;
         }

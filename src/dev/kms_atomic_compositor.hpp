@@ -19,7 +19,12 @@ public:
     KmsAtomicCompositor(const KmsAtomicCompositor&) = delete;
     KmsAtomicCompositor& operator=(const KmsAtomicCompositor&) = delete;
 
-    bool create(std::uint32_t requested_width, std::uint32_t requested_height, std::uint32_t requested_refresh_hz = 0);
+    bool create(
+        std::uint32_t requested_width,
+        std::uint32_t requested_height,
+        std::uint32_t requested_refresh_hz = 0,
+        int preferred_video_plane_id = -1,
+        int preferred_flow_plane_id = -1);
     bool present(const DmabufVideoFrame& video_frame, bool update_flow_frame);
     bool make_flow_context_current();
     bool release_flow_context();
@@ -89,6 +94,8 @@ private:
     std::uint32_t video_plane_id_ {};
     std::uint32_t video_plane_format_ {};
     std::uint32_t flow_plane_id_ {};
+    int preferred_video_plane_id_ { -1 };
+    int preferred_flow_plane_id_ { -1 };
     std::uint32_t mode_blob_id_ {};
     bool modeset_committed_ {};
     flow::SurfaceSize surface_ {};
