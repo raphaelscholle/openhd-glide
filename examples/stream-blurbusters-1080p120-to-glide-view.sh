@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -eu
 
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+REPO_DIR="$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)"
+
 if [ "$#" -lt 1 ]; then
   echo "usage: $0 <target-ip> [port] [h264|h265] [mp4-file] [--fast]" >&2
   echo "       $0 <target-ip> [port] --codec h264|h265 [--file mp4-file] [--fast]" >&2
@@ -88,7 +91,7 @@ case "$CODEC" in
     PARSE="h264parse"
     RAW_CAPS="video/x-h264"
     OUT_CAPS="video/x-h264,stream-format=byte-stream,alignment=au"
-    DEFAULT_VIDEO_FILE="examples/media/battlefield_1080p_120fps_8mbps_h264.mp4"
+    DEFAULT_VIDEO_FILE="${REPO_DIR}/examples/media/battlefield_1080p_120fps_8mbps_h264.mp4"
     DEFAULT_VIDEO_URL="https://blurbusters.com/wp-content/uploads/2019/01/battlefield_1080p_120fps_8mbps.mp4"
     ;;
   h265|hevc)
@@ -98,7 +101,7 @@ case "$CODEC" in
     PARSE="h265parse"
     RAW_CAPS="video/x-h265"
     OUT_CAPS="video/x-h265,stream-format=byte-stream,alignment=au"
-    DEFAULT_VIDEO_FILE="examples/media/battlefield_1080p_120fps_8mbps_h265.mp4"
+    DEFAULT_VIDEO_FILE="${REPO_DIR}/examples/media/battlefield_1080p_120fps_8mbps_h265.mp4"
     DEFAULT_VIDEO_URL=""
     ;;
   *)
@@ -149,16 +152,39 @@ if [ ! -s "$VIDEO_FILE" ]; then
   download_file
 fi
 
+DISCOVER_INFO=""
 if command -v gst-discoverer-1.0 >/dev/null 2>&1; then
-  info="$(gst-discoverer-1.0 "$VIDEO_FILE" 2>/dev/null || true)"
-  if [ "$CODEC" = "h264" ] && printf "%s" "$info" | grep -Eiq "H\.265|HEVC|video/x-h265"; then
+  DISCOVER_INFO="$(gst-discoverer-1.0 "$VIDEO_FILE" 2>/dev/null || true)"
+  if [ "$CODEC" = "h264" ] && printf "%s" "$DISCOVER_INFO" | grep -Eiq "H\.265|HEVC|video/x-h265"; then
     echo "selected h264, but ${VIDEO_FILE} appears to be H.265/HEVC" >&2
     exit 1
   fi
-  if [ "$CODEC" = "h265" ] && printf "%s" "$info" | grep -Eiq "H\.264|AVC|video/x-h264"; then
+  if [ "$CODEC" = "h265" ] && printf "%s" "$DISCOVER_INFO" | grep -Eiq "H\.264|AVC|video/x-h264"; then
     echo "selected h265, but ${VIDEO_FILE} appears to be H.264/AVC" >&2
     exit 1
   fi
+fi
+
+RESTART_SECONDS="${GLIDE_STREAM_RESTART_SECONDS:-}"
+if [ -z "$RESTART_SECONDS" ] && [ -n "$DISCOVER_INFO" ]; then
+  DURATION_TEXT="$(printf "%s\n" "$DISCOVER_INFO" | sed -n 's/^[[:space:]]*Duration:[[:space:]]*//p' | head -n 1)"
+  if [ -n "$DURATION_TEXT" ]; then
+    RESTART_SECONDS="$(awk -v duration="$DURATION_TEXT" 'BEGIN {
+      parts = split(duration, field, ":");
+      if (parts == 3) {
+        seconds = (field[1] * 3600) + (field[2] * 60) + field[3];
+        if (seconds > 0) {
+          printf "%d", seconds + 5;
+        }
+      }
+    }')"
+  fi
+fi
+if [ -z "$RESTART_SECONDS" ]; then
+  RESTART_SECONDS="40"
+fi
+if [ "$RESTART_SECONDS" = "0" ]; then
+  RESTART_SECONDS=""
 fi
 
 echo "Streaming 1080p120 ${ENCODING_NAME} file to ${TARGET}:${PORT}" >&2
@@ -166,16 +192,37 @@ echo "  file=${VIDEO_FILE}" >&2
 echo "  mode=${MODE_LABEL}" >&2
 echo "  parser=${PARSE}" >&2
 echo "  payloader=${RTP_PAY}" >&2
+echo "  restart-guard=${RESTART_SECONDS:-disabled}" >&2
+
+GST_CMD=(
+  gst-launch-1.0 -e
+  filesrc "location=${VIDEO_FILE}" !
+  qtdemux name=demux
+  demux.video_0 !
+  queue max-size-buffers=0 max-size-bytes=0 max-size-time=0 !
+  "${RAW_CAPS}" !
+  "${PARSE}" config-interval=1 !
+  "${OUT_CAPS}" !
+  "${RTP_PAY}" pt=96 config-interval=1 mtu=1200 !
+  udpsink "host=${TARGET}" "port=${PORT}" "sync=${SINK_SYNC}" async=false
+)
 
 while :; do
-  gst-launch-1.0 -e \
-    filesrc location="$VIDEO_FILE" ! \
-    qtdemux name=demux \
-      demux. ! queue max-size-buffers=0 max-size-bytes=0 max-size-time=0 ! \
-        "$RAW_CAPS" ! \
-        ${PARSE} config-interval=1 ! \
-        "$OUT_CAPS" ! \
-        ${RTP_PAY} pt=96 config-interval=1 mtu=1200 ! \
-        udpsink host="$TARGET" port="$PORT" sync="$SINK_SYNC" async=false \
-      demux. ! queue ! fakesink sync=false
+  STATUS=0
+  if [ -n "$RESTART_SECONDS" ] && command -v timeout >/dev/null 2>&1; then
+    timeout -s INT "$RESTART_SECONDS" "${GST_CMD[@]}" || STATUS="$?"
+  else
+    "${GST_CMD[@]}" || STATUS="$?"
+  fi
+
+  case "$STATUS" in
+    0)
+      ;;
+    124|130)
+      echo "stream pass reached restart guard; restarting" >&2
+      ;;
+    *)
+      exit "$STATUS"
+      ;;
+  esac
 done
