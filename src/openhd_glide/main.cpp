@@ -210,6 +210,8 @@ std::vector<std::string> view_args(const char* executable, const Options& option
         args.emplace_back("--udp-video");
         args.emplace_back("--udp-port");
         args.emplace_back(std::to_string(options.view_udp_port));
+        args.emplace_back("--udp-codec");
+        args.emplace_back(options.view_udp_codec);
     }
     return args;
 }

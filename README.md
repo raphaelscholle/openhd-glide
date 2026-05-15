@@ -105,18 +105,19 @@ black primary framebuffer only to keep the CRTC active; Flow and UI should becom
 video plane. Native Cedar remains available only through the explicit `--native-cedar-video` flag.
 
 Example run scripts cover the current device modes. Each script takes the UDP video port as its first optional
-argument, defaulting to `5600`; set `GLIDE_WIDTH` and `GLIDE_HEIGHT` to override the default `1920x1080`.
+argument, defaulting to `5600`; GStreamer/view scripts take `h264` or `h265` as the second optional argument.
+Set `GLIDE_WIDTH` and `GLIDE_HEIGHT` to override the default `1920x1080`.
 Device KMS scripts default to `GLIDE_DISPLAY_HZ=120`; override it if the panel should use a different mode.
 
 ```sh
 # GStreamer/OMX decode, KMS video plane plus Flow overlay at full video rate.
-examples/run-kms-video-gstreamer-flow.sh 5600
+examples/run-kms-video-gstreamer-flow.sh 5600 h265
 
 # GStreamer/OMX decode, KMS video plane plus Flow overlay capped to 30 fps.
-examples/run-kms-video-gstreamer-flow-30fps.sh 5600
+examples/run-kms-video-gstreamer-flow-30fps.sh 5600 h265
 
 # GStreamer/OMX decode, fastest video-only legacy KMS plane path.
-examples/run-kms-video-gstreamer-video-only.sh 5600
+examples/run-kms-video-gstreamer-video-only.sh 5600 h265
 
 # Native Cedar RTP/H.264 decode debugging path, KMS video plane plus Flow overlay.
 examples/run-kms-video-cedar-flow.sh 5600
@@ -125,10 +126,10 @@ examples/run-kms-video-cedar-flow.sh 5600
 examples/run-kms-video-cedar-video-only.sh 5600
 
 # Standalone glide-view decode-only test.
-examples/run-glide-view-decode-only.sh 5600
+examples/run-glide-view-decode-only.sh 5600 h265
 
 # Multi-process KMS stack smoke test.
-examples/run-kms-stack.sh 5600
+examples/run-kms-stack.sh 5600 h265
 ```
 
 Installed helper scripts are placed in `${CMAKE_INSTALL_PREFIX}/share/openhd-glide/examples`.
@@ -150,12 +151,16 @@ To avoid sender-side encoding entirely, stream a downloaded H.264 MP4:
 
 ```sh
 examples/stream-h264-file-to-glide-view.sh <target-ip> 5600
+examples/stream-blurbusters-1080p120-to-glide-view.sh <target-ip> 5600 h264
 ```
 
 This downloads a pre-encoded Big Buck Bunny H.264 1080p60 30-second MP4 by default, then streams only
 `filesrc ! qtdemux ! h264parse ! rtph264pay ! udpsink`. There is no `videotestsrc` and no encoder. To use a 720p60
 H.264 MP4 instead, pass the local file path as the third argument or set `GLIDE_TEST_VIDEO_URL` before running the
 script.
+
+For the 1080p120 Blurbusters sender, pass `h264` or `h265` after the port. H.265 mode expects a pre-encoded H.265 MP4
+path or URL; it does not transcode the H.264 Blurbusters download.
 
 On Windows, use:
 
