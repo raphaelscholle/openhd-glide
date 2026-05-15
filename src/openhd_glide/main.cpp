@@ -18,6 +18,7 @@
 #include "video/cedar_rtp_decoder.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <chrono>
 #include <csignal>
@@ -553,7 +554,6 @@ int run_kms_video_preview(const Options& options)
     } async_flow_join { async_flow_thread };
 
     glide::flow::GlesTextRenderer flow_renderer;
-    glide::flow::FpsCounter flow_fps_counter;
     glide::flow::FpsOverlay flow_fps_overlay;
     glide::flow::AltitudeWidgetRenderer altitude_widget;
     glide::flow::SimulatedAltitude simulated_altitude;
@@ -563,6 +563,7 @@ int run_kms_video_preview(const Options& options)
     glide::flow::SimulatedLinkOverview simulated_link;
     glide::flow::PerformanceHorizon performance_horizon;
     glide::flow::SimulatedAttitude simulated_attitude;
+    std::atomic<double> video_plane_fps { 0.0 };
     auto flow_surface = use_atomic_kms ? compositor.surface_size() : glide::flow::SurfaceSize { options.preview_width, options.flow_height };
     auto flow_fps_placement = flow_fps_overlay.layout(0.0, flow_surface);
     bool flow_runtime_logged {};
@@ -589,9 +590,7 @@ int run_kms_video_preview(const Options& options)
             flow_runtime_logged = true;
         }
 
-        if (const auto fps = flow_fps_counter.frame()) {
-            flow_fps_placement = flow_fps_overlay.layout(*fps, flow_surface);
-        }
+        flow_fps_placement = flow_fps_overlay.layout(video_plane_fps.load(), flow_surface);
 
         flow_renderer.clear(0.0F, 0.0F, 0.0F, 0.0F, flow_surface);
         if (options.flow_debug_solid) {
@@ -635,7 +634,7 @@ int run_kms_video_preview(const Options& options)
             return 1;
         }
 
-        async_flow_thread = std::thread([&compositor, flow_frame_interval, flow_fps = options.flow_fps, flow_debug_solid = options.flow_debug_solid]() {
+        async_flow_thread = std::thread([&compositor, &video_plane_fps, flow_frame_interval, flow_fps = options.flow_fps, flow_debug_solid = options.flow_debug_solid]() {
             if (!compositor.make_flow_context_current()) {
                 glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
                 stop_requested = 1;
@@ -661,7 +660,6 @@ int run_kms_video_preview(const Options& options)
 
             {
                 glide::flow::GlesTextRenderer renderer;
-                glide::flow::FpsCounter fps_counter;
                 glide::flow::FpsOverlay fps_overlay;
                 glide::flow::AltitudeWidgetRenderer altitude;
                 glide::flow::SimulatedAltitude simulated_altitude;
@@ -688,9 +686,7 @@ int run_kms_video_preview(const Options& options)
                         runtime_logged = true;
                     }
 
-                    if (const auto fps = fps_counter.frame()) {
-                        fps_placement = fps_overlay.layout(*fps, surface);
-                    }
+                    fps_placement = fps_overlay.layout(video_plane_fps.load(), surface);
 
                     renderer.clear(0.0F, 0.0F, 0.0F, 0.0F, surface);
                     if (flow_debug_solid) {
@@ -807,8 +803,10 @@ int run_kms_video_preview(const Options& options)
                 std::ostringstream status;
                 status.setf(std::ios::fixed);
                 status.precision(1);
+                const auto current_fps = static_cast<double>(frames_since_log) / elapsed;
+                video_plane_fps.store(current_fps);
                 status << "native Cedar " << (use_atomic_kms ? "atomic video+Flow" : "legacy video")
-                       << " fps=" << (static_cast<double>(frames_since_log) / elapsed)
+                       << " fps=" << current_fps
                        << " total_frames=" << frames
                        << ' ' << cedar.stats();
                 glide::log(glide::LogLevel::info, "OpenHD-Glide", status.str());
@@ -925,6 +923,7 @@ int run_kms_video_preview(const Options& options)
     glide::log(glide::LogLevel::info, "OpenHD-Glide", "selected decoder pipeline=" + selected_pipeline_name);
     glide::log(glide::LogLevel::info, "OpenHD-Glide", "KMS video importer build: forced decoder DMABUF capture + fd-backed memory diagnostics");
     glide::log(glide::LogLevel::info, "OpenHD-Glide", "decoded DMABUF frames are imported directly into DRM and scanned out on a KMS plane");
+    glide::preview_control::set_fps_overlay_enabled(true);
     glide::log(
         glide::LogLevel::info,
         "OpenHD-Glide",
@@ -1065,15 +1064,20 @@ int run_kms_video_preview(const Options& options)
 
         const auto now = std::chrono::steady_clock::now();
         if (now - last_log >= std::chrono::seconds(1)) {
+            const auto video_fps_enabled = glide::preview_control::fps_overlay_enabled();
             const auto elapsed = std::chrono::duration<double>(now - last_log).count();
-            std::ostringstream status;
-            status.setf(std::ios::fixed);
-            status.precision(1);
-            status << "KMS DMABUF video plane fps=" << (static_cast<double>(frames_since_log) / elapsed)
-                   << " total_frames=" << frames
-                   << " stale_samples_dropped=" << stale_samples_dropped_since_log
-                   << " total_stale_samples_dropped=" << stale_samples_dropped;
-            glide::log(glide::LogLevel::info, "OpenHD-Glide", status.str());
+            if (video_fps_enabled) {
+                std::ostringstream status;
+                status.setf(std::ios::fixed);
+                status.precision(1);
+                const auto current_fps = static_cast<double>(frames_since_log) / elapsed;
+                video_plane_fps.store(current_fps);
+                status << "KMS DMABUF video plane fps=" << current_fps
+                       << " total_frames=" << frames
+                       << " stale_samples_dropped=" << stale_samples_dropped_since_log
+                       << " total_stale_samples_dropped=" << stale_samples_dropped;
+                glide::log(glide::LogLevel::info, "OpenHD-Glide", status.str());
+            }
             frames_since_log = 0;
             stale_samples_dropped_since_log = 0;
             last_log = now;

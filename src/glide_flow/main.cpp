@@ -129,7 +129,7 @@ int main(int argc, char** argv)
     glide::dev::KmsGlesWindow kms_window;
     glide::dev::SdlGlesWindow preview_window;
     glide::ipc::Client ipc;
-    auto fps_overlay_enabled = glide::preview_control::fps_overlay_enabled();
+    constexpr bool fps_overlay_enabled = false;
 
     if (options.preview) {
         if (!preview_window.create("GlideFlow Preview", glide::dev::WindowPlacement {
@@ -174,7 +174,6 @@ int main(int argc, char** argv)
     if (ipc.connect_to(options.ipc_socket)) {
         ipc.send_line("hello glide-flow");
         ipc.send_line("status glide-flow ready");
-        ipc.send_line("get fps");
     } else {
         glide::log(glide::LogLevel::warning, "GlideFlow", "IPC controller unavailable; using preview fallback state");
     }
@@ -201,17 +200,6 @@ int main(int argc, char** argv)
         }
 
         options.surface = options.preview ? preview_window.surface_size() : options.surface;
-        if (ipc.connected()) {
-            for (const auto& line : ipc.poll_lines()) {
-                if (line == "state fps 0" || line == "state fps 1") {
-                    fps_overlay_enabled = line.back() == '1';
-                    glide::preview_control::set_fps_overlay_enabled(fps_overlay_enabled);
-                }
-            }
-        } else {
-            fps_overlay_enabled = glide::preview_control::fps_overlay_enabled();
-        }
-
         const auto fps = fps_counter.frame();
         if (fps) {
             placement = fps_overlay.layout(*fps, options.surface);
