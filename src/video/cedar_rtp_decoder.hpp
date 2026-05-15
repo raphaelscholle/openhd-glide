@@ -24,16 +24,18 @@ public:
     bool start(std::uint16_t udp_port, std::uint32_t width, std::uint32_t height, std::uint32_t fps);
     bool poll(glide::dev::DmabufVideoFrame& frame);
     void mark_presented();
+    std::string stats() const;
     const std::string& last_error() const;
 
 private:
     bool init_socket(std::uint16_t udp_port);
     bool init_decoder(std::uint32_t width, std::uint32_t height, std::uint32_t fps);
     bool handle_rtp_packet(const std::uint8_t* packet, std::size_t size);
-    bool append_h264_payload(const std::uint8_t* payload, std::size_t size, bool marker, std::uint32_t timestamp);
+    bool append_h264_payload(const std::uint8_t* payload, std::size_t size, bool marker, std::uint16_t sequence, std::uint32_t timestamp);
     bool submit_access_unit();
     bool drain_picture(glide::dev::DmabufVideoFrame& frame);
     bool picture_to_frame(VideoPicture* picture, glide::dev::DmabufVideoFrame& frame);
+    void reset_access_unit();
     void return_picture(VideoPicture*& picture);
     void cleanup();
 
@@ -44,9 +46,18 @@ private:
     std::vector<std::uint8_t> access_unit_;
     std::uint32_t current_timestamp_ {};
     bool have_timestamp_ {};
+    std::uint16_t expected_sequence_ {};
+    bool have_sequence_ {};
+    bool fu_started_ {};
+    std::uint32_t fu_timestamp_ {};
+    bool access_unit_has_vcl_ {};
+    bool dropping_timestamp_ {};
+    std::uint32_t drop_timestamp_ {};
     VideoPicture* pending_picture_ {};
     VideoPicture* current_picture_ {};
     std::uint64_t packets_ {};
+    std::uint64_t rtp_sequence_gaps_ {};
+    std::uint64_t dropped_incomplete_fragments_ {};
     std::uint64_t access_units_ {};
     std::uint64_t decoded_frames_ {};
     std::uint64_t dropped_access_units_ {};

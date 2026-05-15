@@ -611,12 +611,13 @@ int run_kms_video_preview(const Options& options)
 #if OPENHD_GLIDE_HAS_CEDAR
     if (options.native_cedar_video) {
         glide::video::CedarRtpDecoder cedar;
-        if (!cedar.start(options.view_udp_port, options.preview_width, options.flow_height, 60)) {
+        const auto cedar_fps = options.display_refresh_hz != 0 ? options.display_refresh_hz : 120U;
+        if (!cedar.start(options.view_udp_port, options.preview_width, options.flow_height, cedar_fps)) {
             glide::log(glide::LogLevel::error, "OpenHD-Glide", cedar.last_error());
             return 1;
         }
 
-        glide::log(glide::LogLevel::info, "OpenHD-Glide", "native Cedar RTP/H264 decoder running");
+        glide::log(glide::LogLevel::info, "OpenHD-Glide", "native Cedar RTP/H264 decoder running at configured fps=" + std::to_string(cedar_fps));
         glide::log(
             glide::LogLevel::info,
             "OpenHD-Glide",
@@ -651,7 +652,8 @@ int run_kms_video_preview(const Options& options)
                 status.precision(1);
                 status << "native Cedar " << (use_atomic_kms ? "atomic video+Flow" : "legacy video")
                        << " fps=" << (static_cast<double>(frames_since_log) / elapsed)
-                       << " total_frames=" << frames;
+                       << " total_frames=" << frames
+                       << ' ' << cedar.stats();
                 glide::log(glide::LogLevel::info, "OpenHD-Glide", status.str());
                 frames_since_log = 0;
                 last_log = now;

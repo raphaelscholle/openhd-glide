@@ -19,6 +19,7 @@ extern "C" {
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <iterator>
 #endif
 
 namespace glide::video {
@@ -93,12 +94,126 @@ void CedarRtpDecoder::mark_presented()
 #endif
 }
 
+std::string CedarRtpDecoder::stats() const
+{
+#if OPENHD_GLIDE_HAS_CEDAR
+    return "rtp_packets=" + std::to_string(packets_)
+        + " rtp_sequence_gaps=" + std::to_string(rtp_sequence_gaps_)
+        + " dropped_incomplete_fragments=" + std::to_string(dropped_incomplete_fragments_)
+        + " access_units=" + std::to_string(access_units_)
+        + " dropped_access_units=" + std::to_string(dropped_access_units_)
+        + " decoded_frames=" + std::to_string(decoded_frames_);
+#else
+    return {};
+#endif
+}
+
 const std::string& CedarRtpDecoder::last_error() const
 {
     return last_error_;
 }
 
 #if OPENHD_GLIDE_HAS_CEDAR
+namespace {
+
+constexpr std::uint8_t start_code[] { 0x00, 0x00, 0x00, 0x01 };
+
+void append_start_code(std::vector<std::uint8_t>& output)
+{
+    output.insert(output.end(), std::begin(start_code), std::end(start_code));
+}
+
+void append_aud_if_needed(std::vector<std::uint8_t>& output)
+{
+    if (!output.empty()) {
+        return;
+    }
+    constexpr std::uint8_t aud[] { 0x00, 0x00, 0x00, 0x01, 0x09, 0x10 };
+    output.insert(output.end(), std::begin(aud), std::end(aud));
+}
+
+class RbspBitReader {
+public:
+    RbspBitReader(const std::uint8_t* data, std::size_t size)
+        : data_(data)
+        , size_(size)
+    {
+    }
+
+    bool read_bit(std::uint32_t& bit)
+    {
+        while (byte_offset_ < size_) {
+            if (byte_offset_ >= 2
+                && data_[byte_offset_ - 2] == 0x00
+                && data_[byte_offset_ - 1] == 0x00
+                && data_[byte_offset_] == 0x03) {
+                ++byte_offset_;
+                bit_offset_ = 0;
+                continue;
+            }
+            bit = (data_[byte_offset_] >> (7U - bit_offset_)) & 1U;
+            ++bit_offset_;
+            if (bit_offset_ == 8U) {
+                bit_offset_ = 0;
+                ++byte_offset_;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    bool read_ue(std::uint32_t& value)
+    {
+        std::uint32_t leading_zero_bits {};
+        std::uint32_t bit {};
+        while (read_bit(bit)) {
+            if (bit != 0) {
+                break;
+            }
+            ++leading_zero_bits;
+            if (leading_zero_bits > 31U) {
+                return false;
+            }
+        }
+        if (bit == 0) {
+            return false;
+        }
+
+        std::uint32_t suffix {};
+        for (std::uint32_t i = 0; i < leading_zero_bits; ++i) {
+            if (!read_bit(bit)) {
+                return false;
+            }
+            suffix = (suffix << 1U) | bit;
+        }
+        value = ((1U << leading_zero_bits) - 1U) + suffix;
+        return true;
+    }
+
+private:
+    const std::uint8_t* data_ {};
+    std::size_t size_ {};
+    std::size_t byte_offset_ {};
+    std::uint32_t bit_offset_ {};
+};
+
+bool first_slice_starts_frame(const std::uint8_t* nal, std::size_t size)
+{
+    if (size <= 1) {
+        return false;
+    }
+    RbspBitReader reader(nal + 1, size - 1U);
+    std::uint32_t first_mb_in_slice {};
+    return reader.read_ue(first_mb_in_slice) && first_mb_in_slice == 0;
+}
+
+bool nal_is_vcl(std::uint8_t nal_type)
+{
+    return nal_type >= 1 && nal_type <= 5;
+}
+
+} // namespace
+
 bool CedarRtpDecoder::init_socket(std::uint16_t udp_port)
 {
     socket_fd_ = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
@@ -107,7 +222,7 @@ bool CedarRtpDecoder::init_socket(std::uint16_t udp_port)
         return false;
     }
 
-    const int receive_buffer = 1024 * 1024;
+    const int receive_buffer = 8 * 1024 * 1024;
     setsockopt(socket_fd_, SOL_SOCKET, SO_RCVBUF, &receive_buffer, sizeof(receive_buffer));
 
     sockaddr_in address {};
@@ -181,6 +296,7 @@ bool CedarRtpDecoder::handle_rtp_packet(const std::uint8_t* packet, std::size_t 
     const bool has_extension = (packet[0] & 0x10U) != 0;
     const auto csrc_count = packet[0] & 0x0FU;
     const bool marker = (packet[1] & 0x80U) != 0;
+    const auto sequence = static_cast<std::uint16_t>((static_cast<std::uint16_t>(packet[2]) << 8U) | packet[3]);
     const auto timestamp = (static_cast<std::uint32_t>(packet[4]) << 24U)
         | (static_cast<std::uint32_t>(packet[5]) << 16U)
         | (static_cast<std::uint32_t>(packet[6]) << 8U)
@@ -213,29 +329,57 @@ bool CedarRtpDecoder::handle_rtp_packet(const std::uint8_t* packet, std::size_t 
     }
 
     ++packets_;
-    return append_h264_payload(packet + offset, payload_size, marker, timestamp);
+    return append_h264_payload(packet + offset, payload_size, marker, sequence, timestamp);
 }
 
-bool CedarRtpDecoder::append_h264_payload(const std::uint8_t* payload, std::size_t size, bool marker, std::uint32_t timestamp)
+bool CedarRtpDecoder::append_h264_payload(const std::uint8_t* payload, std::size_t size, bool marker, std::uint16_t sequence, std::uint32_t timestamp)
 {
     if (size == 0) {
         return true;
     }
 
+    if (dropping_timestamp_) {
+        if (timestamp == drop_timestamp_) {
+            return true;
+        }
+        dropping_timestamp_ = false;
+    }
+
+    if (have_sequence_ && sequence != expected_sequence_) {
+        ++rtp_sequence_gaps_;
+        reset_access_unit();
+    }
+    expected_sequence_ = static_cast<std::uint16_t>(sequence + 1U);
+    have_sequence_ = true;
+
     if (have_timestamp_ && timestamp != current_timestamp_ && !access_unit_.empty()) {
-        if (!submit_access_unit()) {
+        if (fu_started_) {
+            reset_access_unit();
+        } else if (!submit_access_unit()) {
             return false;
         }
     }
     current_timestamp_ = timestamp;
     have_timestamp_ = true;
 
-    constexpr std::uint8_t start_code[] { 0x00, 0x00, 0x00, 0x01 };
     const auto nal_type = payload[0] & 0x1FU;
     if (nal_type >= 1 && nal_type <= 23) {
-        access_unit_.insert(access_unit_.end(), std::begin(start_code), std::end(start_code));
+        fu_started_ = false;
+        if (nal_is_vcl(nal_type)) {
+            if (!access_unit_has_vcl_ && !first_slice_starts_frame(payload, size)) {
+                reset_access_unit();
+                dropping_timestamp_ = true;
+                drop_timestamp_ = timestamp;
+                ++dropped_incomplete_fragments_;
+                return true;
+            }
+            access_unit_has_vcl_ = true;
+        }
+        append_aud_if_needed(access_unit_);
+        append_start_code(access_unit_);
         access_unit_.insert(access_unit_.end(), payload, payload + size);
     } else if (nal_type == 24) {
+        fu_started_ = false;
         std::size_t offset = 1;
         while (offset + 2U <= size) {
             const auto nal_size = (static_cast<std::size_t>(payload[offset]) << 8U) | payload[offset + 1U];
@@ -243,7 +387,19 @@ bool CedarRtpDecoder::append_h264_payload(const std::uint8_t* payload, std::size
             if (offset + nal_size > size) {
                 break;
             }
-            access_unit_.insert(access_unit_.end(), std::begin(start_code), std::end(start_code));
+            const auto stap_nal_type = payload[offset] & 0x1FU;
+            if (nal_is_vcl(stap_nal_type)) {
+                if (!access_unit_has_vcl_ && !first_slice_starts_frame(payload + offset, nal_size)) {
+                    reset_access_unit();
+                    dropping_timestamp_ = true;
+                    drop_timestamp_ = timestamp;
+                    ++dropped_incomplete_fragments_;
+                    return true;
+                }
+                access_unit_has_vcl_ = true;
+            }
+            append_aud_if_needed(access_unit_);
+            append_start_code(access_unit_);
             access_unit_.insert(access_unit_.end(), payload + offset, payload + offset + nal_size);
             offset += nal_size;
         }
@@ -251,15 +407,40 @@ bool CedarRtpDecoder::append_h264_payload(const std::uint8_t* payload, std::size
         const auto fu_indicator = payload[0];
         const auto fu_header = payload[1];
         const bool start = (fu_header & 0x80U) != 0;
+        const bool end = (fu_header & 0x40U) != 0;
         const auto reconstructed = static_cast<std::uint8_t>((fu_indicator & 0xE0U) | (fu_header & 0x1FU));
         if (start) {
-            access_unit_.insert(access_unit_.end(), std::begin(start_code), std::end(start_code));
+            const auto reconstructed_nal_type = reconstructed & 0x1FU;
+            if (nal_is_vcl(reconstructed_nal_type)) {
+                std::vector<std::uint8_t> first_fragment_nal;
+                first_fragment_nal.reserve(size - 1U);
+                first_fragment_nal.push_back(reconstructed);
+                first_fragment_nal.insert(first_fragment_nal.end(), payload + 2, payload + size);
+                if (!access_unit_has_vcl_ && !first_slice_starts_frame(first_fragment_nal.data(), first_fragment_nal.size())) {
+                    reset_access_unit();
+                    dropping_timestamp_ = true;
+                    drop_timestamp_ = timestamp;
+                    ++dropped_incomplete_fragments_;
+                    return true;
+                }
+                access_unit_has_vcl_ = true;
+            }
+            fu_started_ = true;
+            fu_timestamp_ = timestamp;
+            append_aud_if_needed(access_unit_);
+            append_start_code(access_unit_);
             access_unit_.push_back(reconstructed);
+        } else if (!fu_started_ || fu_timestamp_ != timestamp) {
+            ++dropped_incomplete_fragments_;
+            return true;
         }
         access_unit_.insert(access_unit_.end(), payload + 2, payload + size);
+        if (end) {
+            fu_started_ = false;
+        }
     }
 
-    if (marker && !access_unit_.empty()) {
+    if (marker && !access_unit_.empty() && !fu_started_) {
         return submit_access_unit();
     }
     return true;
@@ -277,8 +458,7 @@ bool CedarRtpDecoder::submit_access_unit()
     int ring_buffer_size {};
     const auto requested = static_cast<int>(access_unit_.size());
     if (RequestVideoStreamBuffer(decoder_, requested, &buffer, &buffer_size, &ring_buffer, &ring_buffer_size, 0) != 0) {
-        access_unit_.clear();
-        ++dropped_access_units_;
+        reset_access_unit();
         for (int i = 0; i < 4; ++i) {
             const auto result = DecodeVideoStream(decoder_, 0, 0, 0, 0);
             if (result == VDECODE_RESULT_NO_BITSTREAM || result == VDECODE_RESULT_NO_FRAME_BUFFER) {
@@ -288,8 +468,7 @@ bool CedarRtpDecoder::submit_access_unit()
         return true;
     }
     if (buffer_size + ring_buffer_size < requested) {
-        access_unit_.clear();
-        ++dropped_access_units_;
+        reset_access_unit();
         return true;
     }
 
@@ -314,6 +493,8 @@ bool CedarRtpDecoder::submit_access_unit()
     ++access_units_;
     access_unit_submitted_this_poll_ = true;
     access_unit_.clear();
+    have_timestamp_ = false;
+    access_unit_has_vcl_ = false;
 
     for (int i = 0; i < 8; ++i) {
         const auto result = DecodeVideoStream(decoder_, 0, 0, 0, 0);
@@ -329,6 +510,15 @@ bool CedarRtpDecoder::submit_access_unit()
         }
     }
     return true;
+}
+
+void CedarRtpDecoder::reset_access_unit()
+{
+    access_unit_.clear();
+    have_timestamp_ = false;
+    fu_started_ = false;
+    access_unit_has_vcl_ = false;
+    ++dropped_access_units_;
 }
 
 bool CedarRtpDecoder::drain_picture(glide::dev::DmabufVideoFrame& frame)
