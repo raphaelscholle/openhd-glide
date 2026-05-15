@@ -9,7 +9,7 @@ fi
 
 TARGET="$1"
 PORT="${2:-5600}"
-VIDEO_FILE="${3:-examples/media/Battlefield 1080P 120Fps 8Mbps_h265.mp4}"
+VIDEO_FILE="${3:-examples/media/battlefield_1080p_120fps_8mbps_h265.mp4}"
 VIDEO_URL="${GLIDE_TEST_VIDEO_URL:-https://blurbusters.com/wp-content/uploads/2019/01/battlefield_1080p_120fps_8mbps.mp4}"
 MODE="${4:-realtime}"
 if [ "$MODE" = "--fast" ] || [ "$MODE" = "fast" ]; then
