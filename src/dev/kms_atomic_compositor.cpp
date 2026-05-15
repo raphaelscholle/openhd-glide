@@ -101,6 +101,99 @@ bool add_property(
     return true;
 }
 
+bool add_optional_property(
+    int drm_fd,
+    drmModeAtomicReq* request,
+    std::uint32_t object_id,
+    std::uint32_t object_type,
+    const char* name,
+    std::uint64_t value,
+    std::string& error)
+{
+    const auto id = property_id(drm_fd, object_id, object_type, name);
+    if (id == 0) {
+        return true;
+    }
+    if (drmModeAtomicAddProperty(request, object_id, id, value) < 0) {
+        error = std::string("failed to add atomic KMS property ") + name + errno_suffix();
+        return false;
+    }
+    return true;
+}
+
+bool add_optional_range_edge_property(
+    int drm_fd,
+    drmModeAtomicReq* request,
+    std::uint32_t object_id,
+    std::uint32_t object_type,
+    const char* name,
+    bool maximum,
+    std::string& error)
+{
+    auto* properties = drmModeObjectGetProperties(drm_fd, object_id, object_type);
+    if (properties == nullptr) {
+        return true;
+    }
+
+    bool ok { true };
+    for (std::uint32_t i = 0; i < properties->count_props; ++i) {
+        auto* property = drmModeGetProperty(drm_fd, properties->props[i]);
+        if (property != nullptr
+            && std::strcmp(property->name, name) == 0
+            && (property->flags & DRM_MODE_PROP_RANGE) != 0
+            && property->count_values >= 2) {
+            const auto value = maximum ? property->values[1] : property->values[0];
+            ok = add_optional_property(drm_fd, request, object_id, object_type, name, value, error);
+        }
+        if (property != nullptr) {
+            drmModeFreeProperty(property);
+        }
+        if (!ok) {
+            break;
+        }
+    }
+
+    drmModeFreeObjectProperties(properties);
+    return ok;
+}
+
+bool add_optional_enum_property(
+    int drm_fd,
+    drmModeAtomicReq* request,
+    std::uint32_t object_id,
+    std::uint32_t object_type,
+    const char* name,
+    const char* enum_name,
+    std::string& error)
+{
+    auto* properties = drmModeObjectGetProperties(drm_fd, object_id, object_type);
+    if (properties == nullptr) {
+        return true;
+    }
+
+    bool ok { true };
+    for (std::uint32_t i = 0; i < properties->count_props; ++i) {
+        auto* property = drmModeGetProperty(drm_fd, properties->props[i]);
+        if (property != nullptr && std::strcmp(property->name, name) == 0 && (property->flags & DRM_MODE_PROP_ENUM) != 0) {
+            for (int j = 0; j < property->count_enums; ++j) {
+                if (std::strcmp(property->enums[j].name, enum_name) == 0) {
+                    ok = add_optional_property(drm_fd, request, object_id, object_type, name, property->enums[j].value, error);
+                    break;
+                }
+            }
+        }
+        if (property != nullptr) {
+            drmModeFreeProperty(property);
+        }
+        if (!ok) {
+            break;
+        }
+    }
+
+    drmModeFreeObjectProperties(properties);
+    return ok;
+}
+
 bool get_property_value(int drm_fd, std::uint32_t object_id, std::uint32_t object_type, const char* name, std::uint64_t& value)
 {
     auto* properties = drmModeObjectGetProperties(drm_fd, object_id, object_type);
@@ -883,6 +976,16 @@ bool KmsAtomicCompositor::commit(const DmabufVideoFrame& video_frame, std::uint3
         ok = ok && add_property(drm_fd_, request, connector_id_, DRM_MODE_OBJECT_CONNECTOR, "CRTC_ID", crtc_id_, last_error_);
         ok = ok && add_property(drm_fd_, request, crtc_id_, DRM_MODE_OBJECT_CRTC, "MODE_ID", mode_blob_id_, last_error_);
         ok = ok && add_property(drm_fd_, request, crtc_id_, DRM_MODE_OBJECT_CRTC, "ACTIVE", 1, last_error_);
+        ok = ok && add_optional_range_edge_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "zpos", false, last_error_);
+        ok = ok && add_optional_range_edge_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "ZPOS", false, last_error_);
+        ok = ok && add_optional_enum_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "pixel blend mode", "None", last_error_);
+        ok = ok && add_optional_range_edge_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "zpos", false, last_error_);
+        ok = ok && add_optional_range_edge_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "ZPOS", false, last_error_);
+        ok = ok && add_optional_enum_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "pixel blend mode", "None", last_error_);
+        ok = ok && add_optional_range_edge_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "zpos", true, last_error_);
+        ok = ok && add_optional_range_edge_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "ZPOS", true, last_error_);
+        ok = ok && add_optional_range_edge_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "alpha", true, last_error_);
+        ok = ok && add_optional_enum_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "pixel blend mode", "Pre-multiplied", last_error_);
     }
 
     ok = ok && add_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "FB_ID", primary_.framebuffer, last_error_);

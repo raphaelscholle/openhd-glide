@@ -68,7 +68,7 @@ struct Options {
     std::string ipc_socket { glide::ipc::default_socket_path };
     bool vertical_stack {};
     bool flow_overlay { true };
-    double flow_fps { 1.0 };
+    double flow_fps { 30.0 };
     double present_fps {};
     bool atomic_kms {};
     bool vblank_wait {};

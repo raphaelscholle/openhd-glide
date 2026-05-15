@@ -446,7 +446,7 @@ bool GlesTextRenderer::draw_antialiased_text(const TextPlacement& placement, Sur
     const auto pixel_size = static_cast<unsigned int>(std::clamp(placement.scale * 1.35F, 10.0F, 72.0F));
     glViewport(0, 0, static_cast<GLsizei>(surface.width), static_cast<GLsizei>(surface.height));
     glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     glUseProgram(text_program_);
     glUniform4f(text_color_location_, 0.92F, 0.96F, 1.0F, 0.98F);
     glUniform1i(text_sampler_location_, 0);
@@ -528,7 +528,7 @@ void GlesTextRenderer::draw_filled_quad(
 
     glViewport(0, 0, static_cast<GLsizei>(surface.width), static_cast<GLsizei>(surface.height));
     glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     glUseProgram(program_);
     glUniform4f(color_location_, color.red, color.green, color.blue, color.alpha);
 
@@ -568,7 +568,7 @@ void GlesTextRenderer::draw_line(
 
     glViewport(0, 0, static_cast<GLsizei>(surface.width), static_cast<GLsizei>(surface.height));
     glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     glUseProgram(program_);
     glUniform4f(color_location_, color.red, color.green, color.blue, color.alpha);
     draw_stroke_quad(position_location_, start, end, thickness, surface);
@@ -634,7 +634,7 @@ void GlesTextRenderer::draw(const TextPlacement& placement, SurfaceSize surface)
     // will own context creation; GlideFlow only submits OSD geometry.
     glViewport(0, 0, static_cast<GLsizei>(surface.width), static_cast<GLsizei>(surface.height));
     glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     glUseProgram(program_);
 
     float cursor_x = placement.x;
