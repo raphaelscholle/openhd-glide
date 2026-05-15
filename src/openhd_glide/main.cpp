@@ -634,6 +634,23 @@ int run_kms_video_preview(const Options& options)
                 return;
             }
 
+            if (flow_debug_solid) {
+                compositor.release_flow_context();
+                while (stop_requested == 0) {
+                    if (!compositor.publish_solid_flow_frame(0xFFFF00FFU)) {
+                        glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
+                        stop_requested = 1;
+                        break;
+                    }
+                    if (flow_fps > 0.0) {
+                        std::this_thread::sleep_for(flow_frame_interval);
+                    } else {
+                        std::this_thread::yield();
+                    }
+                }
+                return;
+            }
+
             {
                 glide::flow::GlesTextRenderer renderer;
                 glide::flow::FpsCounter fps_counter;

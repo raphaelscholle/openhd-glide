@@ -316,6 +316,7 @@ bool KmsAtomicCompositor::present(const DmabufVideoFrame& video_frame, bool upda
     }
 
     std::uint32_t flow_framebuffer { current_flow_framebuffer_ };
+    bool flow_is_solid_dumb { current_flow_is_solid_dumb_ };
     void* flow_bo {};
     if (update_flow_frame && !lock_flow_framebuffer(flow_framebuffer, flow_bo)) {
         return false;
@@ -325,10 +326,13 @@ bool KmsAtomicCompositor::present(const DmabufVideoFrame& video_frame, bool upda
         if (pending_flow_framebuffer_ != 0) {
             flow_framebuffer = pending_flow_framebuffer_;
             flow_bo = pending_flow_bo_;
+            flow_is_solid_dumb = pending_flow_is_solid_dumb_;
             pending_flow_framebuffer_ = 0;
             pending_flow_bo_ = nullptr;
+            pending_flow_is_solid_dumb_ = false;
         } else {
             flow_framebuffer = current_flow_framebuffer_;
+            flow_is_solid_dumb = current_flow_is_solid_dumb_;
         }
     }
 
@@ -340,15 +344,16 @@ bool KmsAtomicCompositor::present(const DmabufVideoFrame& video_frame, bool upda
         return false;
     }
 
-    if (flow_bo != nullptr && current_flow_framebuffer_ != 0) {
+    if (flow_framebuffer != current_flow_framebuffer_ && current_flow_framebuffer_ != 0 && !current_flow_is_solid_dumb_) {
         drmModeRmFB(drm_fd_, current_flow_framebuffer_);
     }
-    if (flow_bo != nullptr && current_flow_bo_ != nullptr) {
+    if (flow_framebuffer != current_flow_framebuffer_ && current_flow_bo_ != nullptr) {
         gbm_surface_release_buffer(static_cast<gbm_surface*>(gbm_surface_), static_cast<gbm_bo*>(current_flow_bo_));
     }
-    if (flow_bo != nullptr) {
+    if (flow_framebuffer != current_flow_framebuffer_ || flow_bo != nullptr) {
         current_flow_framebuffer_ = flow_framebuffer;
         current_flow_bo_ = flow_bo;
+        current_flow_is_solid_dumb_ = flow_is_solid_dumb;
     }
     return true;
 #else
@@ -414,6 +419,40 @@ bool KmsAtomicCompositor::publish_rendered_flow_frame()
     }
     pending_flow_framebuffer_ = framebuffer;
     pending_flow_bo_ = bo;
+    pending_flow_is_solid_dumb_ = false;
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool KmsAtomicCompositor::publish_solid_flow_frame(std::uint32_t argb)
+{
+#if OPENHD_GLIDE_HAS_KMS_GBM
+    if (solid_flow_.framebuffer == 0 && !create_solid_flow_buffer()) {
+        return false;
+    }
+    if (solid_flow_.map == nullptr) {
+        last_error_ = "solid Flow debug buffer is not mapped";
+        return false;
+    }
+
+    for (std::uint32_t y = 0; y < surface_.height; ++y) {
+        auto* row = reinterpret_cast<std::uint32_t*>(
+            static_cast<unsigned char*>(solid_flow_.map) + static_cast<std::size_t>(y) * solid_flow_.pitch);
+        std::fill(row, row + surface_.width, argb);
+    }
+
+    std::lock_guard<std::mutex> lock(flow_framebuffer_mutex_);
+    if (pending_flow_framebuffer_ != 0 && !pending_flow_is_solid_dumb_) {
+        drmModeRmFB(drm_fd_, pending_flow_framebuffer_);
+    }
+    if (pending_flow_bo_ != nullptr) {
+        gbm_surface_release_buffer(static_cast<gbm_surface*>(gbm_surface_), static_cast<gbm_bo*>(pending_flow_bo_));
+    }
+    pending_flow_framebuffer_ = solid_flow_.framebuffer;
+    pending_flow_bo_ = nullptr;
+    pending_flow_is_solid_dumb_ = true;
     return true;
 #else
     return false;
@@ -870,6 +909,46 @@ bool KmsAtomicCompositor::create_egl()
     return true;
 }
 
+bool KmsAtomicCompositor::create_solid_flow_buffer()
+{
+    drm_mode_create_dumb create {};
+    create.width = surface_.width;
+    create.height = surface_.height;
+    create.bpp = 32;
+    if (drmIoctl(drm_fd_, DRM_IOCTL_MODE_CREATE_DUMB, &create) != 0) {
+        last_error_ = "failed to create solid Flow debug buffer" + errno_suffix();
+        return false;
+    }
+    solid_flow_.handle = create.handle;
+    solid_flow_.pitch = create.pitch;
+    solid_flow_.size = create.size;
+
+    std::uint32_t handles[4] { solid_flow_.handle, 0, 0, 0 };
+    std::uint32_t strides[4] { solid_flow_.pitch, 0, 0, 0 };
+    std::uint32_t offsets[4] {};
+    if (drmModeAddFB2(drm_fd_, surface_.width, surface_.height, DRM_FORMAT_ARGB8888, handles, strides, offsets, &solid_flow_.framebuffer, 0) != 0) {
+        last_error_ = "failed to create solid Flow debug framebuffer" + errno_suffix();
+        destroy_solid_flow_buffer();
+        return false;
+    }
+
+    drm_mode_map_dumb map {};
+    map.handle = solid_flow_.handle;
+    if (drmIoctl(drm_fd_, DRM_IOCTL_MODE_MAP_DUMB, &map) != 0) {
+        last_error_ = "failed to map solid Flow debug buffer" + errno_suffix();
+        destroy_solid_flow_buffer();
+        return false;
+    }
+    solid_flow_.map = mmap(nullptr, solid_flow_.size, PROT_READ | PROT_WRITE, MAP_SHARED, drm_fd_, static_cast<off_t>(map.offset));
+    if (solid_flow_.map == MAP_FAILED) {
+        solid_flow_.map = nullptr;
+        last_error_ = "failed to mmap solid Flow debug buffer" + errno_suffix();
+        destroy_solid_flow_buffer();
+        return false;
+    }
+    return true;
+}
+
 bool KmsAtomicCompositor::add_gbm_framebuffer(void* bo, std::uint32_t& framebuffer_id)
 {
     auto* buffer = static_cast<gbm_bo*>(bo);
@@ -1156,6 +1235,25 @@ void KmsAtomicCompositor::destroy_primary_buffer()
     }
 }
 
+void KmsAtomicCompositor::destroy_solid_flow_buffer()
+{
+    if (solid_flow_.map != nullptr) {
+        munmap(solid_flow_.map, static_cast<std::size_t>(solid_flow_.size));
+        solid_flow_.map = nullptr;
+    }
+    if (drm_fd_ >= 0 && solid_flow_.framebuffer != 0) {
+        drmModeRmFB(drm_fd_, solid_flow_.framebuffer);
+        solid_flow_.framebuffer = 0;
+    }
+    if (drm_fd_ >= 0 && solid_flow_.handle != 0) {
+        drm_mode_destroy_dumb destroy {};
+        destroy.handle = solid_flow_.handle;
+        drmIoctl(drm_fd_, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+        solid_flow_.handle = 0;
+    }
+    solid_flow_ = {};
+}
+
 void KmsAtomicCompositor::cleanup()
 {
     if (drm_fd_ >= 0 && original_crtc_ != nullptr) {
@@ -1174,18 +1272,20 @@ void KmsAtomicCompositor::cleanup()
         drmModeFreeCrtc(static_cast<drmModeCrtc*>(original_crtc_));
         original_crtc_ = nullptr;
     }
-    if (pending_flow_framebuffer_ != 0 && drm_fd_ >= 0) {
+    if (pending_flow_framebuffer_ != 0 && drm_fd_ >= 0 && !pending_flow_is_solid_dumb_) {
         drmModeRmFB(drm_fd_, pending_flow_framebuffer_);
-        pending_flow_framebuffer_ = 0;
     }
+    pending_flow_framebuffer_ = 0;
+    pending_flow_is_solid_dumb_ = false;
     if (pending_flow_bo_ != nullptr && gbm_surface_ != nullptr) {
         gbm_surface_release_buffer(static_cast<gbm_surface*>(gbm_surface_), static_cast<gbm_bo*>(pending_flow_bo_));
         pending_flow_bo_ = nullptr;
     }
-    if (current_flow_framebuffer_ != 0 && drm_fd_ >= 0) {
+    if (current_flow_framebuffer_ != 0 && drm_fd_ >= 0 && !current_flow_is_solid_dumb_) {
         drmModeRmFB(drm_fd_, current_flow_framebuffer_);
-        current_flow_framebuffer_ = 0;
     }
+    current_flow_framebuffer_ = 0;
+    current_flow_is_solid_dumb_ = false;
     if (current_flow_bo_ != nullptr && gbm_surface_ != nullptr) {
         gbm_surface_release_buffer(static_cast<gbm_surface*>(gbm_surface_), static_cast<gbm_bo*>(current_flow_bo_));
         current_flow_bo_ = nullptr;
@@ -1216,6 +1316,7 @@ void KmsAtomicCompositor::cleanup()
     }
 
     destroy_video_framebuffer_cache();
+    destroy_solid_flow_buffer();
     destroy_primary_buffer();
 
     if (drm_fd_ >= 0 && mode_blob_id_ != 0) {

@@ -24,6 +24,7 @@ public:
     bool make_flow_context_current();
     bool release_flow_context();
     bool publish_rendered_flow_frame();
+    bool publish_solid_flow_frame(std::uint32_t argb);
     flow::SurfaceSize surface_size() const;
     const std::string& last_error() const;
 
@@ -66,6 +67,7 @@ private:
     bool create_gbm_device();
     bool create_flow_surface();
     bool create_egl();
+    bool create_solid_flow_buffer();
     bool add_gbm_framebuffer(void* bo, std::uint32_t& framebuffer_id);
     bool lock_flow_framebuffer(std::uint32_t& framebuffer_id, void*& bo);
     bool import_video_frame(const DmabufVideoFrame& frame, ImportedFramebuffer& imported);
@@ -76,6 +78,7 @@ private:
     void destroy_imported(ImportedFramebuffer& imported);
     void destroy_video_framebuffer_cache();
     void destroy_primary_buffer();
+    void destroy_solid_flow_buffer();
     void cleanup();
 
     int drm_fd_ { -1 };
@@ -100,8 +103,11 @@ private:
     void* egl_surface_ {};
     void* current_flow_bo_ {};
     std::uint32_t current_flow_framebuffer_ {};
+    bool current_flow_is_solid_dumb_ {};
     void* pending_flow_bo_ {};
     std::uint32_t pending_flow_framebuffer_ {};
+    bool pending_flow_is_solid_dumb_ {};
+    DumbBuffer solid_flow_ {};
     std::mutex flow_framebuffer_mutex_;
     std::vector<CachedFramebuffer> video_framebuffer_cache_;
     std::uint64_t frame_serial_ {};
