@@ -113,14 +113,15 @@ struct Options {
 };
 
 enum class SidebarPanel {
-    scan = 0,
+    dashboard = 0,
     link = 1,
     video = 2,
     camera = 3,
-    recording = 4,
-    rc = 5,
-    misc = 6,
-    status = 7,
+    osd = 4,
+    telemetry = 5,
+    recording = 6,
+    system = 7,
+    developer = 8,
 };
 
 struct UiState {
@@ -128,12 +129,11 @@ struct UiState {
     glide::mavlink::Snapshot mavlink;
     bool fps_enabled { true };
     bool advanced_visible {};
-    bool expanded { true };
     bool focus_panel {};
     int selected_row {};
     int row_count {};
     lv_obj_t* root {};
-    SidebarPanel active_panel { SidebarPanel::scan };
+    SidebarPanel active_panel { SidebarPanel::dashboard };
     lv_obj_t* panel_title {};
     lv_obj_t* panel_body {};
     lv_obj_t* fps_switch {};
@@ -296,47 +296,49 @@ lv_obj_t* label(lv_obj_t* parent, const char* text, const lv_font_t* font, std::
 const char* panel_title(SidebarPanel panel)
 {
     switch (panel) {
-    case SidebarPanel::scan:
-        return "Find Air Unit";
+    case SidebarPanel::dashboard:
+        return "Dashboard";
     case SidebarPanel::link:
         return "Link";
     case SidebarPanel::video:
         return "Video";
     case SidebarPanel::camera:
         return "Camera";
+    case SidebarPanel::osd:
+        return "OSD";
+    case SidebarPanel::telemetry:
+        return "Telemetry";
     case SidebarPanel::recording:
         return "Recording";
-    case SidebarPanel::rc:
-        return "RC";
-    case SidebarPanel::misc:
-        return "Misc";
-    case SidebarPanel::status:
-        return "Status";
+    case SidebarPanel::system:
+        return "System";
+    case SidebarPanel::developer:
+        return "Developer";
     }
-    return "Misc";
+    return "Dashboard";
 }
 
 const char* nav_symbol(int index)
 {
     switch (index) {
     case 0:
-        return LV_SYMBOL_LEFT;
+        return LV_SYMBOL_HOME;
     case 1:
-        return LV_SYMBOL_EYE_OPEN;
-    case 2:
         return LV_SYMBOL_WIFI;
-    case 3:
+    case 2:
         return LV_SYMBOL_VIDEO;
-    case 4:
+    case 3:
         return LV_SYMBOL_IMAGE;
+    case 4:
+        return LV_SYMBOL_SETTINGS;
     case 5:
-        return LV_SYMBOL_SAVE;
+        return LV_SYMBOL_EYE_OPEN;
     case 6:
-        return LV_SYMBOL_KEYBOARD;
+        return LV_SYMBOL_SAVE;
     case 7:
         return LV_SYMBOL_SETTINGS;
     case 8:
-        return LV_SYMBOL_HOME;
+        return LV_SYMBOL_KEYBOARD;
     }
     return LV_SYMBOL_SETTINGS;
 }
@@ -345,23 +347,23 @@ const char* nav_text(int index)
 {
     switch (index) {
     case 0:
-        return "Back";
+        return "Dashboard";
     case 1:
-        return "Scan";
-    case 2:
         return "Link";
-    case 3:
+    case 2:
         return "Video";
-    case 4:
+    case 3:
         return "Camera";
+    case 4:
+        return "OSD";
     case 5:
-        return "Recording";
+        return "Telemetry";
     case 6:
-        return "RC";
+        return "Recording";
     case 7:
-        return "Misc";
+        return "System";
     case 8:
-        return "Status";
+        return "Developer";
     }
     return "Menu";
 }
@@ -382,10 +384,10 @@ void sync_fps_controls(UiState& state)
 
     if (state.fps_enabled) {
         lv_obj_add_state(state.fps_switch, LV_STATE_CHECKED);
-        lv_label_set_text(state.fps_label, "KMS video plane FPS enabled");
+        lv_label_set_text(state.fps_label, "Video FPS enabled");
     } else {
         lv_obj_remove_state(state.fps_switch, LV_STATE_CHECKED);
-        lv_label_set_text(state.fps_label, "KMS video plane FPS disabled");
+        lv_label_set_text(state.fps_label, "Video FPS disabled");
     }
 }
 
@@ -400,18 +402,19 @@ lv_obj_t* value_row(UiState& state, const char* title, const std::string& value,
 {
     const int row_index = state.row_count++;
     auto* row = lv_obj_create(state.panel_body);
-    set_panel_style(row, state.focus_panel && state.selected_row == row_index ? 0x1b3141 : 0x111d28);
-    lv_obj_set_size(row, LV_PCT(100), 46);
+    set_panel_style(row, state.focus_panel && state.selected_row == row_index ? 0x182f40 : 0x0d1b27, LV_OPA_70);
+    lv_obj_set_style_radius(row, 6, 0);
+    lv_obj_set_size(row, LV_PCT(100), 40);
     lv_obj_set_style_pad_left(row, 16, 0);
     lv_obj_set_style_pad_right(row, 14, 0);
     lv_obj_set_style_border_width(row, state.focus_panel && state.selected_row == row_index ? 1 : 0, 0);
-    lv_obj_set_style_border_color(row, color(0x2f7fa5), 0);
+    lv_obj_set_style_border_color(row, color(0xff8a00), 0);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    auto* left = label(row, title, &lv_font_montserrat_16, 0xd7e3ec);
+    auto* left = label(row, title, &lv_font_montserrat_14, 0xaab7c2);
     lv_obj_set_width(left, LV_PCT(45));
-    auto* right = label(row, value.c_str(), &lv_font_montserrat_16, value_color);
+    auto* right = label(row, value.c_str(), &lv_font_montserrat_14, value_color);
     lv_obj_set_width(right, LV_PCT(48));
     lv_obj_set_style_text_align(right, LV_TEXT_ALIGN_RIGHT, 0);
     lv_label_set_long_mode(right, LV_LABEL_LONG_DOT);
@@ -422,14 +425,15 @@ lv_obj_t* action_button(UiState& state, const char* text)
 {
     const int row_index = state.row_count++;
     auto* button = lv_button_create(state.panel_body);
-    set_panel_style(button, state.focus_panel && state.selected_row == row_index ? 0x1b3141 : 0x101722);
-    lv_obj_set_size(button, LV_PCT(100), 48);
-    lv_obj_set_style_bg_color(button, color(0x1d3344), LV_STATE_PRESSED);
-    lv_obj_set_style_bg_color(button, color(0x20394d), LV_STATE_FOCUSED);
+    set_panel_style(button, state.focus_panel && state.selected_row == row_index ? 0x2d210e : 0x1a2530, LV_OPA_90);
+    lv_obj_set_size(button, LV_PCT(100), 44);
+    lv_obj_set_style_radius(button, 6, 0);
+    lv_obj_set_style_bg_color(button, color(0x332410), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_color(button, color(0x263746), LV_STATE_FOCUSED);
     lv_obj_set_style_border_width(button, 1, 0);
-    lv_obj_set_style_border_color(button, color(0x35566d), 0);
+    lv_obj_set_style_border_color(button, color(0x5d6f7f), 0);
 
-    auto* button_label = label(button, text, &lv_font_montserrat_16);
+    auto* button_label = label(button, text, &lv_font_montserrat_14, 0xffffff);
     lv_obj_center(button_label);
     return button;
 }
@@ -462,13 +466,6 @@ void apply_terminal_key(UiState& state, const std::string& line)
     }
     const auto key = line.substr(7);
     auto index = static_cast<int>(state.active_panel);
-    if (!state.expanded) {
-        if (key == "right" || key == "enter") {
-            state.expanded = true;
-            rebuild_ui(state);
-        }
-        return;
-    }
     if (key == "up") {
         if (state.focus_panel) {
             state.selected_row = std::max(0, state.selected_row - 1);
@@ -482,15 +479,12 @@ void apply_terminal_key(UiState& state, const std::string& line)
             state.selected_row = std::min(std::max(0, state.row_count - 1), state.selected_row + 1);
             rebuild_ui(state);
         } else {
-            index = std::min(7, index + 1);
+            index = std::min(8, index + 1);
             set_active_panel(state, static_cast<SidebarPanel>(index));
         }
     } else if (key == "left" || key == "back") {
         if (state.focus_panel) {
             state.focus_panel = false;
-            rebuild_ui(state);
-        } else {
-            state.expanded = false;
             rebuild_ui(state);
         }
     } else if (key == "right") {
@@ -502,22 +496,74 @@ void apply_terminal_key(UiState& state, const std::string& line)
             state.focus_panel = true;
             state.selected_row = 0;
             rebuild_ui(state);
-        } else if (state.active_panel == SidebarPanel::scan && state.selected_row == 2) {
+        } else if (state.active_panel == SidebarPanel::dashboard && state.selected_row == 4) {
             send_mavlink_action(state, glide::mavlink::format_action_command("scan", "bands=openhd width=" + std::to_string(state.mavlink.channel_width_mhz)));
-        } else if (state.active_panel == SidebarPanel::status && state.selected_row == 5) {
+        } else if (state.active_panel == SidebarPanel::link && state.selected_row == 4) {
+            send_mavlink_action(state, glide::mavlink::format_action_set_param("air", "PIT_MODE", "toggle"));
+        } else if (state.active_panel == SidebarPanel::osd && state.selected_row == 0) {
+            state.fps_enabled = !state.fps_enabled;
+            sync_fps_controls(state);
+            send_fps_state(state);
+        } else if (state.active_panel == SidebarPanel::recording && state.selected_row == 2) {
+            send_mavlink_action(state, glide::mavlink::format_action_set_param("camera1", "AIR_RECORDING_E", "toggle"));
+        } else if (state.active_panel == SidebarPanel::developer && state.selected_row == 5) {
             state.advanced_visible = !state.advanced_visible;
             rebuild_ui(state);
         }
     }
 }
 
-void build_scan_panel(UiState& state)
+void dispatch_key(UiState& state, const char* key)
+{
+    apply_terminal_key(state, std::string("ui key ") + key);
+}
+
+void keyboard_event(lv_event_t* event)
+{
+    if (lv_event_get_code(event) != LV_EVENT_KEY) {
+        return;
+    }
+    auto* state = static_cast<UiState*>(lv_event_get_user_data(event));
+    if (state == nullptr) {
+        return;
+    }
+
+    switch (lv_event_get_key(event)) {
+    case LV_KEY_UP:
+        dispatch_key(*state, "up");
+        break;
+    case LV_KEY_DOWN:
+        dispatch_key(*state, "down");
+        break;
+    case LV_KEY_LEFT:
+    case LV_KEY_ESC:
+    case LV_KEY_BACKSPACE:
+        dispatch_key(*state, "back");
+        break;
+    case LV_KEY_RIGHT:
+        dispatch_key(*state, "right");
+        break;
+    case LV_KEY_ENTER:
+        dispatch_key(*state, "enter");
+        break;
+    default:
+        break;
+    }
+}
+
+void build_dashboard_panel(UiState& state)
 {
     setup_panel_column(state.panel_body);
+    const auto connection = state.mavlink.air_alive && state.mavlink.ground_alive
+        ? std::string("Connected")
+        : (state.mavlink.air_alive ? std::string("AIR only") : (state.mavlink.ground_alive ? std::string("GND only") : std::string("Searching")));
+    const auto connection_color = state.mavlink.air_alive && state.mavlink.ground_alive ? 0x3df0b2 : 0xff8a00;
+    value_row(state, "Link State", connection, connection_color);
+    value_row(state, "Air Unit", state.mavlink.air_alive ? "Online" : "Waiting", state.mavlink.air_alive ? 0x3df0b2 : 0xff8a00);
     value_row(state, "Channels", "OpenHD [1-7]");
     value_row(state, "Bandwidth", std::to_string(state.mavlink.channel_width_mhz) + " MHz");
 
-    auto* scan = action_button(state, "START SCAN");
+    auto* scan = action_button(state, "FIND AIR UNIT");
     lv_obj_add_event_cb(
         scan,
         [](lv_event_t* event) {
@@ -540,29 +586,27 @@ void build_scan_panel(UiState& state)
     lv_obj_align(state.scan_percent, LV_ALIGN_CENTER, 210, 0);
 }
 
-void build_misc_panel(UiState& state)
+void build_osd_panel(UiState& state)
 {
     setup_panel_column(state.panel_body);
-
-    value_row(state, "Air WiFi Mode", state.mavlink.air_wifi_mode);
-    value_row(state, "Ground WiFi Mode", state.mavlink.ground_wifi_mode);
-    value_row(state, "Air Hotspot", state.mavlink.air_hotspot);
-    value_row(state, "Ground Hotspot", state.mavlink.ground_hotspot);
-
-    auto* section = label(state.panel_body, "Video Plane FPS", &lv_font_montserrat_28);
+    auto* section = label(state.panel_body, "Overlay", &lv_font_montserrat_18, 0xffffff);
     lv_obj_set_width(section, LV_PCT(100));
 
+    const int row_index = state.row_count++;
     auto* row = lv_obj_create(state.panel_body);
-    set_panel_style(row, 0x162332);
-    lv_obj_set_size(row, LV_PCT(100), 82);
-    lv_obj_set_style_pad_left(row, 28, 0);
-    lv_obj_set_style_pad_right(row, 28, 0);
+    set_panel_style(row, state.focus_panel && state.selected_row == row_index ? 0x2d210e : 0x0f2130, LV_OPA_80);
+    lv_obj_set_style_radius(row, 6, 0);
+    lv_obj_set_style_border_width(row, state.focus_panel && state.selected_row == row_index ? 1 : 0, 0);
+    lv_obj_set_style_border_color(row, color(0xff8a00), 0);
+    lv_obj_set_size(row, LV_PCT(100), 62);
+    lv_obj_set_style_pad_left(row, 16, 0);
+    lv_obj_set_style_pad_right(row, 16, 0);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    state.fps_label = label(row, "KMS video plane FPS enabled", &lv_font_montserrat_22);
+    state.fps_label = label(row, "Video FPS", &lv_font_montserrat_16, 0xdce8f0);
     state.fps_switch = lv_switch_create(row);
-    lv_obj_set_size(state.fps_switch, 72, 36);
+    lv_obj_set_size(state.fps_switch, 58, 30);
     lv_obj_add_event_cb(
         state.fps_switch,
         [](lv_event_t* event) {
@@ -574,6 +618,15 @@ void build_misc_panel(UiState& state)
         LV_EVENT_VALUE_CHANGED,
         &state);
     sync_fps_controls(state);
+}
+
+void build_system_panel(UiState& state)
+{
+    setup_panel_column(state.panel_body);
+    value_row(state, "Air WiFi Mode", state.mavlink.air_wifi_mode);
+    value_row(state, "Ground WiFi Mode", state.mavlink.ground_wifi_mode);
+    value_row(state, "Air Hotspot", state.mavlink.air_hotspot);
+    value_row(state, "Ground Hotspot", state.mavlink.ground_hotspot);
 }
 
 void build_link_panel(UiState& state)
@@ -656,7 +709,7 @@ void build_status_panel(UiState& state)
         [](lv_event_t* event) {
             auto* state = static_cast<UiState*>(lv_event_get_user_data(event));
             state->advanced_visible = !state->advanced_visible;
-            set_active_panel(*state, SidebarPanel::status);
+            set_active_panel(*state, SidebarPanel::developer);
         },
         LV_EVENT_CLICKED,
         &state);
@@ -691,35 +744,41 @@ void set_active_panel(UiState& state, SidebarPanel panel)
     state.active_panel = panel;
     state.selected_row = 0;
     state.focus_panel = false;
+    if (state.panel_title == nullptr || state.panel_body == nullptr) {
+        rebuild_ui(state);
+        return;
+    }
     lv_label_set_text(state.panel_title, panel_title(panel));
     clear_panel(state);
 
-    for (int i = 1; i < 9; ++i) {
+    for (int i = 0; i < 9; ++i) {
         if (state.nav_buttons[i] == nullptr) {
             continue;
         }
-        if (static_cast<int>(panel) == i - 1) {
+        if (static_cast<int>(panel) == i) {
             lv_obj_add_state(state.nav_buttons[i], LV_STATE_CHECKED);
         } else {
             lv_obj_remove_state(state.nav_buttons[i], LV_STATE_CHECKED);
         }
     }
 
-    if (panel == SidebarPanel::scan) {
-        build_scan_panel(state);
+    if (panel == SidebarPanel::dashboard) {
+        build_dashboard_panel(state);
     } else if (panel == SidebarPanel::link) {
         build_link_panel(state);
     } else if (panel == SidebarPanel::video) {
         build_video_panel(state);
     } else if (panel == SidebarPanel::camera) {
         build_camera_panel(state);
+    } else if (panel == SidebarPanel::osd) {
+        build_osd_panel(state);
+    } else if (panel == SidebarPanel::telemetry) {
+        build_rc_panel(state);
     } else if (panel == SidebarPanel::recording) {
         build_recording_panel(state);
-    } else if (panel == SidebarPanel::rc) {
-        build_rc_panel(state);
-    } else if (panel == SidebarPanel::misc) {
-        build_misc_panel(state);
-    } else if (panel == SidebarPanel::status) {
+    } else if (panel == SidebarPanel::system) {
+        build_system_panel(state);
+    } else if (panel == SidebarPanel::developer) {
         build_status_panel(state);
     } else {
         build_placeholder_panel(state);
@@ -730,109 +789,146 @@ void nav_clicked(lv_event_t* event)
 {
     auto* state = static_cast<UiState*>(lv_event_get_user_data(event));
     auto index = static_cast<int>(reinterpret_cast<std::intptr_t>(lv_obj_get_user_data(lv_event_get_target_obj(event))));
-    if (index <= 0) {
-        state->expanded = false;
-        rebuild_ui(*state);
-        return;
-    }
-    set_active_panel(*state, static_cast<SidebarPanel>(index - 1));
+    set_active_panel(*state, static_cast<SidebarPanel>(index));
 }
 
 void build_sidebar(UiState& state, std::uint32_t width, std::uint32_t height)
 {
     auto* screen = lv_screen_active();
     state.root = screen;
-    set_panel_style(screen, 0x081018);
+    set_panel_style(screen, 0x000000, LV_OPA_TRANSP);
+
+    const int safe_width = static_cast<int>(std::max<std::uint32_t>(width, 220));
+    const int safe_height = static_cast<int>(std::max<std::uint32_t>(height, 360));
+    const bool compact = safe_width < 520;
+    const int menu_width = std::clamp(safe_width / 3, 210, compact ? 260 : 250);
+    const int menu_height = std::min(safe_height - 28, 540);
+    const int detail_width = compact ? 0 : std::max(260, safe_width - menu_width - 42);
+    const int detail_height = std::min(menu_height, safe_height - 28);
 
     auto* rail = lv_obj_create(screen);
-    const int rail_width = state.expanded ? 188 : 56;
-    set_panel_style(rail, 0x07111a);
-    lv_obj_set_size(rail, rail_width, height);
-    lv_obj_align(rail, LV_ALIGN_TOP_LEFT, 0, 0);
+    set_panel_style(rail, 0x020d15, LV_OPA_80);
+    lv_obj_set_style_radius(rail, 8, 0);
+    lv_obj_set_style_border_width(rail, 1, 0);
+    lv_obj_set_style_border_color(rail, color(0x33546a), 0);
+    lv_obj_set_size(rail, menu_width, menu_height);
+    lv_obj_align(rail, LV_ALIGN_LEFT_MID, 14, 0);
     lv_obj_set_flex_flow(rail, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_all(rail, 10, 0);
-    lv_obj_set_style_pad_row(rail, 4, 0);
+    lv_obj_set_style_pad_top(rail, 24, 0);
+    lv_obj_set_style_pad_bottom(rail, 12, 0);
+    lv_obj_set_style_pad_left(rail, 0, 0);
+    lv_obj_set_style_pad_right(rail, 0, 0);
+    lv_obj_set_style_pad_row(rail, 2, 0);
 
-    if (state.expanded) {
-        auto* usage = label(rail, "USAGE EXAMPLE", &lv_font_montserrat_12, 0xb9c7d3);
-        lv_obj_set_style_text_letter_space(usage, 0, 0);
-        lv_obj_set_height(usage, 26);
-        auto* brand = label(rail, "OPENHD", &lv_font_montserrat_12, 0xffffff);
-        lv_obj_set_height(brand, 22);
-    }
+    auto* brand = label(rail, "OPENHD", &lv_font_montserrat_20, 0xffffff);
+    lv_obj_set_width(brand, LV_PCT(100));
+    lv_obj_set_style_pad_left(brand, 26, 0);
+    lv_obj_set_height(brand, 36);
+
+    auto* accent = lv_obj_create(rail);
+    set_panel_style(accent, 0xff8a00);
+    lv_obj_set_size(accent, 70, 1);
+    lv_obj_set_style_margin_left(accent, 38, 0);
+    lv_obj_set_style_margin_bottom(accent, 14, 0);
 
     for (int i = 0; i < 9; ++i) {
         auto* button = lv_button_create(rail);
         state.nav_buttons[i] = button;
         lv_obj_set_user_data(button, reinterpret_cast<void*>(static_cast<std::intptr_t>(i)));
-        lv_obj_set_size(button, LV_PCT(100), 34);
-        lv_obj_set_style_radius(button, 4, 0);
+        lv_obj_set_size(button, LV_PCT(100), 42);
+        lv_obj_set_style_radius(button, 6, 0);
         lv_obj_set_style_border_width(button, 0, 0);
-        const bool checked = state.expanded && i > 0 && static_cast<int>(state.active_panel) == i - 1 && !state.focus_panel;
-        lv_obj_set_style_bg_color(button, color(checked ? 0x172839 : 0x07111a), 0);
-        lv_obj_set_style_bg_color(button, color(0x1c3447), LV_STATE_CHECKED);
-        lv_obj_set_style_bg_color(button, color(0x243d52), LV_STATE_PRESSED);
+        lv_obj_set_style_margin_left(button, 6, 0);
+        lv_obj_set_style_margin_right(button, 10, 0);
+        const bool checked = static_cast<int>(state.active_panel) == i && !state.focus_panel;
+        lv_obj_set_style_bg_color(button, color(checked ? 0x102131 : 0x020d15), 0);
+        lv_obj_set_style_bg_opa(button, checked ? LV_OPA_80 : LV_OPA_TRANSP, 0);
+        lv_obj_set_style_bg_color(button, color(0x172a3a), LV_STATE_CHECKED);
+        lv_obj_set_style_bg_color(button, color(0x233746), LV_STATE_PRESSED);
         lv_obj_add_event_cb(button, nav_clicked, LV_EVENT_CLICKED, &state);
+
+        if (checked) {
+            auto* active_bar = lv_obj_create(button);
+            set_panel_style(active_bar, 0xff8a00);
+            lv_obj_set_size(active_bar, 4, LV_PCT(100));
+            lv_obj_align(active_bar, LV_ALIGN_LEFT_MID, -6, 0);
+        }
 
         auto* row = lv_obj_create(button);
         set_panel_style(row, 0x000000, LV_OPA_TRANSP);
         lv_obj_set_size(row, LV_PCT(100), LV_PCT(100));
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_left(row, state.expanded ? 8 : 0, 0);
-        lv_obj_set_style_pad_column(row, 8, 0);
+        lv_obj_set_style_pad_left(row, 28, 0);
+        lv_obj_set_style_pad_column(row, 14, 0);
 
-        auto* icon = label(row, nav_symbol(i), &lv_font_montserrat_16, i == 0 ? 0x8da2b2 : 0xd5e0e8);
-        lv_obj_set_width(icon, state.expanded ? 20 : LV_PCT(100));
+        auto* icon = label(row, nav_symbol(i), &lv_font_montserrat_18, checked ? 0xff8a00 : 0xdce5ec);
+        lv_obj_set_width(icon, 24);
         lv_obj_set_style_text_align(icon, LV_TEXT_ALIGN_CENTER, 0);
-        if (state.expanded) {
-            auto* text = label(row, nav_text(i), &lv_font_montserrat_12, checked ? 0xffffff : 0x9fb0bd);
-            lv_obj_set_width(text, LV_PCT(70));
-        }
+        auto* text = label(row, nav_text(i), &lv_font_montserrat_14, checked ? 0xff9a1f : 0xd7dde3);
+        lv_obj_set_width(text, LV_PCT(70));
+        lv_label_set_long_mode(text, LV_LABEL_LONG_DOT);
     }
 
-    if (!state.expanded) {
+    auto* footer = lv_obj_create(rail);
+    set_panel_style(footer, 0x020d15, LV_OPA_TRANSP);
+    lv_obj_set_size(footer, LV_PCT(100), 32);
+    lv_obj_set_flex_flow(footer, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(footer, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_left(footer, 26, 0);
+    lv_obj_set_style_pad_right(footer, 20, 0);
+    auto* back = label(footer, LV_SYMBOL_LEFT " BACK", &lv_font_montserrat_12, 0xb4c0cb);
+    lv_obj_set_width(back, LV_PCT(45));
+    auto* select = label(footer, "SELECT " LV_SYMBOL_OK, &lv_font_montserrat_12, 0xb4c0cb);
+    lv_obj_set_width(select, LV_PCT(45));
+    lv_obj_set_style_text_align(select, LV_TEXT_ALIGN_RIGHT, 0);
+
+    if (compact) {
+        state.panel_title = nullptr;
+        state.panel_body = nullptr;
         return;
     }
 
     auto* panel = lv_obj_create(screen);
-    set_panel_style(panel, 0x0c1924);
+    set_panel_style(panel, 0x07131d, LV_OPA_70);
     lv_obj_set_style_radius(panel, 8, 0);
     lv_obj_set_style_border_width(panel, 1, 0);
-    lv_obj_set_style_border_color(panel, color(state.focus_panel ? 0x2f7fa5 : 0x152837), 0);
-    lv_obj_set_size(panel, static_cast<int>(width) - rail_width - 18, static_cast<int>(height) - 20);
-    lv_obj_align(panel, LV_ALIGN_TOP_LEFT, rail_width + 10, 10);
+    lv_obj_set_style_border_color(panel, color(state.focus_panel ? 0xff8a00 : 0x284154), 0);
+    lv_obj_set_size(panel, detail_width, detail_height);
+    lv_obj_align_to(panel, rail, LV_ALIGN_OUT_RIGHT_MID, 12, 0);
 
     auto* header = lv_obj_create(panel);
-    set_panel_style(header, 0x0c1924, LV_OPA_TRANSP);
-    lv_obj_set_size(header, LV_PCT(100), 50);
+    set_panel_style(header, 0x07131d, LV_OPA_TRANSP);
+    lv_obj_set_size(header, LV_PCT(100), 46);
     lv_obj_align(header, LV_ALIGN_TOP_LEFT, 0, 0);
-    state.panel_title = label(header, "Find Air Unit", &lv_font_montserrat_20);
+    state.panel_title = label(header, "Dashboard", &lv_font_montserrat_20);
     lv_obj_align(state.panel_title, LV_ALIGN_LEFT_MID, 16, 0);
 
     state.panel_body = lv_obj_create(panel);
-    set_panel_style(state.panel_body, 0x0c1924, LV_OPA_TRANSP);
-    lv_obj_set_size(state.panel_body, LV_PCT(100), static_cast<int>(height) - 82);
+    set_panel_style(state.panel_body, 0x07131d, LV_OPA_TRANSP);
+    lv_obj_set_size(state.panel_body, LV_PCT(100), detail_height - 58);
     lv_obj_align(state.panel_body, LV_ALIGN_BOTTOM_LEFT, 0, 0);
 
     const auto active = state.active_panel;
     lv_label_set_text(state.panel_title, panel_title(active));
     clear_panel(state);
-    if (active == SidebarPanel::scan) {
-        build_scan_panel(state);
+    if (active == SidebarPanel::dashboard) {
+        build_dashboard_panel(state);
     } else if (active == SidebarPanel::link) {
         build_link_panel(state);
     } else if (active == SidebarPanel::video) {
         build_video_panel(state);
     } else if (active == SidebarPanel::camera) {
         build_camera_panel(state);
+    } else if (active == SidebarPanel::osd) {
+        build_osd_panel(state);
+    } else if (active == SidebarPanel::telemetry) {
+        build_rc_panel(state);
     } else if (active == SidebarPanel::recording) {
         build_recording_panel(state);
-    } else if (active == SidebarPanel::rc) {
-        build_rc_panel(state);
-    } else if (active == SidebarPanel::misc) {
-        build_misc_panel(state);
-    } else if (active == SidebarPanel::status) {
+    } else if (active == SidebarPanel::system) {
+        build_system_panel(state);
+    } else if (active == SidebarPanel::developer) {
         build_status_panel(state);
     }
 }
@@ -896,7 +992,10 @@ int main(int argc, char** argv)
         lv_sdl_window_set_title(display, "GlideUI LVGL Preview");
         lv_sdl_window_set_resizeable(display, false);
         lv_sdl_mouse_create();
-        lv_sdl_keyboard_create();
+        auto* keyboard = lv_sdl_keyboard_create();
+        auto* group = lv_group_create();
+        lv_group_set_default(group);
+        lv_indev_set_group(keyboard, group);
     }
 #else
     if (options.preview) {
@@ -922,6 +1021,14 @@ int main(int argc, char** argv)
 
     UiState state;
     state.fps_enabled = glide::preview_control::fps_overlay_enabled();
+    auto* screen = lv_screen_active();
+    lv_obj_add_flag(screen, LV_OBJ_FLAG_CLICK_FOCUSABLE);
+    lv_obj_add_event_cb(screen, keyboard_event, LV_EVENT_KEY, &state);
+    if (lv_group_get_default() != nullptr) {
+        lv_group_add_obj(lv_group_get_default(), screen);
+        lv_group_focus_obj(screen);
+    }
+
     if (state.ipc.connect_to(options.ipc_socket)) {
         state.ipc.send_line("hello glide-ui");
         state.ipc.send_line("status glide-ui ready lvgl-sdl");

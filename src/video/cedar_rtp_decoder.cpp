@@ -699,4 +699,10 @@ void CedarRtpDecoder::cleanup()
 }
 #endif
 
+#if !OPENHD_GLIDE_HAS_CEDAR
+void CedarRtpDecoder::cleanup()
+{
+}
+#endif
+
 } // namespace glide::video
