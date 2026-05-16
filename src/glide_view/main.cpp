@@ -31,7 +31,7 @@ struct Options {
     std::optional<int> connector_id;
     bool stay_alive {};
     bool udp_video {};
-    std::string udp_codec { "auto" };
+    std::string udp_codec { "h264" };
 };
 
 Options parse_options(int argc, char** argv)

@@ -105,19 +105,19 @@ black primary framebuffer only to keep the CRTC active; Flow and UI should becom
 video plane. Native Cedar remains available only through the explicit `--native-cedar-video` flag.
 
 Example run scripts cover the current device modes. Each script takes the UDP video port as its first optional
-argument, defaulting to `5600`; GStreamer/view scripts take `h264` or `h265` as the second optional argument.
+argument, defaulting to `5600`; GStreamer/view scripts default to H.264 and take `h264` or `h265` as the second optional argument.
 Set `GLIDE_WIDTH` and `GLIDE_HEIGHT` to override the default `1920x1080`.
 Device KMS scripts default to `GLIDE_DISPLAY_HZ=120`; override it if the panel should use a different mode.
 
 ```sh
 # GStreamer/OMX decode, KMS video plane plus Flow overlay at full video rate.
-examples/run-kms-video-gstreamer-flow.sh 5600 h265
+examples/run-kms-video-gstreamer-flow.sh 5600 h264
 
 # GStreamer/OMX decode, KMS video plane plus Flow overlay capped to 30 fps.
-examples/run-kms-video-gstreamer-flow-30fps.sh 5600 h265
+examples/run-kms-video-gstreamer-flow-30fps.sh 5600 h264
 
 # GStreamer/OMX decode, fastest video-only legacy KMS plane path.
-examples/run-kms-video-gstreamer-video-only.sh 5600 h265
+examples/run-kms-video-gstreamer-video-only.sh 5600 h264
 
 # Native Cedar RTP/H.264 decode debugging path, KMS video plane plus Flow overlay.
 examples/run-kms-video-cedar-flow.sh 5600
@@ -126,10 +126,10 @@ examples/run-kms-video-cedar-flow.sh 5600
 examples/run-kms-video-cedar-video-only.sh 5600
 
 # Standalone glide-view decode-only test.
-examples/run-glide-view-decode-only.sh 5600 h265
+examples/run-glide-view-decode-only.sh 5600 h264
 
 # Multi-process KMS stack smoke test.
-examples/run-kms-stack.sh 5600 h265
+examples/run-kms-stack.sh 5600 h264
 ```
 
 Installed helper scripts are placed in `${CMAKE_INSTALL_PREFIX}/share/openhd-glide/examples`.

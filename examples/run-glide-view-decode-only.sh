@@ -14,7 +14,7 @@ else
   BIN="$GLIDE_VIEW_BIN"
 fi
 PORT="${1:-5600}"
-CODEC="${2:-${GLIDE_VIEW_CODEC:-${GLIDE_CODEC:-h265}}}"
+CODEC="${2:-${GLIDE_VIEW_CODEC:-${GLIDE_CODEC:-h264}}}"
 CODEC="$(printf "%s" "$CODEC" | tr '[:upper:]' '[:lower:]')"
 case "$CODEC" in
   h264|avc)

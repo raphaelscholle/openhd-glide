@@ -62,7 +62,7 @@ struct Options {
     std::uint32_t ui_width { 760 };
     std::uint32_t ui_height { 720 };
     std::uint16_t view_udp_port { 5600 };
-    std::string view_udp_codec { "h265" };
+    std::string view_udp_codec { "h264" };
     int view_plane_id { -1 };
     int flow_plane_id { -1 };
     int view_connector_id { -1 };
