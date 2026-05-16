@@ -21,6 +21,7 @@ option(OPENHD_GLIDE_DEVICE_KMS "Enable the device-oriented DRM/KMS runtime mode"
 add_library(glide_common
     src/common/ipc.cpp
     src/common/logging.cpp
+    src/common/mavlink_state.cpp
     src/common/preview_control.cpp
     src/platform/core_assignment.cpp
     src/platform/cpu_topology.cpp
@@ -79,21 +80,24 @@ find_library(CEDAR_MEMADAPTER_LIBRARY NAMES MemAdapter)
 find_library(CEDAR_VE_LIBRARY NAMES VE)
 find_library(CEDAR_VIDEOENGINE_LIBRARY NAMES videoengine)
 
+set(LV_CONF_PATH ${CMAKE_CURRENT_SOURCE_DIR}/src/glide_ui/lv_conf.h CACHE STRING "" FORCE)
+set(LV_CONF_BUILD_DISABLE_EXAMPLES ON CACHE BOOL "" FORCE)
+set(LV_CONF_BUILD_DISABLE_DEMOS ON CACHE BOOL "" FORCE)
+set(LV_CONF_BUILD_DISABLE_THORVG_INTERNAL ON CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    lvgl
+    GIT_REPOSITORY https://github.com/lvgl/lvgl.git
+    GIT_TAG v9.2.2
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(lvgl)
 if(SDL2_FOUND)
-    set(LV_CONF_PATH ${CMAKE_CURRENT_SOURCE_DIR}/src/glide_ui/lv_conf.h CACHE STRING "" FORCE)
-    set(LV_CONF_BUILD_DISABLE_EXAMPLES ON CACHE BOOL "" FORCE)
-    set(LV_CONF_BUILD_DISABLE_DEMOS ON CACHE BOOL "" FORCE)
-    set(LV_CONF_BUILD_DISABLE_THORVG_INTERNAL ON CACHE BOOL "" FORCE)
-    FetchContent_Declare(
-        lvgl
-        GIT_REPOSITORY https://github.com/lvgl/lvgl.git
-        GIT_TAG v9.2.2
-        GIT_SHALLOW TRUE
-    )
-    FetchContent_MakeAvailable(lvgl)
+    target_compile_definitions(lvgl PRIVATE OPENHD_GLIDE_HAS_LVGL_SDL=1)
     target_include_directories(lvgl SYSTEM PRIVATE ${SDL2_INCLUDE_DIRS})
     target_link_libraries(lvgl PRIVATE ${SDL2_LIBRARIES})
     target_link_directories(lvgl PRIVATE ${SDL2_LIBRARY_DIRS})
+else()
+    target_compile_definitions(lvgl PRIVATE OPENHD_GLIDE_HAS_LVGL_SDL=0)
 endif()
 
 if(LIBDRM_FOUND)
@@ -255,8 +259,9 @@ else()
     message(STATUS "GStreamer appsink/DMABUF support disabled; install gstreamer-1.0, gstreamer-app-1.0, gstreamer-allocators-1.0, and gstreamer-video-1.0 development packages")
     target_compile_definitions(glide-view PRIVATE OPENHD_GLIDE_HAS_GSTREAMER=0)
 endif()
+add_glide_executable(glide-send src/tools/glide_send.cpp)
 add_executable(glide-ui src/glide_ui/main.cpp)
-target_link_libraries(glide-ui PRIVATE glide_common)
+target_link_libraries(glide-ui PRIVATE glide_common lvgl)
 if(OPENHD_GLIDE_DEVICE_KMS)
     target_compile_definitions(glide-ui PRIVATE OPENHD_GLIDE_DEVICE_KMS=1)
 else()
@@ -270,6 +275,7 @@ if(SDL2_FOUND)
 else()
     target_compile_definitions(glide-ui PRIVATE OPENHD_GLIDE_HAS_LVGL_SDL=0)
 endif()
+target_compile_definitions(glide-ui PRIVATE OPENHD_GLIDE_HAS_LVGL=1)
 
 add_executable(glide-flow src/glide_flow/main.cpp)
 target_link_libraries(glide-flow PRIVATE glide_flow_core glide_dev)
@@ -285,6 +291,7 @@ install(
         glide-view
         glide-flow
         glide-ui
+        glide-send
     RUNTIME DESTINATION bin
 )
 
@@ -295,6 +302,7 @@ install(
         examples/run-kms-video-cedar-flow.sh
         examples/run-kms-video-cedar-video-only.sh
         examples/run-kms-video-gstreamer-flow.sh
+        examples/run-kms-video-gstreamer-flow-ui.sh
         examples/run-kms-video-gstreamer-flow-30fps.sh
         examples/run-kms-video-gstreamer-video-only.sh
         examples/stream-h264-file-to-glide-view.sh

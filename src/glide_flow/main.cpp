@@ -1,5 +1,6 @@
 #include "common/logging.hpp"
 #include "common/ipc.hpp"
+#include "common/mavlink_state.hpp"
 #include "common/preview_control.hpp"
 #include "dev/kms_gles_window.hpp"
 #include "dev/sdl_gles_window.hpp"
@@ -129,6 +130,7 @@ int main(int argc, char** argv)
     glide::dev::KmsGlesWindow kms_window;
     glide::dev::SdlGlesWindow preview_window;
     glide::ipc::Client ipc;
+    glide::mavlink::Snapshot mavlink;
     constexpr bool fps_overlay_enabled = false;
 
     if (options.preview) {
@@ -198,6 +200,11 @@ int main(int argc, char** argv)
         if (options.preview && !preview_window.poll()) {
             break;
         }
+        if (ipc.connected()) {
+            for (const auto& line : ipc.poll_lines()) {
+                glide::mavlink::apply_ipc_line(mavlink, line);
+            }
+        }
 
         options.surface = options.preview ? preview_window.surface_size() : options.surface;
         const auto fps = fps_counter.frame();
@@ -217,6 +224,17 @@ int main(int argc, char** argv)
             altitude_widget.draw(renderer, options.surface, simulated_altitude.sample());
             if (fps_overlay_enabled) {
                 renderer.draw(placement, options.surface);
+            }
+            if (mavlink.message_count > 0) {
+                const auto& latest = mavlink.messages[mavlink.message_count - 1U];
+                renderer.draw(
+                    glide::flow::TextPlacement {
+                        .text = latest,
+                        .x = 28.0F,
+                        .y = static_cast<float>(options.surface.height) - 92.0F,
+                        .scale = 20.0F,
+                    },
+                    options.surface);
             }
         }
 

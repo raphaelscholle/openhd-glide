@@ -158,6 +158,44 @@ bool add_optional_range_edge_property(
     return ok;
 }
 
+bool add_optional_range_from_top_property(
+    int drm_fd,
+    drmModeAtomicReq* request,
+    std::uint32_t object_id,
+    std::uint32_t object_type,
+    const char* name,
+    std::uint64_t offset_from_top,
+    std::string& error)
+{
+    auto* properties = drmModeObjectGetProperties(drm_fd, object_id, object_type);
+    if (properties == nullptr) {
+        return true;
+    }
+
+    bool ok { true };
+    for (std::uint32_t i = 0; i < properties->count_props; ++i) {
+        auto* property = drmModeGetProperty(drm_fd, properties->props[i]);
+        if (property != nullptr
+            && std::strcmp(property->name, name) == 0
+            && (property->flags & DRM_MODE_PROP_RANGE) != 0
+            && property->count_values >= 2) {
+            const auto minimum = property->values[0];
+            const auto maximum = property->values[1];
+            const auto value = maximum > minimum + offset_from_top ? maximum - offset_from_top : minimum;
+            ok = add_optional_property(drm_fd, request, object_id, object_type, name, value, error);
+        }
+        if (property != nullptr) {
+            drmModeFreeProperty(property);
+        }
+        if (!ok) {
+            break;
+        }
+    }
+
+    drmModeFreeObjectProperties(properties);
+    return ok;
+}
+
 bool add_optional_enum_property(
     int drm_fd,
     drmModeAtomicReq* request,
@@ -295,11 +333,17 @@ bool KmsAtomicCompositor::create(
     std::uint32_t requested_height,
     std::uint32_t requested_refresh_hz,
     int preferred_video_plane_id,
-    int preferred_flow_plane_id)
+    int preferred_flow_plane_id,
+    int preferred_ui_plane_id,
+    std::uint32_t ui_width,
+    std::uint32_t ui_height)
 {
 #if OPENHD_GLIDE_HAS_KMS_GBM
     preferred_video_plane_id_ = preferred_video_plane_id;
     preferred_flow_plane_id_ = preferred_flow_plane_id;
+    preferred_ui_plane_id_ = preferred_ui_plane_id;
+    ui_surface_.width = ui_width;
+    ui_surface_.height = ui_height;
     return open_card()
         && choose_connector_and_mode(requested_width, requested_height, requested_refresh_hz)
         && create_primary_buffer()
@@ -312,6 +356,9 @@ bool KmsAtomicCompositor::create(
     (void)requested_refresh_hz;
     (void)preferred_video_plane_id;
     (void)preferred_flow_plane_id;
+    (void)preferred_ui_plane_id;
+    (void)ui_width;
+    (void)ui_height;
     last_error_ = "atomic KMS compositor support was not found at build time";
     return false;
 #endif
@@ -330,6 +377,9 @@ bool KmsAtomicCompositor::present(const DmabufVideoFrame& video_frame, bool upda
         }
     }
     if (flow_plane_id_ == 0 && !choose_flow_plane()) {
+        return false;
+    }
+    if (ui_surface_.width != 0 && ui_surface_.height != 0 && ui_plane_id_ == 0 && !choose_ui_plane()) {
         return false;
     }
 
@@ -359,7 +409,7 @@ bool KmsAtomicCompositor::present(const DmabufVideoFrame& video_frame, bool upda
         }
     }
 
-    if (!commit(video_frame, video->framebuffer, flow_framebuffer)) {
+    if (!commit(video_frame, video->framebuffer, flow_framebuffer, solid_ui_.framebuffer)) {
         if (flow_bo != nullptr) {
             drmModeRmFB(drm_fd_, flow_framebuffer);
             gbm_surface_release_buffer(static_cast<gbm_surface*>(gbm_surface_), static_cast<gbm_bo*>(flow_bo));
@@ -480,6 +530,83 @@ bool KmsAtomicCompositor::publish_solid_flow_frame(std::uint32_t argb)
     pending_flow_is_solid_dumb_ = true;
     return true;
 #else
+    return false;
+#endif
+}
+
+bool KmsAtomicCompositor::publish_solid_ui_frame(std::uint32_t argb)
+{
+#if OPENHD_GLIDE_HAS_KMS_GBM
+    if (ui_surface_.width == 0 || ui_surface_.height == 0) {
+        last_error_ = "UI overlay surface is disabled";
+        return false;
+    }
+    if (solid_ui_.framebuffer == 0 && !create_solid_ui_buffer()) {
+        return false;
+    }
+    if (solid_ui_.map == nullptr) {
+        last_error_ = "solid UI debug buffer is not mapped";
+        return false;
+    }
+
+    for (std::uint32_t y = 0; y < ui_surface_.height; ++y) {
+        auto* row = reinterpret_cast<std::uint32_t*>(
+            static_cast<unsigned char*>(solid_ui_.map) + static_cast<std::size_t>(y) * solid_ui_.pitch);
+        std::fill(row, row + ui_surface_.width, argb);
+    }
+    msync(solid_ui_.map, solid_ui_.size, MS_SYNC);
+    drmModeDirtyFB(drm_fd_, solid_ui_.framebuffer, nullptr, 0);
+    return true;
+#else
+    (void)argb;
+    return false;
+#endif
+}
+
+bool KmsAtomicCompositor::publish_ui_frame_from_argb(const void* pixels, std::uint32_t width, std::uint32_t height, std::uint32_t stride_bytes)
+{
+#if OPENHD_GLIDE_HAS_KMS_GBM
+    if (pixels == nullptr) {
+        last_error_ = "UI buffer pixels are null";
+        return false;
+    }
+    if (ui_surface_.width == 0 || ui_surface_.height == 0) {
+        last_error_ = "UI overlay surface is disabled";
+        return false;
+    }
+    if (width != ui_surface_.width || height != ui_surface_.height) {
+        last_error_ = "UI buffer dimensions do not match the KMS UI plane";
+        return false;
+    }
+    if (stride_bytes < width * 4U) {
+        last_error_ = "UI buffer stride is too small";
+        return false;
+    }
+    if (solid_ui_.framebuffer == 0 && !create_solid_ui_buffer()) {
+        return false;
+    }
+    if (solid_ui_.map == nullptr) {
+        last_error_ = "solid UI buffer is not mapped";
+        return false;
+    }
+
+    const auto* source = static_cast<const unsigned char*>(pixels);
+    auto* destination = static_cast<unsigned char*>(solid_ui_.map);
+    const auto copy_bytes = static_cast<std::size_t>(width) * 4U;
+    for (std::uint32_t y = 0; y < height; ++y) {
+        std::memcpy(
+            destination + static_cast<std::size_t>(y) * solid_ui_.pitch,
+            source + static_cast<std::size_t>(y) * stride_bytes,
+            copy_bytes);
+    }
+    msync(solid_ui_.map, solid_ui_.size, MS_ASYNC);
+    drmModeDirtyFB(drm_fd_, solid_ui_.framebuffer, nullptr, 0);
+    return true;
+#else
+    (void)pixels;
+    (void)width;
+    (void)height;
+    (void)stride_bytes;
     return false;
 #endif
 }
@@ -865,7 +992,8 @@ bool KmsAtomicCompositor::choose_flow_plane()
     auto try_plane = [&](drmModePlane* plane) {
         const auto type = plane_type(drm_fd_, plane->plane_id);
         const bool usable_crtc = (plane->possible_crtcs & (1 << crtc_index_)) != 0;
-        const bool available = plane->plane_id != primary_plane_id_ && plane->plane_id != video_plane_id_;
+        const bool reserved_for_ui = preferred_ui_plane_id_ >= 0 && plane->plane_id == static_cast<std::uint32_t>(preferred_ui_plane_id_);
+        const bool available = plane->plane_id != primary_plane_id_ && plane->plane_id != video_plane_id_ && plane->plane_id != ui_plane_id_ && !reserved_for_ui;
         return usable_crtc && available && plane_supports_format(plane, DRM_FORMAT_ARGB8888) && type == DRM_PLANE_TYPE_OVERLAY;
     };
 
@@ -913,6 +1041,70 @@ bool KmsAtomicCompositor::choose_flow_plane()
         glide::LogLevel::info,
         "OpenHD-Glide",
         "selected KMS Flow plane " + std::to_string(flow_plane_id_) + " for ARGB8888 overlay");
+    return true;
+}
+
+bool KmsAtomicCompositor::choose_ui_plane()
+{
+    auto* planes = drmModeGetPlaneResources(drm_fd_);
+    if (planes == nullptr) {
+        last_error_ = "failed to read KMS plane resources";
+        return false;
+    }
+
+    auto try_plane = [&](drmModePlane* plane) {
+        const auto type = plane_type(drm_fd_, plane->plane_id);
+        const bool usable_crtc = (plane->possible_crtcs & (1 << crtc_index_)) != 0;
+        const bool available = plane->plane_id != primary_plane_id_ && plane->plane_id != video_plane_id_ && plane->plane_id != flow_plane_id_;
+        return usable_crtc && available && plane_supports_format(plane, DRM_FORMAT_ARGB8888) && type == DRM_PLANE_TYPE_OVERLAY;
+    };
+
+    if (preferred_ui_plane_id_ >= 0) {
+        auto* plane = drmModeGetPlane(drm_fd_, static_cast<std::uint32_t>(preferred_ui_plane_id_));
+        if (plane != nullptr) {
+            if (try_plane(plane)) {
+                ui_plane_id_ = plane->plane_id;
+                drmModeFreePlane(plane);
+            } else {
+                drmModeFreePlane(plane);
+                drmModeFreePlaneResources(planes);
+                last_error_ = "preferred KMS UI plane " + std::to_string(preferred_ui_plane_id_)
+                    + " cannot scan out ARGB8888 on the selected CRTC";
+                return false;
+            }
+        } else {
+            drmModeFreePlaneResources(planes);
+            last_error_ = "preferred KMS UI plane " + std::to_string(preferred_ui_plane_id_) + " does not exist";
+            return false;
+        }
+    }
+
+    for (std::uint32_t i = 0; i < planes->count_planes && preferred_ui_plane_id_ < 0; ++i) {
+        auto* plane = drmModeGetPlane(drm_fd_, planes->planes[i]);
+        if (plane == nullptr) {
+            continue;
+        }
+
+        if (try_plane(plane)) {
+            ui_plane_id_ = plane->plane_id;
+            drmModeFreePlane(plane);
+            break;
+        }
+        drmModeFreePlane(plane);
+    }
+
+    drmModeFreePlaneResources(planes);
+    if (ui_plane_id_ == 0) {
+        last_error_ = "no KMS overlay plane supports ARGB8888 UI scanout";
+        return false;
+    }
+    set_range_edge(drm_fd_, ui_plane_id_, DRM_MODE_OBJECT_PLANE, "zpos", true);
+    set_range_edge(drm_fd_, ui_plane_id_, DRM_MODE_OBJECT_PLANE, "ZPOS", true);
+    set_range_edge(drm_fd_, ui_plane_id_, DRM_MODE_OBJECT_PLANE, "alpha", true);
+    glide::log(
+        glide::LogLevel::info,
+        "OpenHD-Glide",
+        "selected KMS UI plane " + std::to_string(ui_plane_id_) + " for ARGB8888 overlay");
     return true;
 }
 
@@ -1054,6 +1246,46 @@ bool KmsAtomicCompositor::create_solid_flow_buffer()
         solid_flow_.map = nullptr;
         last_error_ = "failed to mmap solid Flow debug buffer" + errno_suffix();
         destroy_solid_flow_buffer();
+        return false;
+    }
+    return true;
+}
+
+bool KmsAtomicCompositor::create_solid_ui_buffer()
+{
+    drm_mode_create_dumb create {};
+    create.width = ui_surface_.width;
+    create.height = ui_surface_.height;
+    create.bpp = 32;
+    if (drmIoctl(drm_fd_, DRM_IOCTL_MODE_CREATE_DUMB, &create) != 0) {
+        last_error_ = "failed to create solid UI debug buffer" + errno_suffix();
+        return false;
+    }
+    solid_ui_.handle = create.handle;
+    solid_ui_.pitch = create.pitch;
+    solid_ui_.size = create.size;
+
+    std::uint32_t handles[4] { solid_ui_.handle, 0, 0, 0 };
+    std::uint32_t strides[4] { solid_ui_.pitch, 0, 0, 0 };
+    std::uint32_t offsets[4] {};
+    if (drmModeAddFB2(drm_fd_, ui_surface_.width, ui_surface_.height, DRM_FORMAT_ARGB8888, handles, strides, offsets, &solid_ui_.framebuffer, 0) != 0) {
+        last_error_ = "failed to create solid UI debug framebuffer" + errno_suffix();
+        destroy_solid_ui_buffer();
+        return false;
+    }
+
+    drm_mode_map_dumb map {};
+    map.handle = solid_ui_.handle;
+    if (drmIoctl(drm_fd_, DRM_IOCTL_MODE_MAP_DUMB, &map) != 0) {
+        last_error_ = "failed to map solid UI debug buffer" + errno_suffix();
+        destroy_solid_ui_buffer();
+        return false;
+    }
+    solid_ui_.map = mmap(nullptr, solid_ui_.size, PROT_READ | PROT_WRITE, MAP_SHARED, drm_fd_, static_cast<off_t>(map.offset));
+    if (solid_ui_.map == MAP_FAILED) {
+        solid_ui_.map = nullptr;
+        last_error_ = "failed to mmap solid UI debug buffer" + errno_suffix();
+        destroy_solid_ui_buffer();
         return false;
     }
     return true;
@@ -1223,7 +1455,11 @@ void KmsAtomicCompositor::evict_video_framebuffer_if_needed()
     video_framebuffer_cache_.erase(victim);
 }
 
-bool KmsAtomicCompositor::commit(const DmabufVideoFrame& video_frame, std::uint32_t video_framebuffer, std::uint32_t flow_framebuffer)
+bool KmsAtomicCompositor::commit(
+    const DmabufVideoFrame& video_frame,
+    std::uint32_t video_framebuffer,
+    std::uint32_t flow_framebuffer,
+    std::uint32_t ui_framebuffer)
 {
     auto* request = drmModeAtomicAlloc();
     if (request == nullptr) {
@@ -1244,10 +1480,16 @@ bool KmsAtomicCompositor::commit(const DmabufVideoFrame& video_frame, std::uint3
             ok = ok && add_optional_range_edge_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "ZPOS", false, last_error_);
             ok = ok && add_optional_enum_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "pixel blend mode", "None", last_error_);
         }
-        ok = ok && add_optional_range_edge_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "zpos", true, last_error_);
-        ok = ok && add_optional_range_edge_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "ZPOS", true, last_error_);
+        ok = ok && add_optional_range_from_top_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "zpos", ui_plane_id_ != 0 ? 1 : 0, last_error_);
+        ok = ok && add_optional_range_from_top_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "ZPOS", ui_plane_id_ != 0 ? 1 : 0, last_error_);
         ok = ok && add_optional_range_edge_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "alpha", true, last_error_);
         ok = ok && add_optional_enum_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "pixel blend mode", "Coverage", last_error_);
+        if (ui_plane_id_ != 0) {
+            ok = ok && add_optional_range_edge_property(drm_fd_, request, ui_plane_id_, DRM_MODE_OBJECT_PLANE, "zpos", true, last_error_);
+            ok = ok && add_optional_range_edge_property(drm_fd_, request, ui_plane_id_, DRM_MODE_OBJECT_PLANE, "ZPOS", true, last_error_);
+            ok = ok && add_optional_range_edge_property(drm_fd_, request, ui_plane_id_, DRM_MODE_OBJECT_PLANE, "alpha", true, last_error_);
+            ok = ok && add_optional_enum_property(drm_fd_, request, ui_plane_id_, DRM_MODE_OBJECT_PLANE, "pixel blend mode", "Coverage", last_error_);
+        }
     }
 
     const auto primary_framebuffer = video_on_primary_ ? video_framebuffer : primary_.framebuffer;
@@ -1290,6 +1532,19 @@ bool KmsAtomicCompositor::commit(const DmabufVideoFrame& video_frame, std::uint3
         ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_H", surface_.height, last_error_);
     }
 
+    if (ui_framebuffer != 0 && ui_plane_id_ != 0) {
+        ok = ok && add_property(drm_fd_, request, ui_plane_id_, DRM_MODE_OBJECT_PLANE, "FB_ID", ui_framebuffer, last_error_);
+        ok = ok && add_property(drm_fd_, request, ui_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_ID", crtc_id_, last_error_);
+        ok = ok && add_property(drm_fd_, request, ui_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_X", 0, last_error_);
+        ok = ok && add_property(drm_fd_, request, ui_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_Y", 0, last_error_);
+        ok = ok && add_property(drm_fd_, request, ui_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_W", ui_surface_.width << 16U, last_error_);
+        ok = ok && add_property(drm_fd_, request, ui_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_H", ui_surface_.height << 16U, last_error_);
+        ok = ok && add_property(drm_fd_, request, ui_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_X", 0, last_error_);
+        ok = ok && add_property(drm_fd_, request, ui_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_Y", 0, last_error_);
+        ok = ok && add_property(drm_fd_, request, ui_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_W", ui_surface_.width, last_error_);
+        ok = ok && add_property(drm_fd_, request, ui_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_H", ui_surface_.height, last_error_);
+    }
+
     if (!ok) {
         drmModeAtomicFree(request);
         return false;
@@ -1297,7 +1552,7 @@ bool KmsAtomicCompositor::commit(const DmabufVideoFrame& video_frame, std::uint3
 
     const std::uint32_t flags = modeset_committed_ ? 0 : DRM_MODE_ATOMIC_ALLOW_MODESET;
     if (drmModeAtomicCommit(drm_fd_, request, flags, nullptr) != 0) {
-        last_error_ = "failed to commit atomic KMS video+Flow frame" + errno_suffix();
+        last_error_ = "failed to commit atomic KMS video+Flow/UI frame" + errno_suffix();
         drmModeAtomicFree(request);
         return false;
     }
@@ -1371,6 +1626,25 @@ void KmsAtomicCompositor::destroy_solid_flow_buffer()
     solid_flow_ = {};
 }
 
+void KmsAtomicCompositor::destroy_solid_ui_buffer()
+{
+    if (solid_ui_.map != nullptr) {
+        munmap(solid_ui_.map, static_cast<std::size_t>(solid_ui_.size));
+        solid_ui_.map = nullptr;
+    }
+    if (drm_fd_ >= 0 && solid_ui_.framebuffer != 0) {
+        drmModeRmFB(drm_fd_, solid_ui_.framebuffer);
+        solid_ui_.framebuffer = 0;
+    }
+    if (drm_fd_ >= 0 && solid_ui_.handle != 0) {
+        drm_mode_destroy_dumb destroy {};
+        destroy.handle = solid_ui_.handle;
+        drmIoctl(drm_fd_, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+        solid_ui_.handle = 0;
+    }
+    solid_ui_ = {};
+}
+
 void KmsAtomicCompositor::cleanup()
 {
     if (drm_fd_ >= 0 && original_crtc_ != nullptr) {
@@ -1434,6 +1708,7 @@ void KmsAtomicCompositor::cleanup()
 
     destroy_video_framebuffer_cache();
     destroy_solid_flow_buffer();
+    destroy_solid_ui_buffer();
     destroy_primary_buffer();
 
     if (drm_fd_ >= 0 && mode_blob_id_ != 0) {

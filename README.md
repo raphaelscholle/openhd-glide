@@ -101,8 +101,9 @@ sudo ./build-kms/openhd-glide --kms-video-preview --gstreamer-video --no-flow --
 
 This displays the UDP video without `kmssink` by decoding through GStreamer in `openhd-glide`, requesting DMABUF output
 from the hardware decoder, importing the decoded FD into DRM, and scanning it out on a KMS video plane. It still uses a
-black primary framebuffer only to keep the CRTC active; Flow and UI should become separate overlay planes above this
-video plane. Native Cedar remains available only through the explicit `--native-cedar-video` flag.
+black primary framebuffer only to keep the CRTC active. Flow is rendered on an ARGB overlay plane. With `--ui-overlay`,
+the controller also places a left-side ARGB UI overlay plane and can copy frames from the LVGL buffer producer.
+Native Cedar remains available only through the explicit `--native-cedar-video` flag.
 
 Example run scripts cover the current device modes. Each script takes the UDP video port as its first optional
 argument, defaulting to `5600`; GStreamer/view scripts default to H.264 and take `h264` or `h265` as the second optional argument.
@@ -112,6 +113,9 @@ Device KMS scripts default to `GLIDE_DISPLAY_HZ=120`; override it if the panel s
 ```sh
 # GStreamer/OMX decode, KMS video plane plus Flow overlay at full video rate.
 examples/run-kms-video-gstreamer-flow.sh 5600 h264
+
+# GStreamer/OMX decode, KMS video plane plus Flow and LVGL UI overlay planes.
+examples/run-kms-video-gstreamer-flow-ui.sh 5600 h264
 
 # GStreamer/OMX decode, KMS video plane plus Flow overlay capped to 30 fps.
 examples/run-kms-video-gstreamer-flow-30fps.sh 5600 h264
@@ -198,6 +202,27 @@ The layout can be adjusted:
 ```
 
 The default development IPC socket is `/tmp/openhd-glide.sock`; override it with `--ipc-socket <path>`.
+
+Terminal and MAVLink-state IPC helpers:
+
+```sh
+./build-kms/glide-send ui key down
+./build-kms/glide-send ui key enter
+./build-kms/glide-send ui key right
+./build-kms/glide-send ui key left
+./build-kms/glide-send mav alive air 1
+./build-kms/glide-send mav alive ground 1
+./build-kms/glide-send mav link 5745 20 2 1200
+./build-kms/glide-send mav scan 42
+./build-kms/glide-send mav message "FC heartbeat received"
+```
+
+`mav ...` lines are intentionally a temporary bridge contract: the real MAVLink reader should publish the same state
+updates to the controller IPC socket, and UI actions emit `mav set ...` / `mav command ...` lines that the MAVLink
+writer can translate into OpenHD parameter writes and commands.
+
+UI navigation is directional: `up/down` moves through the sidebar or focused setting rows, `right` enters the settings
+panel, `left` returns to the sidebar or collapses it, and `enter` activates the focused row.
 
 See [docs/architecture.md](docs/architecture.md) for the initial process architecture.
 See [AGENTS.md](AGENTS.md) for project goals and current implementation notes for future AI agents.

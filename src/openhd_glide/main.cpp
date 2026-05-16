@@ -31,6 +31,9 @@
 #include <vector>
 
 #if defined(__linux__)
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -65,6 +68,7 @@ struct Options {
     std::string view_udp_codec { "h264" };
     int view_plane_id { -1 };
     int flow_plane_id { -1 };
+    int ui_plane_id { -1 };
     int view_connector_id { -1 };
     float ui_opacity { 0.35F };
     int preview_x { 80 };
@@ -79,6 +83,9 @@ struct Options {
     bool native_cedar_video {};
     bool async_flow { true };
     bool flow_debug_solid {};
+    bool ui_overlay {};
+    std::uint32_t ui_debug_color { 0xCC0B1722U };
+    std::string ui_buffer_path { "/tmp/openhd-glide-ui.argb" };
 };
 
 Options parse_options(int argc, char** argv)
@@ -111,6 +118,8 @@ Options parse_options(int argc, char** argv)
             options.view_plane_id = std::stoi(argv[++i]);
         } else if (argument == "--flow-plane-id" && i + 1 < argc) {
             options.flow_plane_id = std::stoi(argv[++i]);
+        } else if (argument == "--ui-plane-id" && i + 1 < argc) {
+            options.ui_plane_id = std::stoi(argv[++i]);
         } else if (argument == "--view-connector-id" && i + 1 < argc) {
             options.view_connector_id = std::stoi(argv[++i]);
         } else if (argument == "--preview-x" && i + 1 < argc) {
@@ -145,6 +154,12 @@ Options parse_options(int argc, char** argv)
             options.async_flow = false;
         } else if (argument == "--flow-debug-solid") {
             options.flow_debug_solid = true;
+        } else if (argument == "--ui-overlay") {
+            options.ui_overlay = true;
+        } else if (argument == "--ui-debug-color" && i + 1 < argc) {
+            options.ui_debug_color = static_cast<std::uint32_t>(std::stoul(argv[++i], nullptr, 0));
+        } else if (argument == "--ui-buffer-path" && i + 1 < argc) {
+            options.ui_buffer_path = argv[++i];
         }
     }
     return options;
@@ -519,6 +534,66 @@ bool extract_dmabuf_frame(GstSample* sample, glide::dev::DmabufVideoFrame& frame
 }
 #endif
 
+struct SharedUiBuffer {
+    int fd { -1 };
+    void* map {};
+    std::size_t size {};
+    std::uint32_t width {};
+    std::uint32_t height {};
+    std::string path;
+
+    void close()
+    {
+#if defined(__linux__)
+        if (map != nullptr && map != MAP_FAILED) {
+            munmap(map, size);
+        }
+        if (fd >= 0) {
+            ::close(fd);
+        }
+#endif
+        fd = -1;
+        map = nullptr;
+        size = 0;
+    }
+
+    bool open_if_needed(const std::string& requested_path, std::uint32_t requested_width, std::uint32_t requested_height)
+    {
+#if defined(__linux__)
+        const auto requested_size = static_cast<std::size_t>(requested_width) * requested_height * sizeof(std::uint32_t);
+        if (fd >= 0 && map != nullptr && path == requested_path && width == requested_width && height == requested_height && size == requested_size) {
+            return true;
+        }
+        close();
+        fd = ::open(requested_path.c_str(), O_RDONLY | O_CLOEXEC);
+        if (fd < 0) {
+            return false;
+        }
+        struct stat info {};
+        if (fstat(fd, &info) != 0 || static_cast<std::size_t>(info.st_size) < requested_size) {
+            close();
+            return false;
+        }
+        map = mmap(nullptr, requested_size, PROT_READ, MAP_SHARED, fd, 0);
+        if (map == MAP_FAILED) {
+            map = nullptr;
+            close();
+            return false;
+        }
+        path = requested_path;
+        width = requested_width;
+        height = requested_height;
+        size = requested_size;
+        return true;
+#else
+        (void)requested_path;
+        (void)requested_width;
+        (void)requested_height;
+        return false;
+#endif
+    }
+};
+
 int run_kms_video_preview(const Options& options)
 {
 #if OPENHD_GLIDE_DEVICE_KMS && (OPENHD_GLIDE_HAS_GSTREAMER || OPENHD_GLIDE_HAS_CEDAR)
@@ -526,18 +601,35 @@ int run_kms_video_preview(const Options& options)
     signal(SIGINT, request_stop);
     signal(SIGTERM, request_stop);
 
-    const bool use_atomic_kms = options.atomic_kms || options.flow_overlay;
+    const bool use_atomic_kms = options.atomic_kms || options.flow_overlay || options.ui_overlay;
     glide::dev::KmsAtomicCompositor compositor;
     glide::dev::KmsDmabufVideoPlane legacy_output;
+    SharedUiBuffer shared_ui;
+    auto ui_height = options.ui_height != 0 ? options.ui_height : options.flow_height;
     if (use_atomic_kms) {
         if (!compositor.create(
                 options.preview_width,
                 options.flow_height,
                 options.display_refresh_hz,
                 options.view_plane_id,
-                options.flow_plane_id)) {
+                options.flow_plane_id,
+                options.ui_plane_id,
+                options.ui_overlay ? options.ui_width : 0,
+                options.ui_overlay ? ui_height : 0)) {
             glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
             return 1;
+        }
+        if (options.ui_overlay) {
+            if (!compositor.publish_solid_ui_frame(options.ui_debug_color)) {
+                glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
+                return 1;
+            }
+            glide::log(
+                glide::LogLevel::info,
+                "OpenHD-Glide",
+                "UI debug overlay enabled width=" + std::to_string(options.ui_width)
+                    + " height=" + std::to_string(ui_height)
+                    + " buffer=" + options.ui_buffer_path);
         }
     } else {
         if (!legacy_output.create(options.preview_width, options.flow_height, options.display_refresh_hz, options.view_plane_id)) {
@@ -549,6 +641,7 @@ int run_kms_video_preview(const Options& options)
 
     const bool async_flow = use_atomic_kms && options.flow_overlay && options.async_flow;
     std::thread async_flow_thread;
+    std::thread ui_buffer_thread;
     struct ScopedThreadJoin {
         std::thread& thread;
         ~ScopedThreadJoin()
@@ -559,6 +652,7 @@ int run_kms_video_preview(const Options& options)
             }
         }
     } async_flow_join { async_flow_thread };
+    ScopedThreadJoin ui_buffer_join { ui_buffer_thread };
 
     glide::flow::GlesTextRenderer flow_renderer;
     glide::flow::FpsOverlay flow_fps_overlay;
@@ -739,6 +833,29 @@ int run_kms_video_preview(const Options& options)
             glide::LogLevel::info,
             "OpenHD-Glide",
             "Flow overlay rendering is decoupled from video presentation at " + std::to_string(options.flow_fps) + " fps");
+    }
+
+    if (use_atomic_kms && options.ui_overlay) {
+        ui_buffer_thread = std::thread([&compositor, &shared_ui, ui_buffer_path = options.ui_buffer_path, ui_width = options.ui_width, ui_height]() {
+            constexpr auto ui_interval = std::chrono::milliseconds(33);
+            bool logged_ready {};
+            while (stop_requested == 0) {
+                if (shared_ui.open_if_needed(ui_buffer_path, ui_width, ui_height)) {
+                    if (!logged_ready) {
+                        glide::log(glide::LogLevel::info, "OpenHD-Glide", "UI buffer backend connected to " + ui_buffer_path);
+                        logged_ready = true;
+                    }
+                    if (!compositor.publish_ui_frame_from_argb(shared_ui.map, ui_width, ui_height, ui_width * 4U)) {
+                        glide::log(glide::LogLevel::warning, "OpenHD-Glide", compositor.last_error());
+                    }
+                } else {
+                    logged_ready = false;
+                }
+                std::this_thread::sleep_for(ui_interval);
+            }
+            shared_ui.close();
+        });
+        glide::log(glide::LogLevel::info, "OpenHD-Glide", "UI buffer copy is decoupled from video presentation at 30 fps");
     }
 
     const auto present_video_frame = [&](const glide::dev::DmabufVideoFrame& frame, std::uint64_t presented_frames) {
@@ -1216,6 +1333,10 @@ int run_preview_stack(char* argv0, const Options& options)
                 fps_enabled = event.line.back() == '1';
                 glide::preview_control::set_fps_overlay_enabled(fps_enabled);
                 ipc_server.broadcast_line(std::string("state fps ") + (fps_enabled ? "1" : "0"));
+            } else if (event.line.rfind("mav ", 0) == 0) {
+                ipc_server.broadcast_line(event.line);
+            } else if (event.line.rfind("ui ", 0) == 0) {
+                ipc_server.broadcast_line(event.line);
             } else if (event.line == "ping") {
                 ipc_server.send_line(event.client_id, "pong");
             }
@@ -1328,6 +1449,10 @@ int run_kms_stack(char* argv0, const Options& options)
                 fps_enabled = event.line.back() == '1';
                 glide::preview_control::set_fps_overlay_enabled(fps_enabled);
                 ipc_server.broadcast_line(std::string("state fps ") + (fps_enabled ? "1" : "0"));
+            } else if (event.line.rfind("mav ", 0) == 0) {
+                ipc_server.broadcast_line(event.line);
+            } else if (event.line.rfind("ui ", 0) == 0) {
+                ipc_server.broadcast_line(event.line);
             } else if (event.line == "ping") {
                 ipc_server.send_line(event.client_id, "pong");
             }

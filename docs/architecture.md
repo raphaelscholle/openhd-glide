@@ -45,7 +45,7 @@ The queues are constrained to one buffer and leaky mode to keep latency low. `gl
 
 The current composition limitation is that `glide-flow --kms` still owns fullscreen scanout. For real video-under-OSD composition, `openhd-glide` needs to own KMS, put View's decoded DMABUF on a video plane, and put Flow's render target on an alpha-capable overlay plane above it.
 
-`openhd-glide --kms-video-preview` is the first visible controller-owned video bring-up path. It decodes RTP/H.264 in the controller, requests `video/x-raw(memory:DMABuf),format=DMA_DRM`, imports the decoded DMABUF FDs into DRM framebuffers, and places them on a KMS plane. It currently creates a black primary framebuffer to keep the CRTC active. The next step is to move this DMABUF handoff back across the `glide-view` Unix socket and add Flow/UI overlay planes above the video plane.
+`openhd-glide --kms-video-preview` is the first visible controller-owned video bring-up path. It decodes RTP/H.264 in the controller, requests `video/x-raw(memory:DMABuf),format=DMA_DRM`, imports the decoded DMABUF FDs into DRM framebuffers, and places them on a KMS plane. It currently creates a black primary framebuffer only to keep the CRTC active. Flow is rendered on an ARGB overlay plane above the video plane. With `--ui-overlay`, the controller also places a left-side ARGB UI overlay plane. `glide-ui --buffer` renders LVGL into a shared ARGB file, while the controller copies that buffer into the KMS UI plane on a separate 30 fps thread so UI work stays out of the video presentation loop. The next step is to move the video DMABUF handoff back across the `glide-view` Unix socket.
 
 ## GlideFlow OSD
 
@@ -90,6 +90,11 @@ inside the preview sidebar `MISC` panel; the controller receives `set fps 0/1` a
 uses before drawing the FPS overlay. The socket path can be changed with `--ipc-socket`.
 
 The LVGL UI is intentionally backend-isolated: the current SDL display driver is for WSL/Windows-style iteration. The target backend should render the same LVGL tree into shared buffers or a plane-owned buffer path supplied by `openhd-glide`, without letting `glide-ui` become DRM/KMS master.
+
+The UI and Flow consume a small controller-broadcast `mav ...` IPC vocabulary while the real MAVLink bridge is being
+built. This keeps the rendering processes decoupled from MAVLink transport details: a bridge can publish snapshots such
+as `mav alive air 1`, `mav link 5745 20 2 1200`, `mav scan 50`, and `mav message ...`; UI actions emit `mav set ...` or
+`mav command ...` for the bridge to translate into OpenHD `PARAM_EXT_*` writes and command-long calls.
 
 ## Device KMS Mode
 
