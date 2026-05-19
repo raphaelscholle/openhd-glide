@@ -35,6 +35,15 @@ public:
         SurfaceSize surface);
     void draw_line(RenderPoint start, RenderPoint end, float thickness, RgbaColor color, SurfaceSize surface);
     void draw_circle_outline(RenderPoint center, float radius, float thickness, RgbaColor color, SurfaceSize surface);
+    void draw_argb_pixels(
+        const void* pixels,
+        std::uint32_t width,
+        std::uint32_t height,
+        std::uint32_t stride_bytes,
+        RenderPoint top_left,
+        SurfaceSize surface);
+    bool update_argb_texture(const void* pixels, std::uint32_t width, std::uint32_t height, std::uint32_t stride_bytes);
+    void draw_cached_argb_texture(RenderPoint top_left, SurfaceSize surface);
     void draw(const TextPlacement& placement, SurfaceSize surface);
     std::string runtime_description() const;
     bool likely_software_renderer() const;
@@ -52,6 +61,7 @@ private:
 
     bool ensure_initialized();
     bool ensure_text_initialized();
+    bool ensure_image_initialized();
     bool draw_antialiased_text(const TextPlacement& placement, SurfaceSize surface);
     GlyphTexture* load_glyph(char character, unsigned int pixel_size);
 
@@ -64,6 +74,14 @@ private:
     std::int32_t text_texcoord_location_ { -1 };
     std::int32_t text_color_location_ { -1 };
     std::int32_t text_sampler_location_ { -1 };
+    std::uint32_t image_program_ {};
+    std::int32_t image_position_location_ { -1 };
+    std::int32_t image_texcoord_location_ { -1 };
+    std::int32_t image_sampler_location_ { -1 };
+    std::uint32_t image_texture_ {};
+    std::uint32_t image_texture_width_ {};
+    std::uint32_t image_texture_height_ {};
+    bool image_texture_ready_ {};
     void* freetype_library_ {};
     void* freetype_face_ {};
     bool text_init_attempted_ {};

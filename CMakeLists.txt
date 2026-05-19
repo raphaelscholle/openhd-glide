@@ -79,6 +79,7 @@ find_library(CEDAR_VDECODER_LIBRARY NAMES vdecoder)
 find_library(CEDAR_MEMADAPTER_LIBRARY NAMES MemAdapter)
 find_library(CEDAR_VE_LIBRARY NAMES VE)
 find_library(CEDAR_VIDEOENGINE_LIBRARY NAMES videoengine)
+find_library(ROCKCHIP_MPP_LIBRARY NAMES rockchip_mpp)
 
 set(LV_CONF_PATH ${CMAKE_CURRENT_SOURCE_DIR}/src/glide_ui/lv_conf.h CACHE STRING "" FORCE)
 set(LV_CONF_BUILD_DISABLE_EXAMPLES ON CACHE BOOL "" FORCE)
@@ -220,7 +221,9 @@ else()
 endif()
 
 add_glide_executable(openhd-glide src/openhd_glide/main.cpp)
-target_sources(openhd-glide PRIVATE src/video/cedar_rtp_decoder.cpp)
+target_sources(openhd-glide PRIVATE
+    src/video/cedar_rtp_decoder.cpp
+    src/video/rockchip_mpp_rtp_decoder.cpp)
 target_link_libraries(openhd-glide PRIVATE glide_dev glide_flow_core Threads::Threads)
 if(LIBDRM_FOUND)
     target_include_directories(openhd-glide PRIVATE ${LIBDRM_INCLUDE_DIRS})
@@ -247,6 +250,12 @@ if(CEDAR_VDECODER_LIBRARY AND CEDAR_MEMADAPTER_LIBRARY AND CEDAR_VE_LIBRARY AND 
         ${CEDAR_VIDEOENGINE_LIBRARY})
 else()
     target_compile_definitions(openhd-glide PRIVATE OPENHD_GLIDE_HAS_CEDAR=0)
+endif()
+if(ROCKCHIP_MPP_LIBRARY AND GSTREAMER_FOUND)
+    target_compile_definitions(openhd-glide PRIVATE OPENHD_GLIDE_HAS_RKMPP=1)
+    target_link_libraries(openhd-glide PRIVATE ${ROCKCHIP_MPP_LIBRARY})
+else()
+    target_compile_definitions(openhd-glide PRIVATE OPENHD_GLIDE_HAS_RKMPP=0)
 endif()
 add_glide_executable(glide-view src/glide_view/main.cpp)
 if(GSTREAMER_FOUND)
@@ -305,6 +314,8 @@ install(
         examples/run-kms-video-gstreamer-flow-ui.sh
         examples/run-kms-video-gstreamer-flow-30fps.sh
         examples/run-kms-video-gstreamer-video-only.sh
+        examples/run-kms-video-rkmpp-video-only.sh
+        examples/run-kms-video-rkmpp-flow-ui.sh
         examples/stream-h264-file-to-glide-view.sh
         examples/stream-videotestsrc-to-glide-view.sh
     DESTINATION share/openhd-glide/examples

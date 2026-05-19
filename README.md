@@ -44,6 +44,52 @@ To install the common build/runtime dependencies first:
 scripts/compile-install.sh --deps
 ```
 
+### Rockchip RK3566/RK3568 Dependencies
+
+Radxa/Rockchip Debian images may ship GStreamer runtime packages from the Radxa RK3568 repository
+(`1.22.9` on the tested Rock 3A image) while the matching development packages are hidden if the
+Radxa apt sources are commented out. In that state, `scripts/compile-install.sh --deps` can fail with
+`libgstreamer1.0-dev` or `libgstreamer-plugins-base1.0-dev` dependency conflicts, or CMake can disable
+GStreamer support.
+
+Enable the Radxa sources before installing dependencies:
+
+```sh
+sudo sed -i 's/^#deb /deb /' /etc/apt/sources.list.d/70-radxa.list /etc/apt/sources.list.d/80-radxa-rk3568.list
+sudo apt update
+```
+
+Then install the normal dependencies plus the Rockchip MPP/RGA development packages:
+
+```sh
+sudo apt install -y build-essential cmake pkg-config libdrm-dev libgbm-dev libgles2-mesa-dev libegl1-mesa-dev libfreetype-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev librockchip-mpp-dev librga-dev gstreamer1.0-tools gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav gstreamer1.0-rockchip1
+```
+
+`librga-dev` is required because Radxa's `gstreamer-video-1.0.pc` depends on `librga.pc`. Without it,
+`pkg-config --exists gstreamer-video-1.0` fails and OpenHD-Glide builds without GStreamer support.
+`librockchip-mpp-dev` is required for the native RKMPP decoder path; without it, the Rockchip scripts
+fall back to the generic GStreamer decoder build behavior.
+
+If the image has the obsolete `gstreamer1.0-plugins-rtp` package installed, remove it. It is a `1.14.x`
+plugin that can conflict with the `1.22.x` RTP elements from `gstreamer1.0-plugins-good`:
+
+```sh
+sudo apt remove -y gstreamer1.0-plugins-rtp
+rm -f ~/.cache/gstreamer-1.0/registry.*
+```
+
+On RK3566/RK3568, use the native RKMPP scripts for the low-latency path. They use GStreamer only for
+RTP depay/parse and feed byte-stream NAL data directly into Rockchip MPP with immediate output and fast-play
+decoder controls, following the approach used by PixelPilot/FPVue. The older GStreamer `mppvideodec`
+path is still available as a portable fallback, but it can output only about half-rate on some RK3566
+streams. If MPP only works under `sudo`, fix permissions for the Rockchip MPP/RGA/video device nodes or
+run the current device smoke tests with `sudo`.
+
+RK3566/RK3568 VOP2 plane layout can expose only one linear ARGB overlay plane. In that case the
+controller keeps video on the NV12 plane and composites the LVGL UI buffer into the Flow/OSD GL surface
+instead of requiring a second ARGB KMS overlay plane. Boards that expose enough linear ARGB overlay
+planes still use a separate UI overlay plane normally.
+
 The helper accepts environment overrides:
 
 ```sh
@@ -90,8 +136,10 @@ sudo ./build-kms/glide-view --udp-video --udp-port 5600
 
 This command does not display video. It should log `first decoded sample ...` and `decoded fps=...` once RTP/H.264
 frames arrive. If those lines do not appear, the sender is not reaching the receiver or the stream caps do not match.
-On Allwinner BSP images, the hardware path may use `omxh264dec` instead of `v4l2h264dec`, and running under `sudo` is
-often required because the cedar and DMA heap device nodes are root-only by default.
+On Rockchip RK3566/RK3568 images, the hardware path should use `mppvideodec`, and running under `sudo` may be required
+until the MPP/RGA/video device nodes have suitable permissions. On Allwinner BSP images, the hardware path may use
+`omxh264dec` instead of `v4l2h264dec`, and running under `sudo` is often required because the cedar and DMA heap device
+nodes are root-only by default.
 
 Temporary controller-owned KMS video preview:
 
@@ -99,10 +147,10 @@ Temporary controller-owned KMS video preview:
 sudo ./build-kms/openhd-glide --kms-video-preview --gstreamer-video --no-flow --view-udp-port 5600 --preview-width 1920 --flow-height 1080 --display-refresh-hz 120
 ```
 
-This displays the UDP video without `kmssink` by decoding through GStreamer in `openhd-glide`, requesting DMABUF output
-from the hardware decoder, importing the decoded FD into DRM, and scanning it out on a KMS video plane. It still uses a
-black primary framebuffer only to keep the CRTC active. Flow is rendered on an ARGB overlay plane. With `--ui-overlay`,
-the controller also places a left-side ARGB UI overlay plane and can copy frames from the LVGL buffer producer.
+This displays the UDP video without `kmssink` by decoding in `openhd-glide`, importing the decoded FD into DRM,
+and scanning it out on a KMS video plane. It still uses a black primary framebuffer only to keep the CRTC active.
+Flow is rendered on an ARGB overlay plane. With `--ui-overlay`, the controller also places a left-side ARGB UI
+overlay plane or composites the LVGL buffer into the Flow/OSD plane when RK3566 exposes only one usable ARGB plane.
 Native Cedar remains available only through the explicit `--native-cedar-video` flag.
 
 Example run scripts cover the current device modes. Each script takes the UDP video port as its first optional
@@ -111,16 +159,22 @@ Set `GLIDE_WIDTH` and `GLIDE_HEIGHT` to override the default `1920x1080`.
 Device KMS scripts default to `GLIDE_DISPLAY_HZ=120`; override it if the panel should use a different mode.
 
 ```sh
-# GStreamer/OMX decode, KMS video plane plus Flow overlay at full video rate.
+# Native Rockchip MPP decode, fastest RK3566/RK3568 video-only path.
+examples/run-kms-video-rkmpp-video-only.sh 5600 h264
+
+# Native Rockchip MPP decode, KMS video plane plus Flow and LVGL UI.
+examples/run-kms-video-rkmpp-flow-ui.sh 5600 h264
+
+# GStreamer hardware decode, KMS video plane plus Flow overlay at full video rate.
 examples/run-kms-video-gstreamer-flow.sh 5600 h264
 
-# GStreamer/OMX decode, KMS video plane plus Flow and LVGL UI overlay planes.
+# GStreamer hardware decode, KMS video plane plus Flow and LVGL UI overlay planes.
 examples/run-kms-video-gstreamer-flow-ui.sh 5600 h264
 
-# GStreamer/OMX decode, KMS video plane plus Flow overlay capped to 30 fps.
+# GStreamer hardware decode, KMS video plane plus Flow overlay capped to 30 fps.
 examples/run-kms-video-gstreamer-flow-30fps.sh 5600 h264
 
-# GStreamer/OMX decode, fastest video-only legacy KMS plane path.
+# GStreamer hardware decode, fastest video-only legacy KMS plane path.
 examples/run-kms-video-gstreamer-video-only.sh 5600 h264
 
 # Native Cedar RTP/H.264 decode debugging path, KMS video plane plus Flow overlay.

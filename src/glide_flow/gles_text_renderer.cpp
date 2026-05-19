@@ -68,6 +68,18 @@ void main()
 }
 )glsl";
 
+constexpr auto argb_fragment_shader_source = R"glsl(
+precision mediump float;
+uniform sampler2D u_texture;
+varying vec2 v_texcoord;
+
+void main()
+{
+    vec4 bgra = texture2D(u_texture, v_texcoord);
+    gl_FragColor = vec4(bgra.b, bgra.g, bgra.r, bgra.a);
+}
+)glsl";
+
 GLuint compile_shader(GLenum type, const char* source)
 {
     const GLuint shader = glCreateShader(type);
@@ -225,6 +237,13 @@ GlesTextRenderer::~GlesTextRenderer()
     if (text_program_ != 0) {
         glDeleteProgram(text_program_);
     }
+    if (image_texture_ != 0) {
+        const GLuint texture = image_texture_;
+        glDeleteTextures(1, &texture);
+    }
+    if (image_program_ != 0) {
+        glDeleteProgram(image_program_);
+    }
     if (program_ != 0) {
         glDeleteProgram(program_);
     }
@@ -377,6 +396,65 @@ bool GlesTextRenderer::ensure_text_initialized()
         && text_color_location_ >= 0
         && text_sampler_location_ >= 0;
 #else
+    return false;
+#endif
+}
+
+bool GlesTextRenderer::ensure_image_initialized()
+{
+#if OPENHD_GLIDE_HAS_GLESV2
+    if (image_program_ != 0 && image_texture_ != 0) {
+        return true;
+    }
+
+    const GLuint vertex_shader = compile_shader(GL_VERTEX_SHADER, text_vertex_shader_source);
+    const GLuint fragment_shader = compile_shader(GL_FRAGMENT_SHADER, argb_fragment_shader_source);
+    if (vertex_shader == 0 || fragment_shader == 0) {
+        if (vertex_shader != 0) {
+            glDeleteShader(vertex_shader);
+        }
+        if (fragment_shader != 0) {
+            glDeleteShader(fragment_shader);
+        }
+        last_error_ = "failed to compile ARGB image shader";
+        return false;
+    }
+
+    const GLuint program = glCreateProgram();
+    glAttachShader(program, vertex_shader);
+    glAttachShader(program, fragment_shader);
+    glBindAttribLocation(program, 0, "a_position");
+    glBindAttribLocation(program, 1, "a_texcoord");
+    glLinkProgram(program);
+    glDeleteShader(vertex_shader);
+    glDeleteShader(fragment_shader);
+
+    GLint status = GL_FALSE;
+    glGetProgramiv(program, GL_LINK_STATUS, &status);
+    if (status != GL_TRUE) {
+        glDeleteProgram(program);
+        last_error_ = "failed to link ARGB image shader";
+        return false;
+    }
+
+    GLuint texture {};
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    image_program_ = program;
+    image_position_location_ = glGetAttribLocation(image_program_, "a_position");
+    image_texcoord_location_ = glGetAttribLocation(image_program_, "a_texcoord");
+    image_sampler_location_ = glGetUniformLocation(image_program_, "u_texture");
+    image_texture_ = texture;
+    return image_position_location_ >= 0
+        && image_texcoord_location_ >= 0
+        && image_sampler_location_ >= 0;
+#else
+    last_error_ = "OpenGL ES 2.0 was not found at build time";
     return false;
 #endif
 }
@@ -549,6 +627,121 @@ void GlesTextRenderer::draw_filled_quad(
     (void)bottom_left;
     (void)bottom_right;
     (void)color;
+    (void)surface;
+    last_error_ = "OpenGL ES 2.0 was not found at build time";
+#endif
+}
+
+void GlesTextRenderer::draw_argb_pixels(
+    const void* pixels,
+    std::uint32_t width,
+    std::uint32_t height,
+    std::uint32_t stride_bytes,
+    RenderPoint top_left,
+    SurfaceSize surface)
+{
+    if (update_argb_texture(pixels, width, height, stride_bytes)) {
+        draw_cached_argb_texture(top_left, surface);
+    }
+}
+
+bool GlesTextRenderer::update_argb_texture(const void* pixels, std::uint32_t width, std::uint32_t height, std::uint32_t stride_bytes)
+{
+#if OPENHD_GLIDE_HAS_GLESV2
+    if (pixels == nullptr || width == 0 || height == 0) {
+        return false;
+    }
+    if (stride_bytes != width * 4U) {
+        last_error_ = "ARGB image stride must match width * 4";
+        return false;
+    }
+    if (!ensure_image_initialized()) {
+        return false;
+    }
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, image_texture_);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    if (image_texture_width_ != width || image_texture_height_ != height) {
+        glTexImage2D(
+            GL_TEXTURE_2D,
+            0,
+            GL_RGBA,
+            static_cast<GLsizei>(width),
+            static_cast<GLsizei>(height),
+            0,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            pixels);
+        image_texture_width_ = width;
+        image_texture_height_ = height;
+        image_texture_ready_ = true;
+    } else {
+        glTexSubImage2D(
+            GL_TEXTURE_2D,
+            0,
+            0,
+            0,
+            static_cast<GLsizei>(width),
+            static_cast<GLsizei>(height),
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            pixels);
+    }
+    image_texture_ready_ = true;
+    return true;
+#else
+    (void)pixels;
+    (void)width;
+    (void)height;
+    (void)stride_bytes;
+    last_error_ = "OpenGL ES 2.0 was not found at build time";
+    return false;
+#endif
+}
+
+void GlesTextRenderer::draw_cached_argb_texture(RenderPoint top_left, SurfaceSize surface)
+{
+#if OPENHD_GLIDE_HAS_GLESV2
+    if (!image_texture_ready_ || image_texture_width_ == 0 || image_texture_height_ == 0) {
+        return;
+    }
+    if (!ensure_image_initialized()) {
+        return;
+    }
+
+    glViewport(0, 0, static_cast<GLsizei>(surface.width), static_cast<GLsizei>(surface.height));
+    glEnable(GL_BLEND);
+    glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    glUseProgram(image_program_);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, image_texture_);
+    glUniform1i(image_sampler_location_, 0);
+    const auto x = top_left.x;
+    const auto y = top_left.y;
+    const auto right = x + static_cast<float>(image_texture_width_);
+    const auto bottom = y + static_cast<float>(image_texture_height_);
+    const std::array<GLfloat, 16> vertices {
+        to_ndc_x(x, surface),
+        to_ndc_y(y, surface),
+        0.0F,
+        0.0F,
+        to_ndc_x(right, surface),
+        to_ndc_y(y, surface),
+        1.0F,
+        0.0F,
+        to_ndc_x(x, surface),
+        to_ndc_y(bottom, surface),
+        0.0F,
+        1.0F,
+        to_ndc_x(right, surface),
+        to_ndc_y(bottom, surface),
+        1.0F,
+        1.0F,
+    };
+    draw_textured_quad(image_position_location_, image_texcoord_location_, vertices);
+#else
+    (void)top_left;
     (void)surface;
     last_error_ = "OpenGL ES 2.0 was not found at build time";
 #endif

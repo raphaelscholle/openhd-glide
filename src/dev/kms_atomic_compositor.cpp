@@ -158,13 +158,13 @@ bool add_optional_range_edge_property(
     return ok;
 }
 
-bool add_optional_range_from_top_property(
+bool add_optional_range_from_bottom_property(
     int drm_fd,
     drmModeAtomicReq* request,
     std::uint32_t object_id,
     std::uint32_t object_type,
     const char* name,
-    std::uint64_t offset_from_top,
+    std::uint64_t offset_from_bottom,
     std::string& error)
 {
     auto* properties = drmModeObjectGetProperties(drm_fd, object_id, object_type);
@@ -181,7 +181,7 @@ bool add_optional_range_from_top_property(
             && property->count_values >= 2) {
             const auto minimum = property->values[0];
             const auto maximum = property->values[1];
-            const auto value = maximum > minimum + offset_from_top ? maximum - offset_from_top : minimum;
+            const auto value = minimum + offset_from_bottom < maximum ? minimum + offset_from_bottom : maximum;
             ok = add_optional_property(drm_fd, request, object_id, object_type, name, value, error);
         }
         if (property != nullptr) {
@@ -300,6 +300,51 @@ bool plane_supports_format(drmModePlane* plane, std::uint32_t format)
     return std::find(plane->formats, plane->formats + plane->count_formats, format) != plane->formats + plane->count_formats;
 }
 
+bool plane_supports_format_modifier(int drm_fd, std::uint32_t plane_id, std::uint32_t format, std::uint64_t modifier)
+{
+    auto* properties = drmModeObjectGetProperties(drm_fd, plane_id, DRM_MODE_OBJECT_PLANE);
+    if (properties == nullptr) {
+        return true;
+    }
+
+    std::uint64_t blob_id {};
+    bool has_in_formats {};
+    for (std::uint32_t i = 0; i < properties->count_props; ++i) {
+        auto* property = drmModeGetProperty(drm_fd, properties->props[i]);
+        if (property != nullptr && std::strcmp(property->name, "IN_FORMATS") == 0) {
+            blob_id = properties->prop_values[i];
+            has_in_formats = true;
+        }
+        if (property != nullptr) {
+            drmModeFreeProperty(property);
+        }
+        if (has_in_formats) {
+            break;
+        }
+    }
+    drmModeFreeObjectProperties(properties);
+
+    if (!has_in_formats || blob_id == 0) {
+        return true;
+    }
+
+    auto* blob = drmModeGetPropertyBlob(drm_fd, static_cast<std::uint32_t>(blob_id));
+    if (blob == nullptr) {
+        return true;
+    }
+
+    bool supported {};
+    drmModeFormatModifierIterator iterator {};
+    while (drmModeFormatModifierBlobIterNext(blob, &iterator)) {
+        if (iterator.fmt == format && iterator.mod == modifier) {
+            supported = true;
+            break;
+        }
+    }
+    drmModeFreePropertyBlob(blob);
+    return supported;
+}
+
 std::string fourcc_string(std::uint32_t format)
 {
     std::array<char, 5> text {
@@ -380,7 +425,11 @@ bool KmsAtomicCompositor::present(const DmabufVideoFrame& video_frame, bool upda
         return false;
     }
     if (ui_surface_.width != 0 && ui_surface_.height != 0 && ui_plane_id_ == 0 && !choose_ui_plane()) {
-        return false;
+        glide::log(
+            glide::LogLevel::warning,
+            "OpenHD-Glide",
+            "UI KMS overlay disabled: " + last_error_);
+        ui_surface_ = {};
     }
 
     auto* video = find_or_import_video_framebuffer(video_frame);
@@ -571,8 +620,7 @@ bool KmsAtomicCompositor::publish_ui_frame_from_argb(const void* pixels, std::ui
         return false;
     }
     if (ui_surface_.width == 0 || ui_surface_.height == 0) {
-        last_error_ = "UI overlay surface is disabled";
-        return false;
+        return true;
     }
     if (width != ui_surface_.width || height != ui_surface_.height) {
         last_error_ = "UI buffer dimensions do not match the KMS UI plane";
@@ -609,6 +657,11 @@ bool KmsAtomicCompositor::publish_ui_frame_from_argb(const void* pixels, std::ui
     (void)stride_bytes;
     return false;
 #endif
+}
+
+bool KmsAtomicCompositor::ui_overlay_plane_active() const
+{
+    return ui_surface_.width != 0 && ui_surface_.height != 0 && ui_plane_id_ != 0;
 }
 
 flow::SurfaceSize KmsAtomicCompositor::surface_size() const
@@ -994,7 +1047,11 @@ bool KmsAtomicCompositor::choose_flow_plane()
         const bool usable_crtc = (plane->possible_crtcs & (1 << crtc_index_)) != 0;
         const bool reserved_for_ui = preferred_ui_plane_id_ >= 0 && plane->plane_id == static_cast<std::uint32_t>(preferred_ui_plane_id_);
         const bool available = plane->plane_id != primary_plane_id_ && plane->plane_id != video_plane_id_ && plane->plane_id != ui_plane_id_ && !reserved_for_ui;
-        return usable_crtc && available && plane_supports_format(plane, DRM_FORMAT_ARGB8888) && type == DRM_PLANE_TYPE_OVERLAY;
+        return usable_crtc
+            && available
+            && plane_supports_format(plane, DRM_FORMAT_ARGB8888)
+            && plane_supports_format_modifier(drm_fd_, plane->plane_id, DRM_FORMAT_ARGB8888, DRM_FORMAT_MOD_LINEAR)
+            && type == DRM_PLANE_TYPE_OVERLAY;
     };
 
     if (preferred_flow_plane_id_ >= 0) {
@@ -1056,7 +1113,11 @@ bool KmsAtomicCompositor::choose_ui_plane()
         const auto type = plane_type(drm_fd_, plane->plane_id);
         const bool usable_crtc = (plane->possible_crtcs & (1 << crtc_index_)) != 0;
         const bool available = plane->plane_id != primary_plane_id_ && plane->plane_id != video_plane_id_ && plane->plane_id != flow_plane_id_;
-        return usable_crtc && available && plane_supports_format(plane, DRM_FORMAT_ARGB8888) && type == DRM_PLANE_TYPE_OVERLAY;
+        return usable_crtc
+            && available
+            && plane_supports_format(plane, DRM_FORMAT_ARGB8888)
+            && plane_supports_format_modifier(drm_fd_, plane->plane_id, DRM_FORMAT_ARGB8888, DRM_FORMAT_MOD_LINEAR)
+            && type == DRM_PLANE_TYPE_OVERLAY;
     };
 
     if (preferred_ui_plane_id_ >= 0) {
@@ -1122,12 +1183,16 @@ bool KmsAtomicCompositor::create_gbm_device()
 
 bool KmsAtomicCompositor::create_flow_surface()
 {
+    std::uint32_t use_flags = GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING;
+#ifdef GBM_BO_USE_LINEAR
+    use_flags |= GBM_BO_USE_LINEAR;
+#endif
     gbm_surface_ = gbm_surface_create(
         static_cast<gbm_device*>(gbm_device_),
         surface_.width,
         surface_.height,
         GBM_FORMAT_ARGB8888,
-        GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
+        use_flags);
     if (gbm_surface_ == nullptr) {
         last_error_ = "failed to create Flow GBM overlay surface";
         return false;
@@ -1300,8 +1365,31 @@ bool KmsAtomicCompositor::add_gbm_framebuffer(void* bo, std::uint32_t& framebuff
     std::uint32_t handles[4] {};
     std::uint32_t strides[4] {};
     std::uint32_t offsets[4] {};
-    handles[0] = gbm_bo_get_handle(buffer).u32;
-    strides[0] = gbm_bo_get_stride(buffer);
+    std::uint64_t modifiers[4] {};
+
+    const auto plane_count = std::min(gbm_bo_get_plane_count(buffer), 4);
+    const std::uint64_t modifier = gbm_bo_get_modifier(buffer);
+    if (plane_count > 0) {
+        for (int plane = 0; plane < plane_count; ++plane) {
+            handles[plane] = gbm_bo_get_handle_for_plane(buffer, plane).u32;
+            strides[plane] = gbm_bo_get_stride_for_plane(buffer, plane);
+            offsets[plane] = gbm_bo_get_offset(buffer, plane);
+            modifiers[plane] = modifier;
+        }
+    } else {
+        handles[0] = gbm_bo_get_handle(buffer).u32;
+        strides[0] = gbm_bo_get_stride(buffer);
+        modifiers[0] = modifier;
+    }
+
+    if (modifier != DRM_FORMAT_MOD_INVALID && modifier != DRM_FORMAT_MOD_LINEAR) {
+        if (drmModeAddFB2WithModifiers(drm_fd_, width, height, format, handles, strides, offsets, modifiers, &framebuffer_id, DRM_MODE_FB_MODIFIERS) != 0) {
+            last_error_ = "failed to add Flow GBM framebuffer with modifiers" + errno_suffix();
+            return false;
+        }
+        return true;
+    }
+
     if (drmModeAddFB2(drm_fd_, width, height, format, handles, strides, offsets, &framebuffer_id, 0) != 0) {
         last_error_ = "failed to add Flow GBM framebuffer" + errno_suffix();
         return false;
@@ -1476,12 +1564,12 @@ bool KmsAtomicCompositor::commit(
         ok = ok && add_optional_range_edge_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "ZPOS", false, last_error_);
         ok = ok && add_optional_enum_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "pixel blend mode", "None", last_error_);
         if (!video_on_primary_) {
-            ok = ok && add_optional_range_edge_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "zpos", false, last_error_);
-            ok = ok && add_optional_range_edge_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "ZPOS", false, last_error_);
+            ok = ok && add_optional_range_from_bottom_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "zpos", 1, last_error_);
+            ok = ok && add_optional_range_from_bottom_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "ZPOS", 1, last_error_);
             ok = ok && add_optional_enum_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "pixel blend mode", "None", last_error_);
         }
-        ok = ok && add_optional_range_from_top_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "zpos", ui_plane_id_ != 0 ? 1 : 0, last_error_);
-        ok = ok && add_optional_range_from_top_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "ZPOS", ui_plane_id_ != 0 ? 1 : 0, last_error_);
+        ok = ok && add_optional_range_edge_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "zpos", true, last_error_);
+        ok = ok && add_optional_range_edge_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "ZPOS", true, last_error_);
         ok = ok && add_optional_range_edge_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "alpha", true, last_error_);
         ok = ok && add_optional_enum_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "pixel blend mode", "Coverage", last_error_);
         if (ui_plane_id_ != 0) {

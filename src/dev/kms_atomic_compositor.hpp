@@ -36,6 +36,7 @@ public:
     bool publish_solid_flow_frame(std::uint32_t argb);
     bool publish_solid_ui_frame(std::uint32_t argb);
     bool publish_ui_frame_from_argb(const void* pixels, std::uint32_t width, std::uint32_t height, std::uint32_t stride_bytes);
+    bool ui_overlay_plane_active() const;
     flow::SurfaceSize surface_size() const;
     const std::string& last_error() const;
 

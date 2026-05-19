@@ -16,6 +16,7 @@
 #include "platform/drm_probe.hpp"
 #include "platform/process_probe.hpp"
 #include "video/cedar_rtp_decoder.hpp"
+#include "video/rockchip_mpp_rtp_decoder.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -81,6 +82,7 @@ struct Options {
     bool atomic_kms {};
     bool vblank_wait {};
     bool native_cedar_video {};
+    bool native_rkmpp_video {};
     bool async_flow { true };
     bool flow_debug_solid {};
     bool ui_overlay {};
@@ -134,8 +136,13 @@ Options parse_options(int argc, char** argv)
             options.vertical_stack = true;
         } else if (argument == "--native-cedar-video") {
             options.native_cedar_video = true;
+            options.native_rkmpp_video = false;
+        } else if (argument == "--native-rkmpp-video") {
+            options.native_rkmpp_video = true;
+            options.native_cedar_video = false;
         } else if (argument == "--gstreamer-video") {
             options.native_cedar_video = false;
+            options.native_rkmpp_video = false;
         } else if (argument == "--no-flow") {
             options.flow_overlay = false;
         } else if (argument == "--flow-fps" && i + 1 < argc) {
@@ -353,6 +360,31 @@ std::string fourcc_to_string(std::uint32_t format)
     text[2] = static_cast<char>((format >> 16U) & 0xFFU);
     text[3] = static_cast<char>((format >> 24U) & 0xFFU);
     return text;
+}
+
+struct GstIngressStats {
+    std::atomic<std::uint64_t> rtp_packets {};
+    std::atomic<std::uint64_t> rtp_bytes {};
+    std::atomic<std::uint64_t> parsed_access_units {};
+};
+
+GstPadProbeReturn count_rtp_packet_probe(GstPad*, GstPadProbeInfo* info, gpointer user_data)
+{
+    auto* stats = static_cast<GstIngressStats*>(user_data);
+    if (auto* buffer = gst_pad_probe_info_get_buffer(info); buffer != nullptr) {
+        stats->rtp_packets.fetch_add(1, std::memory_order_relaxed);
+        stats->rtp_bytes.fetch_add(gst_buffer_get_size(buffer), std::memory_order_relaxed);
+    }
+    return GST_PAD_PROBE_OK;
+}
+
+GstPadProbeReturn count_parsed_access_unit_probe(GstPad*, GstPadProbeInfo* info, gpointer user_data)
+{
+    auto* stats = static_cast<GstIngressStats*>(user_data);
+    if (gst_pad_probe_info_get_buffer(info) != nullptr) {
+        stats->parsed_access_units.fetch_add(1, std::memory_order_relaxed);
+    }
+    return GST_PAD_PROBE_OK;
 }
 
 int fd_from_memory(GstMemory* memory)
@@ -639,7 +671,7 @@ int run_kms_video_preview(const Options& options)
         legacy_output.set_vblank_wait_enabled(options.vblank_wait);
     }
 
-    const bool async_flow = use_atomic_kms && options.flow_overlay && options.async_flow;
+    const bool async_flow = use_atomic_kms && (options.flow_overlay || options.ui_overlay) && options.async_flow;
     std::thread async_flow_thread;
     std::thread ui_buffer_thread;
     struct ScopedThreadJoin {
@@ -668,6 +700,9 @@ int run_kms_video_preview(const Options& options)
     auto flow_surface = use_atomic_kms ? compositor.surface_size() : glide::flow::SurfaceSize { options.preview_width, options.flow_height };
     auto flow_fps_placement = flow_fps_overlay.layout(0.0, flow_surface);
     bool flow_runtime_logged {};
+    bool ui_buffer_logged_ready {};
+    constexpr auto ui_buffer_interval = std::chrono::milliseconds(33);
+    auto next_ui_buffer_upload = std::chrono::steady_clock::time_point {};
     const auto flow_frame_interval = options.flow_fps > 0.0
         ? std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(1.0 / options.flow_fps))
         : std::chrono::steady_clock::duration::max();
@@ -703,18 +738,44 @@ int run_kms_video_preview(const Options& options)
                 { .red = 1.0F, .green = 0.0F, .blue = 0.75F, .alpha = 0.55F },
                 flow_surface);
         }
-        link_overview.draw(flow_renderer, flow_surface, simulated_link.sample());
-        performance_horizon.draw(flow_renderer, flow_surface, simulated_attitude.sample());
-        speed_widget.draw(flow_renderer, flow_surface, simulated_speed.sample());
-        altitude_widget.draw(flow_renderer, flow_surface, simulated_altitude.sample());
-        flow_renderer.draw(flow_fps_placement, flow_surface);
+        if (options.flow_overlay) {
+            link_overview.draw(flow_renderer, flow_surface, simulated_link.sample());
+            performance_horizon.draw(flow_renderer, flow_surface, simulated_attitude.sample());
+            speed_widget.draw(flow_renderer, flow_surface, simulated_speed.sample());
+            altitude_widget.draw(flow_renderer, flow_surface, simulated_altitude.sample());
+            flow_renderer.draw(flow_fps_placement, flow_surface);
+        }
+
+        if (options.ui_overlay && shared_ui.open_if_needed(options.ui_buffer_path, options.ui_width, ui_height)) {
+            if (!ui_buffer_logged_ready) {
+                glide::log(glide::LogLevel::info, "OpenHD-Glide", "UI buffer backend connected to " + options.ui_buffer_path);
+                ui_buffer_logged_ready = true;
+            }
+            const auto now = std::chrono::steady_clock::now();
+            const bool update_ui_buffer = now >= next_ui_buffer_upload;
+            if (compositor.ui_overlay_plane_active()) {
+                if (update_ui_buffer && !compositor.publish_ui_frame_from_argb(shared_ui.map, options.ui_width, ui_height, options.ui_width * 4U)) {
+                    glide::log(glide::LogLevel::warning, "OpenHD-Glide", compositor.last_error());
+                }
+            } else {
+                if (update_ui_buffer) {
+                    flow_renderer.update_argb_texture(shared_ui.map, options.ui_width, ui_height, options.ui_width * 4U);
+                }
+                flow_renderer.draw_cached_argb_texture({ 0.0F, 0.0F }, flow_surface);
+            }
+            if (update_ui_buffer) {
+                next_ui_buffer_upload = now + ui_buffer_interval;
+            }
+        } else if (options.ui_overlay) {
+            ui_buffer_logged_ready = false;
+        }
     };
 
     const auto should_update_flow = [&](std::uint64_t presented_frames) {
         if (presented_frames == 0) {
             return true;
         }
-        if (!options.flow_overlay) {
+        if (!options.flow_overlay && !options.ui_overlay) {
             return false;
         }
         if (options.flow_fps <= 0.0) {
@@ -835,7 +896,7 @@ int run_kms_video_preview(const Options& options)
             "Flow overlay rendering is decoupled from video presentation at " + std::to_string(options.flow_fps) + " fps");
     }
 
-    if (use_atomic_kms && options.ui_overlay) {
+    if (use_atomic_kms && options.ui_overlay && async_flow && compositor.ui_overlay_plane_active()) {
         ui_buffer_thread = std::thread([&compositor, &shared_ui, ui_buffer_path = options.ui_buffer_path, ui_width = options.ui_width, ui_height]() {
             constexpr auto ui_interval = std::chrono::milliseconds(33);
             bool logged_ready {};
@@ -869,7 +930,7 @@ int run_kms_video_preview(const Options& options)
 
         const bool update_flow = !async_flow && should_update_flow(presented_frames);
         if (update_flow) {
-            if (options.flow_overlay) {
+            if (options.flow_overlay || options.ui_overlay) {
                 render_flow_overlay();
             } else {
                 flow_renderer.clear(0.0F, 0.0F, 0.0F, 0.0F, flow_surface);
@@ -947,6 +1008,67 @@ int run_kms_video_preview(const Options& options)
     }
 #endif
 
+#if OPENHD_GLIDE_HAS_RKMPP
+    if (options.native_rkmpp_video) {
+        glide::video::RockchipMppRtpDecoder rkmpp;
+        if (!rkmpp.start(options.view_udp_port, options.view_udp_codec)) {
+            glide::log(glide::LogLevel::error, "OpenHD-Glide", rkmpp.last_error());
+            return 1;
+        }
+
+        glide::log(glide::LogLevel::info, "OpenHD-Glide", "native Rockchip MPP RTP decoder running");
+        glide::log(
+            glide::LogLevel::info,
+            "OpenHD-Glide",
+            use_atomic_kms ? "atomic KMS video+Flow compositor running" : "fast legacy KMS video plane running");
+
+        std::uint64_t frames {};
+        std::uint64_t frames_since_log {};
+        auto last_log = std::chrono::steady_clock::now();
+        while (stop_requested == 0) {
+            glide::dev::DmabufVideoFrame frame;
+            if (!rkmpp.poll(frame)) {
+                if (!rkmpp.last_error().empty()) {
+                    glide::log(glide::LogLevel::error, "OpenHD-Glide", rkmpp.last_error());
+                    return 1;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                continue;
+            }
+
+            if (!present_video_frame(frame, frames)) {
+                return 1;
+            }
+            rkmpp.mark_presented();
+            ++frames;
+            ++frames_since_log;
+
+            const auto now = std::chrono::steady_clock::now();
+            if (now - last_log >= std::chrono::seconds(1)) {
+                const auto elapsed = std::chrono::duration<double>(now - last_log).count();
+                std::ostringstream status;
+                status.setf(std::ios::fixed);
+                status.precision(1);
+                const auto current_fps = static_cast<double>(frames_since_log) / elapsed;
+                video_plane_fps.store(current_fps);
+                status << "native Rockchip MPP " << (use_atomic_kms ? "atomic video+Flow" : "legacy video")
+                       << " fps=" << current_fps
+                       << " total_frames=" << frames
+                       << ' ' << rkmpp.stats();
+                glide::log(glide::LogLevel::info, "OpenHD-Glide", status.str());
+                frames_since_log = 0;
+                last_log = now;
+            }
+        }
+        return 0;
+    }
+#else
+    if (options.native_rkmpp_video) {
+        glide::log(glide::LogLevel::error, "OpenHD-Glide", "native Rockchip MPP decoder support was not found at build time");
+        return 1;
+    }
+#endif
+
 #if OPENHD_GLIDE_HAS_GSTREAMER
     gst_init(nullptr, nullptr);
     struct DecoderPipelineCandidate {
@@ -966,34 +1088,36 @@ int run_kms_video_preview(const Options& options)
     const auto make_pipeline_text = [&](const DecoderPipelineCandidate& candidate, bool force_dmabuf_capture) {
         std::ostringstream text;
         text
-            << "udpsrc port=" << options.view_udp_port
+            << "udpsrc name=video-source port=" << options.view_udp_port
             << " buffer-size=33554432 "
             << " caps=\"application/x-rtp,media=(string)video,clock-rate=(int)90000,encoding-name=(string)"
             << (use_h265 ? "H265" : "H264")
             << ",payload=(int)96\" "
             << "! " << (use_h265 ? "rtph265depay" : "rtph264depay") << " "
-            << "! " << (use_h265 ? "h265parse" : "h264parse") << " config-interval=-1 "
-            << "! " << (use_h265 ? "video/x-h265" : "video/x-h264") << ",stream-format=byte-stream,alignment=au "
+            << "! " << (use_h265 ? "h265parse" : "h264parse") << " name=video-parse config-interval=-1 "
+            << "! " << (use_h265 ? "video/x-h265" : "video/x-h264") << ",stream-format=byte-stream,parsed=true,alignment=au "
             << "! " << candidate.decoder << " ";
         if (force_dmabuf_capture && std::string(candidate.name) == (use_h265 ? "v4l2h265dec" : "v4l2h264dec")) {
             text << "capture-io-mode=dmabuf ";
         }
         text
-            << "! queue max-size-buffers=1 max-size-bytes=0 max-size-time=0 leaky=downstream "
+            << "! queue max-size-buffers=8 max-size-bytes=0 max-size-time=0 leaky=downstream "
             << "! ";
         if (candidate.output_caps[0] != '\0') {
             text << candidate.output_caps << " ! ";
         }
-        text << "appsink name=video-sink sync=false async=false drop=true max-buffers=1 emit-signals=false";
+        text << "appsink name=video-sink sync=false async=false drop=true max-buffers=8 emit-signals=false";
         return text.str();
     };
 
-    const std::array<DecoderPipelineCandidate, 2> candidates = use_h265
-        ? std::array<DecoderPipelineCandidate, 2> { {
+    const std::array<DecoderPipelineCandidate, 3> candidates = use_h265
+        ? std::array<DecoderPipelineCandidate, 3> { {
+            { "mppvideodec", "mppvideodec", "mppvideodec dma-feature=true arm-afbc=false fast-mode=true qos=false format=NV12", "video/x-raw(memory:DMABuf),format=NV12" },
             { "v4l2h265dec", "v4l2h265dec", "v4l2h265dec capture-io-mode=dmabuf", "video/x-raw(memory:DMABuf),format=DMA_DRM" },
             { "omxhevcvideodec", "omxhevcvideodec", "omxhevcvideodec disable-dma-feature=false", "" },
         } }
-        : std::array<DecoderPipelineCandidate, 2> { {
+        : std::array<DecoderPipelineCandidate, 3> { {
+            { "mppvideodec", "mppvideodec", "mppvideodec dma-feature=true arm-afbc=false fast-mode=true qos=false format=NV12", "video/x-raw(memory:DMABuf),format=NV12" },
             { "v4l2h264dec", "v4l2h264dec", "v4l2h264dec capture-io-mode=dmabuf", "video/x-raw(memory:DMABuf),format=DMA_DRM" },
             { "omxh264dec", "omxh264dec", "omxh264dec disable-dma-feature=false", "" },
         } };
@@ -1037,6 +1161,9 @@ int run_kms_video_preview(const Options& options)
 
     auto* sink = gst_bin_get_by_name(GST_BIN(pipeline), "video-sink");
     auto* bus = gst_element_get_bus(pipeline);
+    GstIngressStats ingress_stats;
+    gulong source_probe_id {};
+    gulong parsed_probe_id {};
     if (sink == nullptr || bus == nullptr) {
         glide::log(glide::LogLevel::error, "OpenHD-Glide", "failed to access video preview appsink");
         if (bus != nullptr) {
@@ -1047,6 +1174,20 @@ int run_kms_video_preview(const Options& options)
         }
         gst_object_unref(pipeline);
         return 1;
+    }
+    if (auto* source = gst_bin_get_by_name(GST_BIN(pipeline), "video-source"); source != nullptr) {
+        if (auto* source_pad = gst_element_get_static_pad(source, "src"); source_pad != nullptr) {
+            source_probe_id = gst_pad_add_probe(source_pad, GST_PAD_PROBE_TYPE_BUFFER, &count_rtp_packet_probe, &ingress_stats, nullptr);
+            gst_object_unref(source_pad);
+        }
+        gst_object_unref(source);
+    }
+    if (auto* parse = gst_bin_get_by_name(GST_BIN(pipeline), "video-parse"); parse != nullptr) {
+        if (auto* parse_pad = gst_element_get_static_pad(parse, "src"); parse_pad != nullptr) {
+            parsed_probe_id = gst_pad_add_probe(parse_pad, GST_PAD_PROBE_TYPE_BUFFER, &count_parsed_access_unit_probe, &ingress_stats, nullptr);
+            gst_object_unref(parse_pad);
+        }
+        gst_object_unref(parse);
     }
 
     if (gst_element_set_state(pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
@@ -1077,9 +1218,15 @@ int run_kms_video_preview(const Options& options)
     std::uint64_t frames_since_log {};
     std::uint64_t stale_samples_dropped {};
     std::uint64_t stale_samples_dropped_since_log {};
-    const double requested_present_fps = options.present_fps > 0.0
-        ? options.present_fps
-        : static_cast<double>(options.display_refresh_hz);
+    std::uint64_t logged_rtp_packets {};
+    std::uint64_t logged_parsed_access_units {};
+    double sample_wait_ms_total {};
+    double sample_wait_ms_max {};
+    std::uint64_t sample_wait_count {};
+    double present_ms_total {};
+    double present_ms_max {};
+    std::uint64_t present_count {};
+    const double requested_present_fps = options.present_fps;
     const bool software_present_pacing = !use_atomic_kms && !options.vblank_wait && requested_present_fps > 0.0;
     const auto present_interval = software_present_pacing
         ? std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(1.0 / requested_present_fps))
@@ -1119,7 +1266,13 @@ int run_kms_video_preview(const Options& options)
             break;
         }
 
+        const auto sample_wait_start = std::chrono::steady_clock::now();
         auto* sample = gst_app_sink_try_pull_sample(GST_APP_SINK(sink), GST_SECOND / 20);
+        const auto sample_wait_end = std::chrono::steady_clock::now();
+        const auto sample_wait_ms = std::chrono::duration<double, std::milli>(sample_wait_end - sample_wait_start).count();
+        sample_wait_ms_total += sample_wait_ms;
+        sample_wait_ms_max = std::max(sample_wait_ms_max, sample_wait_ms);
+        ++sample_wait_count;
         if (sample == nullptr) {
             continue;
         }
@@ -1184,7 +1337,14 @@ int run_kms_video_preview(const Options& options)
         }
         consecutive_frame_errors = 0;
 
-        if (present_video_frame(frame, frames)) {
+        const auto present_start = std::chrono::steady_clock::now();
+        const bool presented = present_video_frame(frame, frames);
+        const auto present_end = std::chrono::steady_clock::now();
+        const auto present_ms = std::chrono::duration<double, std::milli>(present_end - present_start).count();
+        present_ms_total += present_ms;
+        present_ms_max = std::max(present_ms_max, present_ms);
+        ++present_count;
+        if (presented) {
             if (scanout_sample != nullptr) {
                 gst_sample_unref(scanout_sample);
             }
@@ -1209,20 +1369,57 @@ int run_kms_video_preview(const Options& options)
                 status.setf(std::ios::fixed);
                 status.precision(1);
                 const auto current_fps = static_cast<double>(frames_since_log) / elapsed;
+                const auto rtp_packets = ingress_stats.rtp_packets.load(std::memory_order_relaxed);
+                const auto parsed_access_units = ingress_stats.parsed_access_units.load(std::memory_order_relaxed);
+                const auto rtp_packet_rate = static_cast<double>(rtp_packets - logged_rtp_packets) / elapsed;
+                const auto parsed_au_fps = static_cast<double>(parsed_access_units - logged_parsed_access_units) / elapsed;
+                logged_rtp_packets = rtp_packets;
+                logged_parsed_access_units = parsed_access_units;
                 video_plane_fps.store(current_fps);
                 status << "KMS DMABUF video plane fps=" << current_fps
+                       << " parsed_au_fps=" << parsed_au_fps
+                       << " rtp_packet_rate=" << rtp_packet_rate
+                       << " sample_wait_avg_ms=" << (sample_wait_count > 0 ? sample_wait_ms_total / static_cast<double>(sample_wait_count) : 0.0)
+                       << " sample_wait_max_ms=" << sample_wait_ms_max
+                       << " present_avg_ms=" << (present_count > 0 ? present_ms_total / static_cast<double>(present_count) : 0.0)
+                       << " present_max_ms=" << present_ms_max
                        << " total_frames=" << frames
+                       << " total_parsed_au=" << parsed_access_units
                        << " stale_samples_dropped=" << stale_samples_dropped_since_log
                        << " total_stale_samples_dropped=" << stale_samples_dropped;
                 glide::log(glide::LogLevel::info, "OpenHD-Glide", status.str());
             }
             frames_since_log = 0;
             stale_samples_dropped_since_log = 0;
+            sample_wait_ms_total = 0.0;
+            sample_wait_ms_max = 0.0;
+            sample_wait_count = 0;
+            present_ms_total = 0.0;
+            present_ms_max = 0.0;
+            present_count = 0;
             last_log = now;
         }
     }
 
     gst_element_set_state(pipeline, GST_STATE_NULL);
+    if (source_probe_id != 0) {
+        if (auto* source = gst_bin_get_by_name(GST_BIN(pipeline), "video-source"); source != nullptr) {
+            if (auto* source_pad = gst_element_get_static_pad(source, "src"); source_pad != nullptr) {
+                gst_pad_remove_probe(source_pad, source_probe_id);
+                gst_object_unref(source_pad);
+            }
+            gst_object_unref(source);
+        }
+    }
+    if (parsed_probe_id != 0) {
+        if (auto* parse = gst_bin_get_by_name(GST_BIN(pipeline), "video-parse"); parse != nullptr) {
+            if (auto* parse_pad = gst_element_get_static_pad(parse, "src"); parse_pad != nullptr) {
+                gst_pad_remove_probe(parse_pad, parsed_probe_id);
+                gst_object_unref(parse_pad);
+            }
+            gst_object_unref(parse);
+        }
+    }
     if (scanout_sample != nullptr) {
         gst_sample_unref(scanout_sample);
     }

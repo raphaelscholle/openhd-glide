@@ -3,7 +3,9 @@ set -eu
 
 DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 if [ -z "${GLIDE_BIN:-}" ]; then
-  if [ -x "${DIR}/build-kms/openhd-glide" ]; then
+  if [ -x "${DIR}/openhd-glide" ]; then
+    BIN="${DIR}/openhd-glide"
+  elif [ -x "${DIR}/build-kms/openhd-glide" ]; then
     BIN="${DIR}/build-kms/openhd-glide"
   elif [ -x "${DIR}/../../../bin/openhd-glide" ]; then
     BIN="${DIR}/../../../bin/openhd-glide"
@@ -14,10 +16,10 @@ else
   BIN="$GLIDE_BIN"
 fi
 if [ -z "${GLIDE_UI_BIN:-}" ]; then
-  if [ -x "${DIR}/build-kms/glide-ui" ]; then
-    UI_BIN="${DIR}/build-kms/glide-ui"
-  elif [ -x "${DIR}/glide-ui" ]; then
+  if [ -x "${DIR}/glide-ui" ]; then
     UI_BIN="${DIR}/glide-ui"
+  elif [ -x "${DIR}/build-kms/glide-ui" ]; then
+    UI_BIN="${DIR}/build-kms/glide-ui"
   elif [ -x "${DIR}/../../../bin/glide-ui" ]; then
     UI_BIN="${DIR}/../../../bin/glide-ui"
   else
@@ -31,8 +33,8 @@ PORT="${1:-5600}"
 CODEC="${2:-${GLIDE_VIEW_CODEC:-${GLIDE_CODEC:-h264}}}"
 WIDTH="${GLIDE_WIDTH:-1920}"
 HEIGHT="${GLIDE_HEIGHT:-1080}"
-FLOW_FPS="${GLIDE_FLOW_FPS:-120}"
-DISPLAY_HZ="${GLIDE_DISPLAY_HZ:-120}"
+FLOW_FPS="${GLIDE_FLOW_FPS:-30}"
+DISPLAY_HZ="${GLIDE_DISPLAY_HZ:-60}"
 UI_WIDTH="${GLIDE_UI_WIDTH:-760}"
 UI_HEIGHT="${GLIDE_UI_HEIGHT:-$HEIGHT}"
 UI_COLOR="${GLIDE_UI_COLOR:-0xCC0B1722}"
@@ -81,7 +83,7 @@ fi
 sudo "${SUDO_ARGS[@]}" env "${ENV_ARGS[@]}" \
   "$BIN" \
   --kms-video-preview \
-  --gstreamer-video \
+  --native-rkmpp-video \
   --view-udp-port "$PORT" \
   --view-udp-codec "$CODEC" \
   --preview-width "$WIDTH" \

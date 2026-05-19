@@ -5,6 +5,7 @@
 #include <csignal>
 #include <cstdint>
 #include <atomic>
+#include <array>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -100,6 +101,19 @@ void set_int_property_if_present(GstElement* element, const char* name, int valu
     }
 }
 
+void configure_decoder(GstElement* decoder, const std::string& factory)
+{
+    if (factory.find("mpp") != std::string::npos) {
+        set_bool_property_if_present(decoder, "dma-feature", true);
+        set_bool_property_if_present(decoder, "arm-afbc", false);
+        set_bool_property_if_present(decoder, "fast-mode", true);
+        set_bool_property_if_present(decoder, "qos", false);
+    }
+    if (factory.find("omx") != std::string::npos) {
+        set_bool_property_if_present(decoder, "disable-dma-feature", false);
+    }
+}
+
 GstElement* make_element(const char* factory, const char* name)
 {
     auto* element = gst_element_factory_make(factory, name);
@@ -113,16 +127,14 @@ GstElement* make_decoder(const std::string& codec)
 {
     const bool h265 = codec == "h265";
     const auto* codec_label = h265 ? "H.265" : "H.264";
-    const std::initializer_list<const char*> factories = h265
-        ? std::initializer_list<const char*>{ "v4l2h265dec", "v4l2slh265dec", "omxh265dec", "avdec_h265" }
-        : std::initializer_list<const char*>{ "v4l2h264dec", "v4l2slh264dec", "omxh264dec", "avdec_h264" };
+    constexpr std::array h265_factories { "mppvideodec", "v4l2h265dec", "v4l2slh265dec", "omxh265dec", "avdec_h265" };
+    constexpr std::array h264_factories { "mppvideodec", "v4l2h264dec", "v4l2slh264dec", "omxh264dec", "avdec_h264" };
+    const auto& factories = h265 ? h265_factories : h264_factories;
     for (const auto* factory : factories) {
         if (auto* decoder = gst_element_factory_make(factory, "decoder"); decoder != nullptr) {
-            if (std::string(factory).find("omx") != std::string::npos) {
-                set_bool_property_if_present(decoder, "disable-dma-feature", false);
-            }
+            configure_decoder(decoder, factory);
 
-            if (std::string(factory).find("v4l2") != std::string::npos || std::string(factory).find("omx") != std::string::npos) {
+            if (std::string(factory).find("mpp") != std::string::npos || std::string(factory).find("v4l2") != std::string::npos || std::string(factory).find("omx") != std::string::npos) {
                 glide::log(glide::LogLevel::info, "GlideView", std::string("using hardware-oriented decoder ") + factory);
             } else {
                 glide::log(glide::LogLevel::warning, "GlideView", std::string("using software decoder fallback ") + factory);
@@ -212,10 +224,14 @@ public:
         }
 
         g_object_set(source, "port", static_cast<int>(options.udp_port), nullptr);
-        set_int_property_if_present(source, "buffer-size", 65536);
+        set_int_property_if_present(source, "buffer-size", 33554432);
         if (auto* source_pad = gst_element_get_static_pad(source, "src"); source_pad != nullptr) {
             source_probe_id_ = gst_pad_add_probe(source_pad, GST_PAD_PROBE_TYPE_BUFFER, &VideoPipeline::source_probe, this, nullptr);
             gst_object_unref(source_pad);
+        }
+        if (auto* parse_pad = gst_element_get_static_pad(video_capsfilter, "src"); parse_pad != nullptr) {
+            parsed_probe_id_ = gst_pad_add_probe(parse_pad, GST_PAD_PROBE_TYPE_BUFFER, &VideoPipeline::parsed_probe, this, nullptr);
+            gst_object_unref(parse_pad);
         }
 
         auto* caps = gst_caps_new_simple(
@@ -242,6 +258,9 @@ public:
             "stream-format",
             G_TYPE_STRING,
             "byte-stream",
+            "parsed",
+            G_TYPE_BOOLEAN,
+            TRUE,
             "alignment",
             G_TYPE_STRING,
             "au",
@@ -249,19 +268,21 @@ public:
         g_object_set(video_capsfilter, "caps", h264_caps, nullptr);
         gst_caps_unref(h264_caps);
 
-        for (auto* queue : { input_queue, output_queue }) {
-            set_int_property_if_present(queue, "max-size-buffers", 1);
-            set_int_property_if_present(queue, "max-size-bytes", 0);
-            set_int_property_if_present(queue, "max-size-time", 0);
-            set_int_property_if_present(queue, "leaky", 2);
-        }
+        set_int_property_if_present(input_queue, "max-size-buffers", 64);
+        set_int_property_if_present(input_queue, "max-size-bytes", 0);
+        set_int_property_if_present(input_queue, "max-size-time", 0);
+        set_int_property_if_present(input_queue, "leaky", 0);
+        set_int_property_if_present(output_queue, "max-size-buffers", 8);
+        set_int_property_if_present(output_queue, "max-size-bytes", 0);
+        set_int_property_if_present(output_queue, "max-size-time", 0);
+        set_int_property_if_present(output_queue, "leaky", 2);
 
         set_bool_property_if_present(sink, "sync", false);
         set_bool_property_if_present(sink, "async", false);
         set_bool_property_if_present(sink, "qos", false);
         set_bool_property_if_present(sink, "drop", true);
         set_bool_property_if_present(sink, "emit-signals", false);
-        set_int_property_if_present(sink, "max-buffers", 1);
+        set_int_property_if_present(sink, "max-buffers", 8);
 
         gst_bin_add_many(
             GST_BIN(pipeline_),
@@ -423,7 +444,13 @@ private:
                 std::ostringstream stream;
                 stream.setf(std::ios::fixed);
                 stream.precision(1);
-                stream << "decoded fps=" << fps << " total_frames=" << frames_;
+                const auto parsed_frames = parsed_frames_.load(std::memory_order_relaxed);
+                const auto parsed_fps = static_cast<double>(parsed_frames - logged_parsed_frames_) / elapsed;
+                logged_parsed_frames_ = parsed_frames;
+                stream << "decoded fps=" << fps
+                       << " parsed_au_fps=" << parsed_fps
+                       << " total_frames=" << frames_
+                       << " total_parsed_au=" << parsed_frames;
                 glide::log(glide::LogLevel::info, "GlideView", stream.str());
             }
             frames_since_log_ = 0;
@@ -443,6 +470,16 @@ private:
             }
             source_probe_id_ = 0;
         }
+        if (pipeline_ != nullptr && parsed_probe_id_ != 0) {
+            if (auto* video_caps = gst_bin_get_by_name(GST_BIN(pipeline_), "video-caps"); video_caps != nullptr) {
+                if (auto* parse_pad = gst_element_get_static_pad(video_caps, "src"); parse_pad != nullptr) {
+                    gst_pad_remove_probe(parse_pad, parsed_probe_id_);
+                    gst_object_unref(parse_pad);
+                }
+                gst_object_unref(video_caps);
+            }
+            parsed_probe_id_ = 0;
+        }
         if (pipeline_ != nullptr) {
             gst_element_set_state(pipeline_, GST_STATE_NULL);
         }
@@ -461,12 +498,15 @@ private:
     GstElement* sink_ {};
     GstBus* bus_ {};
     gulong source_probe_id_ {};
+    gulong parsed_probe_id_ {};
     bool logged_first_sample_ {};
     std::uint64_t frames_ {};
     std::uint64_t frames_since_log_ {};
     std::uint64_t logged_source_packets_ {};
+    std::uint64_t logged_parsed_frames_ {};
     std::atomic<std::uint64_t> source_packets_ {};
     std::atomic<std::uint64_t> source_bytes_ {};
+    std::atomic<std::uint64_t> parsed_frames_ {};
     std::chrono::steady_clock::time_point last_fps_log_ { std::chrono::steady_clock::now() };
     std::chrono::steady_clock::time_point last_packet_log_ { std::chrono::steady_clock::now() };
     std::chrono::steady_clock::time_point last_waiting_log_ { std::chrono::steady_clock::now() };
@@ -477,6 +517,15 @@ private:
         if (auto* buffer = gst_pad_probe_info_get_buffer(info); buffer != nullptr) {
             self->source_packets_.fetch_add(1, std::memory_order_relaxed);
             self->source_bytes_.fetch_add(gst_buffer_get_size(buffer), std::memory_order_relaxed);
+        }
+        return GST_PAD_PROBE_OK;
+    }
+
+    static GstPadProbeReturn parsed_probe(GstPad*, GstPadProbeInfo* info, gpointer user_data)
+    {
+        auto* self = static_cast<VideoPipeline*>(user_data);
+        if (gst_pad_probe_info_get_buffer(info) != nullptr) {
+            self->parsed_frames_.fetch_add(1, std::memory_order_relaxed);
         }
         return GST_PAD_PROBE_OK;
     }
