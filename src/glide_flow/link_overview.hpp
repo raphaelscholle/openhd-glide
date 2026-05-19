@@ -23,7 +23,14 @@ struct LinkOverviewSample {
     float air_current_a {};
     float air_speed_mps {};
     float home_distance_m {};
+    float total_distance_m {};
+    float wind_speed_mps {};
+    float wind_direction_deg {};
+    double latitude_deg {};
+    double longitude_deg {};
+    float mah_per_km {};
     int satellites {};
+    bool show_coordinates { true };
     std::chrono::seconds flight_time {};
     bool armed {};
     const char* flight_mode {};

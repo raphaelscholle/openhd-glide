@@ -4,37 +4,37 @@ set -eu
 SCRIPT_PATH="$(readlink -f "$0")"
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "${SCRIPT_PATH}")/.." && pwd)"
 BUILD_DIR="${GLIDE_BUILD_DIR:-${ROOT_DIR}/build-wsl}"
-WIDTH="${GLIDE_UI_WIDTH:-760}"
-HEIGHT="${GLIDE_UI_HEIGHT:-720}"
+WIDTH="${GLIDE_FLOW_WIDTH:-${GLIDE_WIDTH:-1280}}"
+HEIGHT="${GLIDE_FLOW_HEIGHT:-${GLIDE_HEIGHT:-720}}"
 X="${GLIDE_PREVIEW_X:-80}"
 Y="${GLIDE_PREVIEW_Y:-40}"
-IPC_SOCKET="${GLIDE_IPC_SOCKET:-/tmp/openhd-glide-ui-preview.sock}"
+IPC_SOCKET="${GLIDE_IPC_SOCKET:-/tmp/openhd-glide-flow-preview.sock}"
 
 if [ "${GLIDE_SKIP_BUILD:-0}" != "1" ]; then
   if ! command -v cmake >/dev/null 2>&1; then
-    echo "cmake is required to build glide-ui; set GLIDE_SKIP_BUILD=1 to reuse an existing binary" >&2
+    echo "cmake is required to build glide-flow; set GLIDE_SKIP_BUILD=1 to reuse an existing binary" >&2
     exit 1
   fi
   cmake -S "${ROOT_DIR}" -B "${BUILD_DIR}"
-  cmake --build "${BUILD_DIR}" --target glide-ui -j"$(nproc)"
+  cmake --build "${BUILD_DIR}" --target glide-flow -j"$(nproc)"
 fi
 
-if [ ! -x "${BUILD_DIR}/glide-ui" ]; then
-  echo "missing executable: ${BUILD_DIR}/glide-ui" >&2
+if [ ! -x "${BUILD_DIR}/glide-flow" ]; then
+  echo "missing executable: ${BUILD_DIR}/glide-flow" >&2
   exit 1
 fi
 
 if command -v ldd >/dev/null 2>&1; then
-  LDD_OUTPUT="$(ldd "${BUILD_DIR}/glide-ui" 2>&1 || true)"
+  LDD_OUTPUT="$(ldd "${BUILD_DIR}/glide-flow" 2>&1 || true)"
   MISSING_LIBS="$(printf "%s\n" "${LDD_OUTPUT}" | sed -n '/=>.*not found/p;/Error loading shared library/p')"
   if [ -n "${MISSING_LIBS}" ]; then
-    echo "glide-ui is missing runtime libraries:" >&2
+    echo "glide-flow is missing runtime libraries:" >&2
     echo "${MISSING_LIBS}" >&2
     exit 1
   fi
 fi
 
-exec "${BUILD_DIR}/glide-ui" \
+exec "${BUILD_DIR}/glide-flow" \
   --preview \
   --width "${WIDTH}" \
   --height "${HEIGHT}" \

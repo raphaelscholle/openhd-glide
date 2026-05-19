@@ -6,16 +6,19 @@
 namespace glide::preview_control {
 namespace {
 
-std::filesystem::path control_path()
+std::filesystem::path fps_control_path()
 {
     return std::filesystem::temp_directory_path() / "openhd-glide-flow-fps.enabled";
 }
 
-} // namespace
-
-bool fps_overlay_enabled()
+std::filesystem::path coordinates_control_path()
 {
-    std::ifstream file(control_path());
+    return std::filesystem::temp_directory_path() / "openhd-glide-flow-coordinates.enabled";
+}
+
+bool read_enabled_file(const std::filesystem::path& path)
+{
+    std::ifstream file(path);
     if (!file) {
         return true;
     }
@@ -25,10 +28,32 @@ bool fps_overlay_enabled()
     return value != '0';
 }
 
+void write_enabled_file(const std::filesystem::path& path, bool enabled)
+{
+    std::ofstream file(path, std::ios::trunc);
+    file << (enabled ? '1' : '0') << '\n';
+}
+
+} // namespace
+
+bool fps_overlay_enabled()
+{
+    return read_enabled_file(fps_control_path());
+}
+
 void set_fps_overlay_enabled(bool enabled)
 {
-    std::ofstream file(control_path(), std::ios::trunc);
-    file << (enabled ? '1' : '0') << '\n';
+    write_enabled_file(fps_control_path(), enabled);
+}
+
+bool coordinates_overlay_enabled()
+{
+    return read_enabled_file(coordinates_control_path());
+}
+
+void set_coordinates_overlay_enabled(bool enabled)
+{
+    write_enabled_file(coordinates_control_path(), enabled);
 }
 
 } // namespace glide::preview_control

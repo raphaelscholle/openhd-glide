@@ -2,9 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
-#include <iomanip>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace glide::flow {
@@ -26,14 +26,12 @@ std::string fixed_1(float value)
     return stream.str();
 }
 
-std::string mmss(std::chrono::seconds duration)
+std::string fixed_5(double value)
 {
-    const auto total = std::max<std::chrono::seconds::rep>(0, duration.count());
-    const auto minutes = total / 60;
-    const auto seconds = total % 60;
     std::ostringstream stream;
-    stream << std::setw(2) << std::setfill('0') << minutes
-           << ':' << std::setw(2) << std::setfill('0') << seconds;
+    stream.setf(std::ios::fixed);
+    stream.precision(5);
+    stream << value;
     return stream.str();
 }
 
@@ -90,28 +88,6 @@ void draw_panel_right(GlesTextRenderer& renderer, float x, float y, float width,
         { x + width, y + height },
         panel_bg,
         surface);
-}
-
-void draw_bottom_panel(GlesTextRenderer& renderer, SurfaceSize surface)
-{
-    const auto scale = layout_scale(surface);
-    const auto height = sx(40.0F, scale);
-    const auto y = static_cast<float>(surface.height) - height;
-    const auto width = static_cast<float>(surface.width);
-    const auto top_y = y + sx(8.0F, scale);
-    const auto notch_width = sx(140.0F, scale);
-    const auto notch_slope = sx(14.0F, scale);
-    const auto notch_start = (width - notch_width) * 0.5F;
-    const auto notch_end = notch_start + notch_width;
-    const auto notch_left = std::max(sx(6.0F, scale), notch_start - notch_slope);
-    const auto notch_right = std::min(width - sx(6.0F, scale), notch_end + notch_slope);
-    const auto bottom_y = y + height;
-
-    renderer.draw_filled_quad({ 0.0F, top_y }, { notch_left, top_y }, { 0.0F, bottom_y }, { notch_left, bottom_y }, panel_bg, surface);
-    renderer.draw_filled_quad({ notch_right, top_y }, { width, top_y }, { notch_right, bottom_y }, { width, bottom_y }, panel_bg, surface);
-    renderer.draw_filled_quad({ notch_left, top_y }, { notch_start, y }, { notch_left, bottom_y }, { notch_start, bottom_y }, panel_bg, surface);
-    renderer.draw_filled_quad({ notch_start, y }, { notch_end, y }, { notch_start, bottom_y }, { notch_end, bottom_y }, panel_bg, surface);
-    renderer.draw_filled_quad({ notch_end, y }, { notch_right, top_y }, { notch_end, bottom_y }, { notch_right, bottom_y }, panel_bg, surface);
 }
 
 void draw_skew_blocks(GlesTextRenderer& renderer, float x, float y, int value, SurfaceSize surface)
@@ -205,23 +181,59 @@ struct BottomSlot {
     std::string value;
 };
 
-std::vector<BottomSlot> left_bottom_slots(const LinkOverviewSample& sample)
+std::string distance_text(float meters)
+{
+    if (meters >= 1000.0F) {
+        return fixed_1(meters / 1000.0F) + "km";
+    }
+    return std::to_string(static_cast<int>(std::round(std::max(0.0F, meters)))) + "m";
+}
+
+std::string wind_direction_text(float degrees)
+{
+    constexpr std::string_view names[] {
+        "N",
+        "NE",
+        "E",
+        "SE",
+        "S",
+        "SW",
+        "W",
+        "NW",
+    };
+    const auto normalized = std::fmod(std::fmod(degrees, 360.0F) + 360.0F, 360.0F);
+    const auto index = static_cast<std::size_t>(std::floor((normalized + 22.5F) / 45.0F)) % (sizeof(names) / sizeof(names[0]));
+    return std::string(names[index]);
+}
+
+std::string coordinates_text(double latitude, double longitude)
+{
+    return fixed_5(latitude) + "," + fixed_5(longitude);
+}
+
+std::string kmh_text(float meters_per_second)
+{
+    return std::to_string(static_cast<int>(std::round(std::max(0.0F, meters_per_second) * 3.6F))) + "km/h";
+}
+
+std::vector<BottomSlot> primary_bottom_slots(const LinkOverviewSample& sample)
 {
     return {
         { "GND", fixed_1(sample.ground_voltage_v) + "V" },
-        { "USED", sample.ground_mah > 0 ? std::to_string(sample.ground_mah) + "mAh" : "N/A" },
         { "AIR", fixed_1(sample.air_voltage_v) + "V" },
-        { "AMP", fixed_1(sample.air_current_a) + "A" },
+        { "CUR", fixed_1(sample.air_current_a) + "A" },
+        { "HOME", fixed_1(sample.home_distance_m) + "m" },
+        { "TOTAL", distance_text(sample.total_distance_m) },
+        { "SATS", std::to_string(sample.satellites) },
     };
 }
 
-std::vector<BottomSlot> right_bottom_slots(const LinkOverviewSample& sample)
+std::vector<BottomSlot> secondary_bottom_slots(const LinkOverviewSample& sample)
 {
     return {
-        { "SPD", std::to_string(static_cast<int>(std::round(sample.air_speed_mps))) + " m/s" },
-        { "HOME", fixed_1(sample.home_distance_m) + "m" },
-        { "SAT", std::to_string(sample.satellites) },
-        { "", "" },
+        { "SPD", kmh_text(sample.air_speed_mps) },
+        { "WIND", kmh_text(sample.wind_speed_mps) + " " + wind_direction_text(sample.wind_direction_deg) },
+        { "", fixed_1(sample.mah_per_km) + "mAh/km" },
     };
 }
 
@@ -238,8 +250,9 @@ void draw_bottom_slot(
     }
 
     const auto text = slot.label.empty() ? slot.value : slot.label + " " + slot.value;
-    const auto estimated_width = static_cast<float>(text.size()) * sx(13.0F, scale) * 0.56F;
-    draw_text(renderer, text, center_x - estimated_width * 0.5F, baseline, sx(13.0F, scale), surface);
+    const auto font_scale = sx(12.5F, scale);
+    const auto estimated_width = static_cast<float>(text.size()) * font_scale * 0.56F;
+    draw_text(renderer, text, center_x - estimated_width * 0.5F, baseline, font_scale, surface);
 }
 
 void draw_bottom_slots(
@@ -251,8 +264,12 @@ void draw_bottom_slots(
     float scale,
     SurfaceSize surface)
 {
-    const auto slot_width = width / 4.0F;
-    for (std::size_t i = 0; i < slots.size() && i < 4U; ++i) {
+    if (slots.empty()) {
+        return;
+    }
+
+    const auto slot_width = width / static_cast<float>(slots.size());
+    for (std::size_t i = 0; i < slots.size(); ++i) {
         draw_bottom_slot(
             renderer,
             slots[i],
@@ -263,31 +280,77 @@ void draw_bottom_slots(
     }
 }
 
+void draw_top_center_mode(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverviewSample& sample)
+{
+    const auto scale = layout_scale(surface);
+    const auto center_x = static_cast<float>(surface.width) * 0.5F;
+    const auto width = sx(220.0F, scale);
+    const auto height = sx(42.0F, scale);
+    const auto y = sx(8.0F, scale);
+    const auto x = center_x - width * 0.5F;
+    const auto skew = sx(14.0F, scale);
+    const auto mode = sample.flight_mode != nullptr ? sample.flight_mode : "MANUAL";
+    const auto mode_scale = sx(sample.armed ? 18.0F : 17.0F, scale);
+    const auto estimated_width = static_cast<float>(std::string_view(mode).size()) * mode_scale * 0.56F;
+
+    renderer.draw_filled_quad(
+        { x + skew, y },
+        { x + width - skew, y },
+        { x, y + height },
+        { x + width, y + height },
+        panel_bg,
+        surface);
+    renderer.draw_line({ x + skew, y }, { x + width - skew, y }, sx(1.5F, scale), panel_line, surface);
+    renderer.draw_line({ x, y + height }, { x + width, y + height }, sx(1.5F, scale), panel_line, surface);
+    draw_text(renderer, mode, center_x - estimated_width * 0.5F, y + sx(28.0F, scale), mode_scale, surface);
+}
+
+void draw_coordinate_block(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverviewSample& sample)
+{
+    if (!sample.show_coordinates) {
+        return;
+    }
+
+    const auto scale = layout_scale(surface);
+    const auto block_width = sx(286.0F, scale);
+    const auto block_height = sx(34.0F, scale);
+    const auto margin = sx(20.0F, scale);
+    const auto bottom_bar_height = sx(58.0F, scale);
+    const auto x = static_cast<float>(surface.width) - block_width - margin;
+    const auto y = static_cast<float>(surface.height) - bottom_bar_height - block_height - sx(7.0F, scale);
+    const auto text = coordinates_text(sample.latitude_deg, sample.longitude_deg);
+    const auto font_scale = sx(12.5F, scale);
+
+    renderer.draw_filled_quad(
+        { x, y },
+        { x + block_width, y },
+        { x, y + block_height },
+        { x + block_width, y + block_height },
+        panel_bg,
+        surface);
+    renderer.draw_line({ x, y }, { x + block_width, y }, sx(1.2F, scale), panel_line, surface);
+    draw_text(renderer, "COORD", x + sx(12.0F, scale), y + sx(22.0F, scale), sx(11.5F, scale), surface);
+    draw_text(renderer, text, x + sx(68.0F, scale), y + sx(22.0F, scale), font_scale, surface);
+}
+
 void draw_bottom(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverviewSample& sample)
 {
     const auto scale = layout_scale(surface);
-    const auto height = sx(40.0F, scale);
+    const auto height = sx(58.0F, scale);
     const auto y = static_cast<float>(surface.height) - height;
-    const auto center_x = static_cast<float>(surface.width) * 0.5F;
-    const auto notch_safe_width = sx(168.0F, scale);
     const auto side_margin = sx(20.0F, scale);
-    const auto content_top = y + sx(8.0F, scale);
-    const auto side_baseline = content_top + sx(24.0F, scale);
-    const auto left_width = std::max(0.0F, center_x - notch_safe_width * 0.5F - side_margin);
-    const auto right_x = center_x + notch_safe_width * 0.5F;
-    const auto right_width = std::max(0.0F, static_cast<float>(surface.width) - right_x - side_margin);
+    const auto content_width = std::max(0.0F, static_cast<float>(surface.width) - side_margin * 2.0F);
 
-    draw_bottom_panel(renderer, surface);
-    draw_text(
-        renderer,
-        sample.flight_mode != nullptr ? sample.flight_mode : "MANUAL",
-        center_x - sx(36.0F, scale),
-        y + sx(15.0F, scale),
-        sx(sample.armed ? 15.0F : 14.0F, scale),
+    renderer.draw_filled_quad(
+        { 0.0F, y },
+        { static_cast<float>(surface.width), y },
+        { 0.0F, y + height },
+        { static_cast<float>(surface.width), y + height },
+        panel_bg,
         surface);
-    draw_text(renderer, mmss(sample.flight_time), center_x - sx(26.0F, scale), y + sx(33.0F, scale), sx(14.0F, scale), surface);
-    draw_bottom_slots(renderer, left_bottom_slots(sample), side_margin, left_width, side_baseline, scale, surface);
-    draw_bottom_slots(renderer, right_bottom_slots(sample), right_x, right_width, side_baseline, scale, surface);
+    renderer.draw_line({ 0.0F, y }, { static_cast<float>(surface.width), y }, sx(1.5F, scale), panel_line, surface);
+    draw_bottom_slots(renderer, primary_bottom_slots(sample), side_margin, content_width, y + sx(23.0F, scale), scale, surface);
+    draw_bottom_slots(renderer, secondary_bottom_slots(sample), side_margin, content_width, y + sx(47.0F, scale), scale, surface);
 }
 
 } // namespace
@@ -314,7 +377,14 @@ LinkOverviewSample SimulatedLinkOverview::sample(std::chrono::steady_clock::time
         .air_current_a = 4.2F + std::sin(seconds * 0.75F) * 1.4F,
         .air_speed_mps = 23.0F + std::sin(seconds * 0.36F) * 6.0F,
         .home_distance_m = 145.0F + std::sin(seconds * 0.18F) * 45.0F,
+        .total_distance_m = 1820.0F + seconds * 7.5F,
+        .wind_speed_mps = 5.0F + std::sin(seconds * 0.31F) * 2.0F,
+        .wind_direction_deg = 290.0F + std::sin(seconds * 0.14F) * 35.0F,
+        .latitude_deg = 47.397742 + std::sin(seconds * 0.025F) * 0.003,
+        .longitude_deg = 8.545594 + std::cos(seconds * 0.021F) * 0.003,
+        .mah_per_km = 132.0F + std::sin(seconds * 0.42F) * 9.0F,
         .satellites = 14 + static_cast<int>(std::round(std::sin(seconds * 0.20F) * 2.0F)),
+        .show_coordinates = true,
         .flight_time = std::chrono::seconds(static_cast<int>(seconds)),
         .armed = std::sin(seconds * 0.08F) > -0.30F,
         .flight_mode = "LOITER",
@@ -325,6 +395,8 @@ void LinkOverviewRenderer::draw(GlesTextRenderer& renderer, SurfaceSize surface,
 {
     draw_left(renderer, surface, sample);
     draw_right(renderer, surface, sample);
+    draw_top_center_mode(renderer, surface, sample);
+    draw_coordinate_block(renderer, surface, sample);
     draw_bottom(renderer, surface, sample);
 }
 

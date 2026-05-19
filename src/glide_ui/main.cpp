@@ -64,6 +64,7 @@ int run_headless_ui(const HeadlessOptions& options)
         ipc.send_line("hello glide-ui");
         ipc.send_line("status glide-ui ready headless");
         ipc.send_line("get fps");
+        ipc.send_line("get coords");
     } else {
         glide::log(glide::LogLevel::warning, "GlideUI", "IPC controller unavailable");
     }
@@ -75,6 +76,8 @@ int run_headless_ui(const HeadlessOptions& options)
             for (const auto& line : ipc.poll_lines()) {
                 if (line == "state fps 0" || line == "state fps 1") {
                     glide::preview_control::set_fps_overlay_enabled(line.back() == '1');
+                } else if (line == "state coords 0" || line == "state coords 1") {
+                    glide::preview_control::set_coordinates_overlay_enabled(line.back() == '1');
                 } else {
                     glide::mavlink::apply_ipc_line(mavlink, line);
                 }
@@ -128,6 +131,7 @@ struct UiState {
     glide::ipc::Client ipc;
     glide::mavlink::Snapshot mavlink;
     bool fps_enabled { true };
+    bool coordinates_enabled { true };
     bool advanced_visible {};
     bool focus_panel {};
     int selected_row {};
@@ -138,6 +142,8 @@ struct UiState {
     lv_obj_t* panel_body {};
     lv_obj_t* fps_switch {};
     lv_obj_t* fps_label {};
+    lv_obj_t* coordinates_switch {};
+    lv_obj_t* coordinates_label {};
     lv_obj_t* scan_bar {};
     lv_obj_t* scan_percent {};
     lv_obj_t* nav_buttons[9] {};
@@ -391,6 +397,29 @@ void sync_fps_controls(UiState& state)
     }
 }
 
+void send_coordinates_state(UiState& state)
+{
+    glide::preview_control::set_coordinates_overlay_enabled(state.coordinates_enabled);
+    if (state.ipc.connected()) {
+        state.ipc.send_line(std::string("set coords ") + (state.coordinates_enabled ? "1" : "0"));
+    }
+}
+
+void sync_coordinates_controls(UiState& state)
+{
+    if (state.coordinates_switch == nullptr || state.coordinates_label == nullptr) {
+        return;
+    }
+
+    if (state.coordinates_enabled) {
+        lv_obj_add_state(state.coordinates_switch, LV_STATE_CHECKED);
+        lv_label_set_text(state.coordinates_label, "Coordinates enabled");
+    } else {
+        lv_obj_remove_state(state.coordinates_switch, LV_STATE_CHECKED);
+        lv_label_set_text(state.coordinates_label, "Coordinates disabled");
+    }
+}
+
 void send_mavlink_action(UiState& state, const std::string& line)
 {
     if (state.ipc.connected()) {
@@ -504,6 +533,10 @@ void apply_terminal_key(UiState& state, const std::string& line)
             state.fps_enabled = !state.fps_enabled;
             sync_fps_controls(state);
             send_fps_state(state);
+        } else if (state.active_panel == SidebarPanel::osd && state.selected_row == 1) {
+            state.coordinates_enabled = !state.coordinates_enabled;
+            sync_coordinates_controls(state);
+            send_coordinates_state(state);
         } else if (state.active_panel == SidebarPanel::recording && state.selected_row == 2) {
             send_mavlink_action(state, glide::mavlink::format_action_set_param("camera1", "AIR_RECORDING_E", "toggle"));
         } else if (state.active_panel == SidebarPanel::developer && state.selected_row == 5) {
@@ -618,6 +651,33 @@ void build_osd_panel(UiState& state)
         LV_EVENT_VALUE_CHANGED,
         &state);
     sync_fps_controls(state);
+
+    const int coordinates_row_index = state.row_count++;
+    auto* coordinates_row = lv_obj_create(state.panel_body);
+    set_panel_style(coordinates_row, state.focus_panel && state.selected_row == coordinates_row_index ? 0x2d210e : 0x0f2130, LV_OPA_80);
+    lv_obj_set_style_radius(coordinates_row, 6, 0);
+    lv_obj_set_style_border_width(coordinates_row, state.focus_panel && state.selected_row == coordinates_row_index ? 1 : 0, 0);
+    lv_obj_set_style_border_color(coordinates_row, color(0xff8a00), 0);
+    lv_obj_set_size(coordinates_row, LV_PCT(100), 62);
+    lv_obj_set_style_pad_left(coordinates_row, 16, 0);
+    lv_obj_set_style_pad_right(coordinates_row, 16, 0);
+    lv_obj_set_flex_flow(coordinates_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(coordinates_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    state.coordinates_label = label(coordinates_row, "Coordinates", &lv_font_montserrat_16, 0xdce8f0);
+    state.coordinates_switch = lv_switch_create(coordinates_row);
+    lv_obj_set_size(state.coordinates_switch, 58, 30);
+    lv_obj_add_event_cb(
+        state.coordinates_switch,
+        [](lv_event_t* event) {
+            auto* state = static_cast<UiState*>(lv_event_get_user_data(event));
+            state->coordinates_enabled = lv_obj_has_state(state->coordinates_switch, LV_STATE_CHECKED);
+            sync_coordinates_controls(*state);
+            send_coordinates_state(*state);
+        },
+        LV_EVENT_VALUE_CHANGED,
+        &state);
+    sync_coordinates_controls(state);
 }
 
 void build_system_panel(UiState& state)
@@ -733,6 +793,8 @@ void clear_panel(UiState& state)
     lv_obj_clean(state.panel_body);
     state.fps_switch = nullptr;
     state.fps_label = nullptr;
+    state.coordinates_switch = nullptr;
+    state.coordinates_label = nullptr;
     state.scan_bar = nullptr;
     state.scan_percent = nullptr;
     state.row_count = 0;
@@ -937,7 +999,9 @@ void poll_ipc(UiState& state)
 {
     if (!state.ipc.connected()) {
         state.fps_enabled = glide::preview_control::fps_overlay_enabled();
+        state.coordinates_enabled = glide::preview_control::coordinates_overlay_enabled();
         sync_fps_controls(state);
+        sync_coordinates_controls(state);
         return;
     }
 
@@ -946,6 +1010,10 @@ void poll_ipc(UiState& state)
             state.fps_enabled = line.back() == '1';
             glide::preview_control::set_fps_overlay_enabled(state.fps_enabled);
             sync_fps_controls(state);
+        } else if (line == "state coords 0" || line == "state coords 1") {
+            state.coordinates_enabled = line.back() == '1';
+            glide::preview_control::set_coordinates_overlay_enabled(state.coordinates_enabled);
+            sync_coordinates_controls(state);
         } else if (glide::mavlink::apply_ipc_line(state.mavlink, line)) {
             set_active_panel(state, state.active_panel);
         } else {
@@ -1021,6 +1089,7 @@ int main(int argc, char** argv)
 
     UiState state;
     state.fps_enabled = glide::preview_control::fps_overlay_enabled();
+    state.coordinates_enabled = glide::preview_control::coordinates_overlay_enabled();
     auto* screen = lv_screen_active();
     lv_obj_add_flag(screen, LV_OBJ_FLAG_CLICK_FOCUSABLE);
     lv_obj_add_event_cb(screen, keyboard_event, LV_EVENT_KEY, &state);
@@ -1033,6 +1102,7 @@ int main(int argc, char** argv)
         state.ipc.send_line("hello glide-ui");
         state.ipc.send_line("status glide-ui ready lvgl-sdl");
         state.ipc.send_line("get fps");
+        state.ipc.send_line("get coords");
     } else {
         glide::log(glide::LogLevel::warning, "GlideUI", "IPC controller unavailable; using preview fallback state");
     }

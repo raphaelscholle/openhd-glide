@@ -245,6 +245,14 @@ examples\stream-h264-file-to-glide-view.bat <target-ip> 5600
 ./build/openhd-glide --preview-stack
 ```
 
+The WSL helper scripts can also run each worker independently:
+
+```sh
+examples/run-wsl-video-decode.sh 5600 h264
+examples/run-wsl-flow-preview.sh
+examples/run-wsl-ui-preview.sh
+```
+
 For WSL development, `openhd-glide --preview-stack` starts `glide-flow` first and then places a
 `glide-ui` LVGL/SDL preview over the left side. In WSL, the UI preview is kept as a sidebar surface to avoid
 covering the Flow preview. The sidebar contains a `MISC` panel with an FPS overlay toggle wired through the

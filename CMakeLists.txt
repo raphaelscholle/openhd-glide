@@ -318,5 +318,8 @@ install(
         examples/run-kms-video-rkmpp-flow-ui.sh
         examples/stream-h264-file-to-glide-view.sh
         examples/stream-videotestsrc-to-glide-view.sh
+        examples/run-wsl-flow-preview.sh
+        examples/run-wsl-ui-preview.sh
+        examples/run-wsl-video-decode.sh
     DESTINATION share/openhd-glide/examples
 )

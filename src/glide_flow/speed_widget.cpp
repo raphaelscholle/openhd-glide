@@ -55,11 +55,11 @@ void draw_text(
 
 std::string speed_text(float speed_mps)
 {
-    const auto rounded_speed = static_cast<int>(std::round(std::max(0.0F, speed_mps)));
+    const auto rounded_speed = static_cast<int>(std::round(std::max(0.0F, speed_mps) * 3.6F));
     std::ostringstream stream;
     stream << rounded_speed;
-    if (rounded_speed < 99) {
-        stream << " m/s";
+    if (rounded_speed < 999) {
+        stream << " km/h";
     }
     return stream.str();
 }

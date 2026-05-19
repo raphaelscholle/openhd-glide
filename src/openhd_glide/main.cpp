@@ -739,7 +739,9 @@ int run_kms_video_preview(const Options& options)
                 flow_surface);
         }
         if (options.flow_overlay) {
-            link_overview.draw(flow_renderer, flow_surface, simulated_link.sample());
+            auto link_sample = simulated_link.sample();
+            link_sample.show_coordinates = glide::preview_control::coordinates_overlay_enabled();
+            link_overview.draw(flow_renderer, flow_surface, link_sample);
             performance_horizon.draw(flow_renderer, flow_surface, simulated_attitude.sample());
             speed_widget.draw(flow_renderer, flow_surface, simulated_speed.sample());
             altitude_widget.draw(flow_renderer, flow_surface, simulated_altitude.sample());
@@ -860,7 +862,9 @@ int run_kms_video_preview(const Options& options)
                             { .red = 1.0F, .green = 0.0F, .blue = 0.75F, .alpha = 0.55F },
                             surface);
                     }
-                    links.draw(renderer, surface, simulated_link.sample());
+                    auto link_sample = simulated_link.sample();
+                    link_sample.show_coordinates = glide::preview_control::coordinates_overlay_enabled();
+                    links.draw(renderer, surface, link_sample);
                     horizon.draw(renderer, surface, simulated_attitude.sample());
                     speed.draw(renderer, surface, simulated_speed.sample());
                     altitude.draw(renderer, surface, simulated_altitude.sample());
@@ -1203,6 +1207,8 @@ int run_kms_video_preview(const Options& options)
     glide::log(glide::LogLevel::info, "OpenHD-Glide", "KMS video importer build: forced decoder DMABUF capture + fd-backed memory diagnostics");
     glide::log(glide::LogLevel::info, "OpenHD-Glide", "decoded DMABUF frames are imported directly into DRM and scanned out on a KMS plane");
     glide::preview_control::set_fps_overlay_enabled(true);
+    glide::preview_control::set_coordinates_overlay_enabled(true);
+    glide::preview_control::set_coordinates_overlay_enabled(true);
     glide::log(
         glide::LogLevel::info,
         "OpenHD-Glide",
@@ -1518,18 +1524,26 @@ int run_preview_stack(char* argv0, const Options& options)
               << "  ipc        " << options.ipc_socket << '\n';
 
     bool fps_enabled = true;
+    bool coordinates_enabled = true;
 
     while (stop_requested == 0) {
         for (const auto& event : ipc_server.poll()) {
             std::cout << "ipc[" << event.client_id << "] " << event.line << '\n';
             if (event.line.rfind("hello ", 0) == 0) {
                 ipc_server.send_line(event.client_id, std::string("state fps ") + (fps_enabled ? "1" : "0"));
+                ipc_server.send_line(event.client_id, std::string("state coords ") + (coordinates_enabled ? "1" : "0"));
             } else if (event.line == "get fps") {
                 ipc_server.send_line(event.client_id, std::string("state fps ") + (fps_enabled ? "1" : "0"));
+            } else if (event.line == "get coords") {
+                ipc_server.send_line(event.client_id, std::string("state coords ") + (coordinates_enabled ? "1" : "0"));
             } else if (event.line == "set fps 0" || event.line == "set fps 1") {
                 fps_enabled = event.line.back() == '1';
                 glide::preview_control::set_fps_overlay_enabled(fps_enabled);
                 ipc_server.broadcast_line(std::string("state fps ") + (fps_enabled ? "1" : "0"));
+            } else if (event.line == "set coords 0" || event.line == "set coords 1") {
+                coordinates_enabled = event.line.back() == '1';
+                glide::preview_control::set_coordinates_overlay_enabled(coordinates_enabled);
+                ipc_server.broadcast_line(std::string("state coords ") + (coordinates_enabled ? "1" : "0"));
             } else if (event.line.rfind("mav ", 0) == 0) {
                 ipc_server.broadcast_line(event.line);
             } else if (event.line.rfind("ui ", 0) == 0) {
@@ -1587,6 +1601,7 @@ int run_kms_stack(char* argv0, const Options& options)
     const auto video_args = view_args(view_executable.c_str(), options);
 
     glide::preview_control::set_fps_overlay_enabled(true);
+    glide::preview_control::set_coordinates_overlay_enabled(true);
     glide::ipc::Server ipc_server;
     if (!ipc_server.listen_on(options.ipc_socket)) {
         glide::log(glide::LogLevel::error, "OpenHD-Glide", "failed to start IPC server: " + ipc_server.last_error());
@@ -1636,16 +1651,26 @@ int run_kms_stack(char* argv0, const Options& options)
               << "  ipc        " << options.ipc_socket << '\n';
 
     bool fps_enabled = true;
+    bool coordinates_enabled = true;
 
     while (stop_requested == 0) {
         for (const auto& event : ipc_server.poll()) {
             std::cout << "ipc[" << event.client_id << "] " << event.line << '\n';
-            if (event.line.rfind("hello ", 0) == 0 || event.line == "get fps") {
+            if (event.line.rfind("hello ", 0) == 0) {
                 ipc_server.send_line(event.client_id, std::string("state fps ") + (fps_enabled ? "1" : "0"));
+                ipc_server.send_line(event.client_id, std::string("state coords ") + (coordinates_enabled ? "1" : "0"));
+            } else if (event.line == "get fps") {
+                ipc_server.send_line(event.client_id, std::string("state fps ") + (fps_enabled ? "1" : "0"));
+            } else if (event.line == "get coords") {
+                ipc_server.send_line(event.client_id, std::string("state coords ") + (coordinates_enabled ? "1" : "0"));
             } else if (event.line == "set fps 0" || event.line == "set fps 1") {
                 fps_enabled = event.line.back() == '1';
                 glide::preview_control::set_fps_overlay_enabled(fps_enabled);
                 ipc_server.broadcast_line(std::string("state fps ") + (fps_enabled ? "1" : "0"));
+            } else if (event.line == "set coords 0" || event.line == "set coords 1") {
+                coordinates_enabled = event.line.back() == '1';
+                glide::preview_control::set_coordinates_overlay_enabled(coordinates_enabled);
+                ipc_server.broadcast_line(std::string("state coords ") + (coordinates_enabled ? "1" : "0"));
             } else if (event.line.rfind("mav ", 0) == 0) {
                 ipc_server.broadcast_line(event.line);
             } else if (event.line.rfind("ui ", 0) == 0) {

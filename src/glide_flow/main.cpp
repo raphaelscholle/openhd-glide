@@ -131,6 +131,7 @@ int main(int argc, char** argv)
     glide::dev::SdlGlesWindow preview_window;
     glide::ipc::Client ipc;
     glide::mavlink::Snapshot mavlink;
+    bool coordinates_enabled = glide::preview_control::coordinates_overlay_enabled();
     constexpr bool fps_overlay_enabled = false;
 
     if (options.preview) {
@@ -202,8 +203,15 @@ int main(int argc, char** argv)
         }
         if (ipc.connected()) {
             for (const auto& line : ipc.poll_lines()) {
-                glide::mavlink::apply_ipc_line(mavlink, line);
+                if (line == "state coords 0" || line == "state coords 1") {
+                    coordinates_enabled = line.back() == '1';
+                    glide::preview_control::set_coordinates_overlay_enabled(coordinates_enabled);
+                } else {
+                    glide::mavlink::apply_ipc_line(mavlink, line);
+                }
             }
+        } else {
+            coordinates_enabled = glide::preview_control::coordinates_overlay_enabled();
         }
 
         options.surface = options.preview ? preview_window.surface_size() : options.surface;
@@ -218,7 +226,9 @@ int main(int argc, char** argv)
 
         if (options.render_gles && renderer.available()) {
             renderer.clear(0.02F, 0.02F, 0.025F, 1.0F, options.surface);
-            link_overview.draw(renderer, options.surface, simulated_link.sample());
+            auto link_sample = simulated_link.sample();
+            link_sample.show_coordinates = coordinates_enabled;
+            link_overview.draw(renderer, options.surface, link_sample);
             performance_horizon.draw(renderer, options.surface, simulated_attitude.sample());
             speed_widget.draw(renderer, options.surface, simulated_speed.sample());
             altitude_widget.draw(renderer, options.surface, simulated_altitude.sample());
