@@ -37,6 +37,8 @@ public:
     bool publish_solid_ui_frame(std::uint32_t argb);
     bool publish_ui_frame_from_argb(const void* pixels, std::uint32_t width, std::uint32_t height, std::uint32_t stride_bytes);
     bool ui_overlay_plane_active() const;
+    bool enable_writeback_recording(const std::string& path, std::uint32_t every_n_frames, std::uint32_t max_frames);
+    bool writeback_recording_finished() const;
     flow::SurfaceSize surface_size() const;
     const std::string& last_error() const;
 
@@ -71,9 +73,22 @@ private:
         void* map {};
     };
 
+    struct WritebackRecorder {
+        bool enabled {};
+        std::uint32_t connector_id {};
+        std::uint32_t every_n_frames { 1 };
+        std::uint32_t max_frames {};
+        std::uint32_t captured_frames {};
+        int output_fd { -1 };
+        int fence_fd { -1 };
+        DumbBuffer buffer {};
+    };
+
     bool open_card();
     bool choose_connector_and_mode(std::uint32_t requested_width, std::uint32_t requested_height, std::uint32_t requested_refresh_hz);
     bool create_primary_buffer();
+    bool choose_writeback_connector();
+    bool create_writeback_buffer();
     bool choose_video_plane(std::uint32_t drm_format);
     bool choose_flow_plane();
     bool choose_ui_plane();
@@ -92,6 +107,8 @@ private:
     void destroy_imported(ImportedFramebuffer& imported);
     void destroy_video_framebuffer_cache();
     void destroy_primary_buffer();
+    void destroy_writeback_buffer();
+    void close_writeback_recorder();
     void destroy_solid_flow_buffer();
     void destroy_solid_ui_buffer();
     void cleanup();
@@ -116,6 +133,7 @@ private:
     void* original_crtc_ {};
     void* mode_ {};
     DumbBuffer primary_ {};
+    WritebackRecorder writeback_ {};
     void* gbm_device_ {};
     void* gbm_surface_ {};
     void* egl_display_ {};

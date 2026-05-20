@@ -16,6 +16,11 @@ std::filesystem::path coordinates_control_path()
     return std::filesystem::temp_directory_path() / "openhd-glide-flow-coordinates.enabled";
 }
 
+std::filesystem::path compact_readouts_control_path()
+{
+    return std::filesystem::temp_directory_path() / "openhd-glide-flow-compact-readouts.enabled";
+}
+
 bool read_enabled_file(const std::filesystem::path& path)
 {
     std::ifstream file(path);
@@ -54,6 +59,23 @@ bool coordinates_overlay_enabled()
 void set_coordinates_overlay_enabled(bool enabled)
 {
     write_enabled_file(coordinates_control_path(), enabled);
+}
+
+bool compact_readouts_enabled()
+{
+    std::ifstream file(compact_readouts_control_path());
+    if (!file) {
+        return false;
+    }
+
+    char value {};
+    file >> value;
+    return value != '0';
+}
+
+void set_compact_readouts_enabled(bool enabled)
+{
+    write_enabled_file(compact_readouts_control_path(), enabled);
 }
 
 } // namespace glide::preview_control

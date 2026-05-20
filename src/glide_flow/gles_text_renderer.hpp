@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 
 namespace glide::flow {
@@ -45,6 +46,7 @@ public:
     bool update_argb_texture(const void* pixels, std::uint32_t width, std::uint32_t height, std::uint32_t stride_bytes);
     void draw_cached_argb_texture(RenderPoint top_left, SurfaceSize surface);
     void draw(const TextPlacement& placement, SurfaceSize surface);
+    float measure_text_width(std::string_view text, float scale);
     std::string runtime_description() const;
     bool likely_software_renderer() const;
     std::string last_error() const;

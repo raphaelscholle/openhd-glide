@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <gbm.h>
 #include <linux/types.h>
+#include <poll.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -484,6 +485,59 @@ bool KmsAtomicCompositor::present(const DmabufVideoFrame& video_frame, bool upda
 #endif
 }
 
+bool KmsAtomicCompositor::enable_writeback_recording(const std::string& path, std::uint32_t every_n_frames, std::uint32_t max_frames)
+{
+#if OPENHD_GLIDE_HAS_KMS_GBM
+    if (path.empty()) {
+        last_error_ = "writeback recording path is empty";
+        return false;
+    }
+    if (surface_.width == 0 || surface_.height == 0) {
+        last_error_ = "writeback recording needs an initialized KMS surface";
+        return false;
+    }
+    if (!choose_writeback_connector()) {
+        return false;
+    }
+    if (!create_writeback_buffer()) {
+        return false;
+    }
+
+    const auto output_fd = open(path.c_str(), O_CREAT | O_TRUNC | O_WRONLY | O_CLOEXEC, 0644);
+    if (output_fd < 0) {
+        last_error_ = "failed to open writeback recording output " + path + errno_suffix();
+        destroy_writeback_buffer();
+        return false;
+    }
+
+    writeback_.output_fd = output_fd;
+    writeback_.every_n_frames = every_n_frames == 0 ? 1 : every_n_frames;
+    writeback_.max_frames = max_frames;
+    writeback_.captured_frames = 0;
+    writeback_.enabled = true;
+    glide::log(
+        glide::LogLevel::info,
+        "OpenHD-Glide",
+        "KMS writeback raw recorder enabled connector=" + std::to_string(writeback_.connector_id)
+            + " output=" + path
+            + " frame_bytes=" + std::to_string(writeback_.buffer.size)
+            + " every_n_frames=" + std::to_string(writeback_.every_n_frames)
+            + " max_frames=" + std::to_string(writeback_.max_frames));
+    return true;
+#else
+    (void)path;
+    (void)every_n_frames;
+    (void)max_frames;
+    last_error_ = "KMS writeback recording support was not found at build time";
+    return false;
+#endif
+}
+
+bool KmsAtomicCompositor::writeback_recording_finished() const
+{
+    return writeback_.enabled && writeback_.max_frames != 0 && writeback_.captured_frames >= writeback_.max_frames;
+}
+
 bool KmsAtomicCompositor::make_flow_context_current()
 {
 #if OPENHD_GLIDE_HAS_KMS_GBM
@@ -937,6 +991,86 @@ bool KmsAtomicCompositor::create_primary_buffer()
         last_error_ = "no primary KMS plane supports XRGB8888";
         return false;
     }
+    return true;
+}
+
+bool KmsAtomicCompositor::choose_writeback_connector()
+{
+    if (writeback_.connector_id != 0) {
+        return true;
+    }
+
+#ifdef DRM_CLIENT_CAP_WRITEBACK_CONNECTORS
+    drmSetClientCap(drm_fd_, DRM_CLIENT_CAP_WRITEBACK_CONNECTORS, 1);
+#endif
+
+    for (std::uint32_t id = 1; id < 1024; ++id) {
+        auto* connector = drmModeGetConnector(drm_fd_, id);
+        if (connector == nullptr) {
+            continue;
+        }
+        const bool has_writeback_props =
+            property_id(drm_fd_, id, DRM_MODE_OBJECT_CONNECTOR, "WRITEBACK_FB_ID") != 0
+            && property_id(drm_fd_, id, DRM_MODE_OBJECT_CONNECTOR, "WRITEBACK_OUT_FENCE_PTR") != 0;
+#ifdef DRM_MODE_CONNECTOR_WRITEBACK
+        const bool is_writeback = connector->connector_type == DRM_MODE_CONNECTOR_WRITEBACK;
+#else
+        const bool is_writeback = has_writeback_props;
+#endif
+        drmModeFreeConnector(connector);
+        if (is_writeback && has_writeback_props) {
+            writeback_.connector_id = id;
+            return true;
+        }
+    }
+
+    last_error_ = "no DRM writeback connector with WRITEBACK_FB_ID was found";
+    return false;
+}
+
+bool KmsAtomicCompositor::create_writeback_buffer()
+{
+    if (writeback_.buffer.framebuffer != 0) {
+        return true;
+    }
+
+    auto& buffer = writeback_.buffer;
+    drm_mode_create_dumb create {};
+    create.width = surface_.width;
+    create.height = surface_.height;
+    create.bpp = 32;
+    if (drmIoctl(drm_fd_, DRM_IOCTL_MODE_CREATE_DUMB, &create) != 0) {
+        last_error_ = "failed to create writeback DRM buffer" + errno_suffix();
+        return false;
+    }
+    buffer.handle = create.handle;
+    buffer.pitch = create.pitch;
+    buffer.size = create.size;
+
+    std::uint32_t handles[4] { buffer.handle, 0, 0, 0 };
+    std::uint32_t strides[4] { buffer.pitch, 0, 0, 0 };
+    std::uint32_t offsets[4] {};
+    if (drmModeAddFB2(drm_fd_, surface_.width, surface_.height, DRM_FORMAT_ARGB8888, handles, strides, offsets, &buffer.framebuffer, 0) != 0) {
+        last_error_ = "failed to create writeback DRM framebuffer" + errno_suffix();
+        destroy_writeback_buffer();
+        return false;
+    }
+
+    drm_mode_map_dumb map {};
+    map.handle = buffer.handle;
+    if (drmIoctl(drm_fd_, DRM_IOCTL_MODE_MAP_DUMB, &map) != 0) {
+        last_error_ = "failed to map writeback DRM buffer" + errno_suffix();
+        destroy_writeback_buffer();
+        return false;
+    }
+    buffer.map = mmap(nullptr, buffer.size, PROT_READ | PROT_WRITE, MAP_SHARED, drm_fd_, static_cast<off_t>(map.offset));
+    if (buffer.map == MAP_FAILED) {
+        buffer.map = nullptr;
+        last_error_ = "failed to mmap writeback DRM buffer" + errno_suffix();
+        destroy_writeback_buffer();
+        return false;
+    }
+    std::memset(buffer.map, 0, static_cast<std::size_t>(buffer.size));
     return true;
 }
 
@@ -1633,6 +1767,30 @@ bool KmsAtomicCompositor::commit(
         ok = ok && add_property(drm_fd_, request, ui_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_H", ui_surface_.height, last_error_);
     }
 
+    const bool capture_writeback =
+        writeback_.enabled
+        && writeback_.output_fd >= 0
+        && writeback_.connector_id != 0
+        && writeback_.buffer.framebuffer != 0
+        && (writeback_.max_frames == 0 || writeback_.captured_frames < writeback_.max_frames)
+        && (frame_serial_ % writeback_.every_n_frames) == 0;
+    if (capture_writeback) {
+        if (writeback_.fence_fd >= 0) {
+            close(writeback_.fence_fd);
+            writeback_.fence_fd = -1;
+        }
+        ok = ok && add_property(drm_fd_, request, writeback_.connector_id, DRM_MODE_OBJECT_CONNECTOR, "CRTC_ID", crtc_id_, last_error_);
+        ok = ok && add_property(drm_fd_, request, writeback_.connector_id, DRM_MODE_OBJECT_CONNECTOR, "WRITEBACK_FB_ID", writeback_.buffer.framebuffer, last_error_);
+        ok = ok && add_property(
+            drm_fd_,
+            request,
+            writeback_.connector_id,
+            DRM_MODE_OBJECT_CONNECTOR,
+            "WRITEBACK_OUT_FENCE_PTR",
+            static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(&writeback_.fence_fd)),
+            last_error_);
+    }
+
     if (!ok) {
         drmModeAtomicFree(request);
         return false;
@@ -1647,6 +1805,47 @@ bool KmsAtomicCompositor::commit(
 
     modeset_committed_ = true;
     drmModeAtomicFree(request);
+
+    if (capture_writeback) {
+        bool fence_signaled {};
+        if (writeback_.fence_fd >= 0) {
+            pollfd fence_poll {
+                .fd = writeback_.fence_fd,
+                .events = POLLIN,
+                .revents = 0,
+            };
+            fence_signaled = poll(&fence_poll, 1, 1000) > 0;
+            close(writeback_.fence_fd);
+            writeback_.fence_fd = -1;
+        }
+        if (!fence_signaled) {
+            last_error_ = "timed out waiting for KMS writeback fence";
+            return false;
+        }
+
+        msync(writeback_.buffer.map, static_cast<std::size_t>(writeback_.buffer.size), MS_INVALIDATE);
+        const auto* bytes = static_cast<const unsigned char*>(writeback_.buffer.map);
+        std::uint64_t remaining = writeback_.buffer.size;
+        while (remaining > 0) {
+            const auto chunk = write(writeback_.output_fd, bytes, static_cast<std::size_t>(remaining));
+            if (chunk <= 0) {
+                last_error_ = "failed to write KMS writeback frame" + errno_suffix();
+                return false;
+            }
+            bytes += chunk;
+            remaining -= static_cast<std::uint64_t>(chunk);
+        }
+
+        ++writeback_.captured_frames;
+        if (writeback_.captured_frames == writeback_.max_frames && writeback_.output_fd >= 0) {
+            close(writeback_.output_fd);
+            writeback_.output_fd = -1;
+            glide::log(
+                glide::LogLevel::info,
+                "OpenHD-Glide",
+                "KMS writeback raw recorder finished frames=" + std::to_string(writeback_.captured_frames));
+        }
+    }
     return true;
 }
 
@@ -1693,6 +1892,40 @@ void KmsAtomicCompositor::destroy_primary_buffer()
         drmIoctl(drm_fd_, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
         primary_.handle = 0;
     }
+}
+
+void KmsAtomicCompositor::destroy_writeback_buffer()
+{
+    auto& buffer = writeback_.buffer;
+    if (buffer.map != nullptr) {
+        munmap(buffer.map, static_cast<std::size_t>(buffer.size));
+        buffer.map = nullptr;
+    }
+    if (drm_fd_ >= 0 && buffer.framebuffer != 0) {
+        drmModeRmFB(drm_fd_, buffer.framebuffer);
+        buffer.framebuffer = 0;
+    }
+    if (drm_fd_ >= 0 && buffer.handle != 0) {
+        drm_mode_destroy_dumb destroy {};
+        destroy.handle = buffer.handle;
+        drmIoctl(drm_fd_, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+        buffer.handle = 0;
+    }
+    buffer = {};
+}
+
+void KmsAtomicCompositor::close_writeback_recorder()
+{
+    if (writeback_.fence_fd >= 0) {
+        close(writeback_.fence_fd);
+        writeback_.fence_fd = -1;
+    }
+    if (writeback_.output_fd >= 0) {
+        close(writeback_.output_fd);
+        writeback_.output_fd = -1;
+    }
+    destroy_writeback_buffer();
+    writeback_.enabled = false;
 }
 
 void KmsAtomicCompositor::destroy_solid_flow_buffer()
@@ -1795,6 +2028,7 @@ void KmsAtomicCompositor::cleanup()
     }
 
     destroy_video_framebuffer_cache();
+    close_writeback_recorder();
     destroy_solid_flow_buffer();
     destroy_solid_ui_buffer();
     destroy_primary_buffer();

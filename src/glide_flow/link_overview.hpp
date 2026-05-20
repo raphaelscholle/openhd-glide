@@ -22,6 +22,7 @@ struct LinkOverviewSample {
     float air_voltage_v {};
     float air_current_a {};
     float air_speed_mps {};
+    float height_m {};
     float home_distance_m {};
     float total_distance_m {};
     float wind_speed_mps {};

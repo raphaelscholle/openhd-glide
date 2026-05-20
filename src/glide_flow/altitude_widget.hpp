@@ -21,7 +21,7 @@ private:
 
 class AltitudeWidgetRenderer {
 public:
-    void draw(GlesTextRenderer& renderer, SurfaceSize surface, AltitudeSample sample) const;
+    void draw(GlesTextRenderer& renderer, SurfaceSize surface, AltitudeSample sample, bool compact = false) const;
 
 private:
     static constexpr float ladder_width_ = 50.0F;
@@ -32,4 +32,3 @@ private:
 };
 
 } // namespace glide::flow
-

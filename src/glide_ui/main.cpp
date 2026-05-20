@@ -65,6 +65,7 @@ int run_headless_ui(const HeadlessOptions& options)
         ipc.send_line("status glide-ui ready headless");
         ipc.send_line("get fps");
         ipc.send_line("get coords");
+        ipc.send_line("get compact");
     } else {
         glide::log(glide::LogLevel::warning, "GlideUI", "IPC controller unavailable");
     }
@@ -78,6 +79,8 @@ int run_headless_ui(const HeadlessOptions& options)
                     glide::preview_control::set_fps_overlay_enabled(line.back() == '1');
                 } else if (line == "state coords 0" || line == "state coords 1") {
                     glide::preview_control::set_coordinates_overlay_enabled(line.back() == '1');
+                } else if (line == "state compact 0" || line == "state compact 1") {
+                    glide::preview_control::set_compact_readouts_enabled(line.back() == '1');
                 } else {
                     glide::mavlink::apply_ipc_line(mavlink, line);
                 }
@@ -132,10 +135,14 @@ struct UiState {
     glide::mavlink::Snapshot mavlink;
     bool fps_enabled { true };
     bool coordinates_enabled { true };
+    bool compact_readouts { false };
     bool advanced_visible {};
     bool focus_panel {};
+    bool panel_rebuild_pending {};
     int selected_row {};
     int row_count {};
+    std::chrono::steady_clock::time_point next_control_file_poll {};
+    std::chrono::steady_clock::time_point next_panel_rebuild {};
     lv_obj_t* root {};
     SidebarPanel active_panel { SidebarPanel::dashboard };
     lv_obj_t* panel_title {};
@@ -144,6 +151,8 @@ struct UiState {
     lv_obj_t* fps_label {};
     lv_obj_t* coordinates_switch {};
     lv_obj_t* coordinates_label {};
+    lv_obj_t* compact_switch {};
+    lv_obj_t* compact_label {};
     lv_obj_t* scan_bar {};
     lv_obj_t* scan_percent {};
     lv_obj_t* nav_buttons[9] {};
@@ -420,6 +429,38 @@ void sync_coordinates_controls(UiState& state)
     }
 }
 
+void send_compact_readouts_state(UiState& state)
+{
+    glide::preview_control::set_compact_readouts_enabled(state.compact_readouts);
+    if (state.ipc.connected()) {
+        state.ipc.send_line(std::string("set compact ") + (state.compact_readouts ? "1" : "0"));
+    }
+}
+
+void sync_compact_readouts_controls(UiState& state)
+{
+    if (state.compact_switch == nullptr || state.compact_label == nullptr) {
+        return;
+    }
+
+    if (state.compact_readouts) {
+        lv_obj_add_state(state.compact_switch, LV_STATE_CHECKED);
+        lv_label_set_text(state.compact_label, "Speed/alt text");
+    } else {
+        lv_obj_remove_state(state.compact_switch, LV_STATE_CHECKED);
+        lv_label_set_text(state.compact_label, "Speed/alt ladder");
+    }
+}
+
+bool update_bool(bool& target, bool value)
+{
+    if (target == value) {
+        return false;
+    }
+    target = value;
+    return true;
+}
+
 void send_mavlink_action(UiState& state, const std::string& line)
 {
     if (state.ipc.connected()) {
@@ -477,6 +518,25 @@ void setup_panel_column(lv_obj_t* body, int pad = 14)
 void set_active_panel(UiState& state, SidebarPanel panel);
 void build_sidebar(UiState& state, std::uint32_t width, std::uint32_t height);
 
+bool panel_uses_mavlink(SidebarPanel panel)
+{
+    return panel == SidebarPanel::dashboard
+        || panel == SidebarPanel::link
+        || panel == SidebarPanel::video
+        || panel == SidebarPanel::telemetry
+        || panel == SidebarPanel::recording
+        || panel == SidebarPanel::system
+        || panel == SidebarPanel::developer;
+}
+
+void request_panel_rebuild(UiState& state, std::chrono::steady_clock::time_point now)
+{
+    state.panel_rebuild_pending = true;
+    if (state.next_panel_rebuild <= now) {
+        state.next_panel_rebuild = now + std::chrono::milliseconds(100);
+    }
+}
+
 void rebuild_ui(UiState& state)
 {
     if (state.root == nullptr) {
@@ -486,6 +546,7 @@ void rebuild_ui(UiState& state)
     const auto height = lv_obj_get_height(state.root);
     lv_obj_clean(state.root);
     build_sidebar(state, static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
+    state.panel_rebuild_pending = false;
 }
 
 void apply_terminal_key(UiState& state, const std::string& line)
@@ -537,6 +598,10 @@ void apply_terminal_key(UiState& state, const std::string& line)
             state.coordinates_enabled = !state.coordinates_enabled;
             sync_coordinates_controls(state);
             send_coordinates_state(state);
+        } else if (state.active_panel == SidebarPanel::osd && state.selected_row == 2) {
+            state.compact_readouts = !state.compact_readouts;
+            sync_compact_readouts_controls(state);
+            send_compact_readouts_state(state);
         } else if (state.active_panel == SidebarPanel::recording && state.selected_row == 2) {
             send_mavlink_action(state, glide::mavlink::format_action_set_param("camera1", "AIR_RECORDING_E", "toggle"));
         } else if (state.active_panel == SidebarPanel::developer && state.selected_row == 5) {
@@ -678,6 +743,33 @@ void build_osd_panel(UiState& state)
         LV_EVENT_VALUE_CHANGED,
         &state);
     sync_coordinates_controls(state);
+
+    const int compact_row_index = state.row_count++;
+    auto* compact_row = lv_obj_create(state.panel_body);
+    set_panel_style(compact_row, state.focus_panel && state.selected_row == compact_row_index ? 0x2d210e : 0x0f2130, LV_OPA_80);
+    lv_obj_set_style_radius(compact_row, 6, 0);
+    lv_obj_set_style_border_width(compact_row, state.focus_panel && state.selected_row == compact_row_index ? 1 : 0, 0);
+    lv_obj_set_style_border_color(compact_row, color(0xff8a00), 0);
+    lv_obj_set_size(compact_row, LV_PCT(100), 62);
+    lv_obj_set_style_pad_left(compact_row, 16, 0);
+    lv_obj_set_style_pad_right(compact_row, 16, 0);
+    lv_obj_set_flex_flow(compact_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(compact_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    state.compact_label = label(compact_row, "Speed/alt ladder", &lv_font_montserrat_16, 0xdce8f0);
+    state.compact_switch = lv_switch_create(compact_row);
+    lv_obj_set_size(state.compact_switch, 58, 30);
+    lv_obj_add_event_cb(
+        state.compact_switch,
+        [](lv_event_t* event) {
+            auto* state = static_cast<UiState*>(lv_event_get_user_data(event));
+            state->compact_readouts = lv_obj_has_state(state->compact_switch, LV_STATE_CHECKED);
+            sync_compact_readouts_controls(*state);
+            send_compact_readouts_state(*state);
+        },
+        LV_EVENT_VALUE_CHANGED,
+        &state);
+    sync_compact_readouts_controls(state);
 }
 
 void build_system_panel(UiState& state)
@@ -795,6 +887,8 @@ void clear_panel(UiState& state)
     state.fps_label = nullptr;
     state.coordinates_switch = nullptr;
     state.coordinates_label = nullptr;
+    state.compact_switch = nullptr;
+    state.compact_label = nullptr;
     state.scan_bar = nullptr;
     state.scan_percent = nullptr;
     state.row_count = 0;
@@ -804,6 +898,7 @@ void clear_panel(UiState& state)
 void set_active_panel(UiState& state, SidebarPanel panel)
 {
     state.active_panel = panel;
+    state.panel_rebuild_pending = false;
     state.selected_row = 0;
     state.focus_panel = false;
     if (state.panel_title == nullptr || state.panel_body == nullptr) {
@@ -995,30 +1090,53 @@ void build_sidebar(UiState& state, std::uint32_t width, std::uint32_t height)
     }
 }
 
-void poll_ipc(UiState& state)
+void poll_ipc(UiState& state, std::chrono::steady_clock::time_point now)
 {
     if (!state.ipc.connected()) {
-        state.fps_enabled = glide::preview_control::fps_overlay_enabled();
-        state.coordinates_enabled = glide::preview_control::coordinates_overlay_enabled();
-        sync_fps_controls(state);
-        sync_coordinates_controls(state);
+        if (now < state.next_control_file_poll) {
+            return;
+        }
+        state.next_control_file_poll = now + std::chrono::milliseconds(250);
+
+        if (update_bool(state.fps_enabled, glide::preview_control::fps_overlay_enabled())) {
+            sync_fps_controls(state);
+        }
+        if (update_bool(state.coordinates_enabled, glide::preview_control::coordinates_overlay_enabled())) {
+            sync_coordinates_controls(state);
+        }
+        if (update_bool(state.compact_readouts, glide::preview_control::compact_readouts_enabled())) {
+            sync_compact_readouts_controls(state);
+        }
         return;
     }
 
     for (const auto& line : state.ipc.poll_lines()) {
         if (line == "state fps 0" || line == "state fps 1") {
-            state.fps_enabled = line.back() == '1';
-            glide::preview_control::set_fps_overlay_enabled(state.fps_enabled);
-            sync_fps_controls(state);
+            if (update_bool(state.fps_enabled, line.back() == '1')) {
+                glide::preview_control::set_fps_overlay_enabled(state.fps_enabled);
+                sync_fps_controls(state);
+            }
         } else if (line == "state coords 0" || line == "state coords 1") {
-            state.coordinates_enabled = line.back() == '1';
-            glide::preview_control::set_coordinates_overlay_enabled(state.coordinates_enabled);
-            sync_coordinates_controls(state);
+            if (update_bool(state.coordinates_enabled, line.back() == '1')) {
+                glide::preview_control::set_coordinates_overlay_enabled(state.coordinates_enabled);
+                sync_coordinates_controls(state);
+            }
+        } else if (line == "state compact 0" || line == "state compact 1") {
+            if (update_bool(state.compact_readouts, line.back() == '1')) {
+                glide::preview_control::set_compact_readouts_enabled(state.compact_readouts);
+                sync_compact_readouts_controls(state);
+            }
         } else if (glide::mavlink::apply_ipc_line(state.mavlink, line)) {
-            set_active_panel(state, state.active_panel);
+            if (panel_uses_mavlink(state.active_panel)) {
+                request_panel_rebuild(state, now);
+            }
         } else {
             apply_terminal_key(state, line);
         }
+    }
+
+    if (state.panel_rebuild_pending && now >= state.next_panel_rebuild) {
+        set_active_panel(state, state.active_panel);
     }
 }
 
@@ -1090,6 +1208,7 @@ int main(int argc, char** argv)
     UiState state;
     state.fps_enabled = glide::preview_control::fps_overlay_enabled();
     state.coordinates_enabled = glide::preview_control::coordinates_overlay_enabled();
+    state.compact_readouts = glide::preview_control::compact_readouts_enabled();
     auto* screen = lv_screen_active();
     lv_obj_add_flag(screen, LV_OBJ_FLAG_CLICK_FOCUSABLE);
     lv_obj_add_event_cb(screen, keyboard_event, LV_EVENT_KEY, &state);
@@ -1103,6 +1222,7 @@ int main(int argc, char** argv)
         state.ipc.send_line("status glide-ui ready lvgl-sdl");
         state.ipc.send_line("get fps");
         state.ipc.send_line("get coords");
+        state.ipc.send_line("get compact");
     } else {
         glide::log(glide::LogLevel::warning, "GlideUI", "IPC controller unavailable; using preview fallback state");
     }
@@ -1110,6 +1230,7 @@ int main(int argc, char** argv)
     build_sidebar(state, options.width, options.height);
 
     auto last_tick = std::chrono::steady_clock::now();
+    constexpr auto ui_frame_interval = std::chrono::milliseconds(33);
     while (stop_requested == 0) {
         const auto now = std::chrono::steady_clock::now();
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_tick);
@@ -1118,9 +1239,9 @@ int main(int argc, char** argv)
             last_tick = now;
         }
 
-        poll_ipc(state);
+        poll_ipc(state, now);
         lv_timer_handler();
-        std::this_thread::sleep_for(std::chrono::milliseconds(16));
+        std::this_thread::sleep_for(ui_frame_interval);
     }
 
 #if OPENHD_GLIDE_HAS_LVGL_SDL

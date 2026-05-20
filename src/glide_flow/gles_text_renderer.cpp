@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <sstream>
 #include <string>
+#include <string_view>
 
 #if OPENHD_GLIDE_HAS_GLESV2
 #include <GLES2/gl2.h>
@@ -511,6 +512,21 @@ GlesTextRenderer::GlyphTexture* GlesTextRenderer::load_glyph(char character, uns
     (void)character;
     (void)pixel_size;
     return nullptr;
+#endif
+}
+
+float GlesTextRenderer::measure_text_width(std::string_view text, float scale)
+{
+#if OPENHD_GLIDE_HAS_GLESV2 && OPENHD_GLIDE_HAS_FREETYPE
+    const auto pixel_size = static_cast<unsigned int>(std::clamp(scale * 1.35F, 10.0F, 72.0F));
+    auto width = 0.0F;
+    for (const auto character : text) {
+        auto* glyph = load_glyph(character, pixel_size);
+        width += glyph != nullptr ? static_cast<float>(glyph->advance >> 6U) : scale * 0.55F;
+    }
+    return width;
+#else
+    return vector_text_width(text) * scale;
 #endif
 }
 

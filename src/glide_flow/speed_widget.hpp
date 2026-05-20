@@ -21,7 +21,7 @@ private:
 
 class SpeedWidgetRenderer {
 public:
-    void draw(GlesTextRenderer& renderer, SurfaceSize surface, SpeedSample sample) const;
+    void draw(GlesTextRenderer& renderer, SurfaceSize surface, SpeedSample sample, bool compact = false) const;
 
 private:
     static constexpr float ladder_width_ = 50.0F;

@@ -10,9 +10,15 @@ struct AttitudeSample {
     float pitch_degrees {};
 };
 
+struct WindSample {
+    float direction_degrees {};
+    float speed_mps {};
+    bool valid {};
+};
+
 class PerformanceHorizon {
 public:
-    void draw(GlesTextRenderer& renderer, SurfaceSize surface, AttitudeSample attitude) const;
+    void draw(GlesTextRenderer& renderer, SurfaceSize surface, AttitudeSample attitude, WindSample wind = {}) const;
 
 private:
     static constexpr float widget_width_ = 250.0F;
@@ -23,4 +29,3 @@ private:
 };
 
 } // namespace glide::flow
-

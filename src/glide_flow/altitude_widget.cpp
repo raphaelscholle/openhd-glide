@@ -63,6 +63,11 @@ std::string altitude_text(float altitude_m)
     return stream.str();
 }
 
+std::string compact_altitude_text(float altitude_m)
+{
+    return std::to_string(static_cast<int>(std::round(altitude_m)));
+}
+
 float fitted_text_scale(const std::string& text, float requested_scale, float available_width)
 {
     constexpr auto average_glyph_width = 0.58F;
@@ -71,6 +76,23 @@ float fitted_text_scale(const std::string& text, float requested_scale, float av
         return requested_scale;
     }
     return std::max(10.0F, requested_scale * (available_width / estimated_width));
+}
+
+void draw_compact_altitude(GlesTextRenderer& renderer, SurfaceSize surface, AltitudeSample sample)
+{
+    const auto scale = layout_scale(surface);
+    const auto width = 74.0F * scale;
+    const auto height = 66.0F * scale;
+    const auto x = static_cast<float>(surface.width) - 46.0F * scale - width;
+    const auto y = static_cast<float>(surface.height) * 0.5F - 38.0F * scale;
+    const auto label = std::string("ALT");
+    const auto value = compact_altitude_text(sample.altitude_m);
+    const auto label_scale = 9.0F * scale;
+    const auto value_scale = fitted_text_scale(value, 23.0F * scale, width - 12.0F * scale);
+
+    draw_rect(renderer, x, y, width, height, panel_bg, surface);
+    draw_text(renderer, label, x + (width - renderer.measure_text_width(label, label_scale)) * 0.5F, y + 19.0F * scale, label_scale, surface);
+    draw_text(renderer, value, x + (width - renderer.measure_text_width(value, value_scale)) * 0.5F, y + 51.0F * scale, value_scale, surface);
 }
 
 } // namespace
@@ -83,8 +105,13 @@ AltitudeSample SimulatedAltitude::sample(std::chrono::steady_clock::time_point n
     };
 }
 
-void AltitudeWidgetRenderer::draw(GlesTextRenderer& renderer, SurfaceSize surface, AltitudeSample sample) const
+void AltitudeWidgetRenderer::draw(GlesTextRenderer& renderer, SurfaceSize surface, AltitudeSample sample, bool compact) const
 {
+    if (compact) {
+        draw_compact_altitude(renderer, surface, sample);
+        return;
+    }
+
     const auto scale = layout_scale(surface);
     const auto ladder_height = ladder_height_ * scale;
     const auto pointer_width = pointer_width_ * scale;

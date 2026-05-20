@@ -88,6 +88,9 @@ struct Options {
     bool ui_overlay {};
     std::uint32_t ui_debug_color { 0xCC0B1722U };
     std::string ui_buffer_path { "/tmp/openhd-glide-ui.argb" };
+    std::string writeback_record_path {};
+    std::uint32_t writeback_record_frames { 30 };
+    std::uint32_t writeback_record_every { 6 };
 };
 
 Options parse_options(int argc, char** argv)
@@ -167,6 +170,12 @@ Options parse_options(int argc, char** argv)
             options.ui_debug_color = static_cast<std::uint32_t>(std::stoul(argv[++i], nullptr, 0));
         } else if (argument == "--ui-buffer-path" && i + 1 < argc) {
             options.ui_buffer_path = argv[++i];
+        } else if (argument == "--writeback-record" && i + 1 < argc) {
+            options.writeback_record_path = argv[++i];
+        } else if (argument == "--writeback-record-frames" && i + 1 < argc) {
+            options.writeback_record_frames = static_cast<std::uint32_t>(std::stoul(argv[++i]));
+        } else if (argument == "--writeback-record-every" && i + 1 < argc) {
+            options.writeback_record_every = static_cast<std::uint32_t>(std::stoul(argv[++i]));
         }
     }
     return options;
@@ -663,6 +672,15 @@ int run_kms_video_preview(const Options& options)
                     + " height=" + std::to_string(ui_height)
                     + " buffer=" + options.ui_buffer_path);
         }
+        if (!options.writeback_record_path.empty()) {
+            if (!compositor.enable_writeback_recording(
+                    options.writeback_record_path,
+                    options.writeback_record_every,
+                    options.writeback_record_frames)) {
+                glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
+                return 1;
+            }
+        }
     } else {
         if (!legacy_output.create(options.preview_width, options.flow_height, options.display_refresh_hz, options.view_plane_id)) {
             glide::log(glide::LogLevel::error, "OpenHD-Glide", legacy_output.last_error());
@@ -742,9 +760,18 @@ int run_kms_video_preview(const Options& options)
             auto link_sample = simulated_link.sample();
             link_sample.show_coordinates = glide::preview_control::coordinates_overlay_enabled();
             link_overview.draw(flow_renderer, flow_surface, link_sample);
-            performance_horizon.draw(flow_renderer, flow_surface, simulated_attitude.sample());
-            speed_widget.draw(flow_renderer, flow_surface, simulated_speed.sample());
-            altitude_widget.draw(flow_renderer, flow_surface, simulated_altitude.sample());
+            performance_horizon.draw(
+                flow_renderer,
+                flow_surface,
+                simulated_attitude.sample(),
+                glide::flow::WindSample {
+                    .direction_degrees = link_sample.wind_direction_deg,
+                    .speed_mps = link_sample.wind_speed_mps,
+                    .valid = true,
+                });
+            const auto compact_readouts = glide::preview_control::compact_readouts_enabled();
+            speed_widget.draw(flow_renderer, flow_surface, simulated_speed.sample(), compact_readouts);
+            altitude_widget.draw(flow_renderer, flow_surface, simulated_altitude.sample(), compact_readouts);
             flow_renderer.draw(flow_fps_placement, flow_surface);
         }
 
@@ -865,9 +892,18 @@ int run_kms_video_preview(const Options& options)
                     auto link_sample = simulated_link.sample();
                     link_sample.show_coordinates = glide::preview_control::coordinates_overlay_enabled();
                     links.draw(renderer, surface, link_sample);
-                    horizon.draw(renderer, surface, simulated_attitude.sample());
-                    speed.draw(renderer, surface, simulated_speed.sample());
-                    altitude.draw(renderer, surface, simulated_altitude.sample());
+                    horizon.draw(
+                        renderer,
+                        surface,
+                        simulated_attitude.sample(),
+                        glide::flow::WindSample {
+                            .direction_degrees = link_sample.wind_direction_deg,
+                            .speed_mps = link_sample.wind_speed_mps,
+                            .valid = true,
+                        });
+                    const auto compact_readouts = glide::preview_control::compact_readouts_enabled();
+                    speed.draw(renderer, surface, simulated_speed.sample(), compact_readouts);
+                    altitude.draw(renderer, surface, simulated_altitude.sample(), compact_readouts);
                     renderer.draw(fps_placement, surface);
 
                     if (!compositor.publish_rendered_flow_frame()) {
@@ -943,6 +979,9 @@ int run_kms_video_preview(const Options& options)
         if (!compositor.present(frame, update_flow)) {
             glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
             return false;
+        }
+        if (compositor.writeback_recording_finished()) {
+            stop_requested = 1;
         }
         if (update_flow) {
             update_flow_deadline();
@@ -1208,7 +1247,7 @@ int run_kms_video_preview(const Options& options)
     glide::log(glide::LogLevel::info, "OpenHD-Glide", "decoded DMABUF frames are imported directly into DRM and scanned out on a KMS plane");
     glide::preview_control::set_fps_overlay_enabled(true);
     glide::preview_control::set_coordinates_overlay_enabled(true);
-    glide::preview_control::set_coordinates_overlay_enabled(true);
+    glide::preview_control::set_compact_readouts_enabled(false);
     glide::log(
         glide::LogLevel::info,
         "OpenHD-Glide",
@@ -1485,6 +1524,7 @@ int run_preview_stack(char* argv0, const Options& options)
     const auto video_args = view_args(view_executable.c_str(), options);
 
     glide::preview_control::set_fps_overlay_enabled(true);
+    glide::preview_control::set_compact_readouts_enabled(false);
     glide::ipc::Server ipc_server;
     if (!ipc_server.listen_on(options.ipc_socket)) {
         glide::log(glide::LogLevel::error, "OpenHD-Glide", "failed to start IPC server: " + ipc_server.last_error());
@@ -1525,6 +1565,7 @@ int run_preview_stack(char* argv0, const Options& options)
 
     bool fps_enabled = true;
     bool coordinates_enabled = true;
+    bool compact_readouts = false;
 
     while (stop_requested == 0) {
         for (const auto& event : ipc_server.poll()) {
@@ -1532,10 +1573,13 @@ int run_preview_stack(char* argv0, const Options& options)
             if (event.line.rfind("hello ", 0) == 0) {
                 ipc_server.send_line(event.client_id, std::string("state fps ") + (fps_enabled ? "1" : "0"));
                 ipc_server.send_line(event.client_id, std::string("state coords ") + (coordinates_enabled ? "1" : "0"));
+                ipc_server.send_line(event.client_id, std::string("state compact ") + (compact_readouts ? "1" : "0"));
             } else if (event.line == "get fps") {
                 ipc_server.send_line(event.client_id, std::string("state fps ") + (fps_enabled ? "1" : "0"));
             } else if (event.line == "get coords") {
                 ipc_server.send_line(event.client_id, std::string("state coords ") + (coordinates_enabled ? "1" : "0"));
+            } else if (event.line == "get compact") {
+                ipc_server.send_line(event.client_id, std::string("state compact ") + (compact_readouts ? "1" : "0"));
             } else if (event.line == "set fps 0" || event.line == "set fps 1") {
                 fps_enabled = event.line.back() == '1';
                 glide::preview_control::set_fps_overlay_enabled(fps_enabled);
@@ -1544,6 +1588,10 @@ int run_preview_stack(char* argv0, const Options& options)
                 coordinates_enabled = event.line.back() == '1';
                 glide::preview_control::set_coordinates_overlay_enabled(coordinates_enabled);
                 ipc_server.broadcast_line(std::string("state coords ") + (coordinates_enabled ? "1" : "0"));
+            } else if (event.line == "set compact 0" || event.line == "set compact 1") {
+                compact_readouts = event.line.back() == '1';
+                glide::preview_control::set_compact_readouts_enabled(compact_readouts);
+                ipc_server.broadcast_line(std::string("state compact ") + (compact_readouts ? "1" : "0"));
             } else if (event.line.rfind("mav ", 0) == 0) {
                 ipc_server.broadcast_line(event.line);
             } else if (event.line.rfind("ui ", 0) == 0) {
@@ -1602,6 +1650,7 @@ int run_kms_stack(char* argv0, const Options& options)
 
     glide::preview_control::set_fps_overlay_enabled(true);
     glide::preview_control::set_coordinates_overlay_enabled(true);
+    glide::preview_control::set_compact_readouts_enabled(false);
     glide::ipc::Server ipc_server;
     if (!ipc_server.listen_on(options.ipc_socket)) {
         glide::log(glide::LogLevel::error, "OpenHD-Glide", "failed to start IPC server: " + ipc_server.last_error());
@@ -1652,6 +1701,7 @@ int run_kms_stack(char* argv0, const Options& options)
 
     bool fps_enabled = true;
     bool coordinates_enabled = true;
+    bool compact_readouts = false;
 
     while (stop_requested == 0) {
         for (const auto& event : ipc_server.poll()) {
@@ -1659,10 +1709,13 @@ int run_kms_stack(char* argv0, const Options& options)
             if (event.line.rfind("hello ", 0) == 0) {
                 ipc_server.send_line(event.client_id, std::string("state fps ") + (fps_enabled ? "1" : "0"));
                 ipc_server.send_line(event.client_id, std::string("state coords ") + (coordinates_enabled ? "1" : "0"));
+                ipc_server.send_line(event.client_id, std::string("state compact ") + (compact_readouts ? "1" : "0"));
             } else if (event.line == "get fps") {
                 ipc_server.send_line(event.client_id, std::string("state fps ") + (fps_enabled ? "1" : "0"));
             } else if (event.line == "get coords") {
                 ipc_server.send_line(event.client_id, std::string("state coords ") + (coordinates_enabled ? "1" : "0"));
+            } else if (event.line == "get compact") {
+                ipc_server.send_line(event.client_id, std::string("state compact ") + (compact_readouts ? "1" : "0"));
             } else if (event.line == "set fps 0" || event.line == "set fps 1") {
                 fps_enabled = event.line.back() == '1';
                 glide::preview_control::set_fps_overlay_enabled(fps_enabled);
@@ -1671,6 +1724,10 @@ int run_kms_stack(char* argv0, const Options& options)
                 coordinates_enabled = event.line.back() == '1';
                 glide::preview_control::set_coordinates_overlay_enabled(coordinates_enabled);
                 ipc_server.broadcast_line(std::string("state coords ") + (coordinates_enabled ? "1" : "0"));
+            } else if (event.line == "set compact 0" || event.line == "set compact 1") {
+                compact_readouts = event.line.back() == '1';
+                glide::preview_control::set_compact_readouts_enabled(compact_readouts);
+                ipc_server.broadcast_line(std::string("state compact ") + (compact_readouts ? "1" : "0"));
             } else if (event.line.rfind("mav ", 0) == 0) {
                 ipc_server.broadcast_line(event.line);
             } else if (event.line.rfind("ui ", 0) == 0) {

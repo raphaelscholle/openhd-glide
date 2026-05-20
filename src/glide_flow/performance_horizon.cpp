@@ -50,9 +50,63 @@ void draw_horizon_segment(
     renderer.draw_line(rotated_start, rotated_end, thickness, line, surface);
 }
 
+float normalize_degrees(float degrees)
+{
+    return std::fmod(std::fmod(degrees, 360.0F) + 360.0F, 360.0F);
+}
+
+RenderPoint point_from_screen_degrees(RenderPoint origin, float degrees, float distance)
+{
+    const auto radians = degrees * pi / 180.0F;
+    return RenderPoint {
+        .x = origin.x + std::sin(radians) * distance,
+        .y = origin.y - std::cos(radians) * distance,
+    };
+}
+
+void draw_arc(
+    GlesTextRenderer& renderer,
+    RenderPoint center,
+    float radius,
+    float start_degrees,
+    float end_degrees,
+    float thickness,
+    RgbaColor color,
+    SurfaceSize surface)
+{
+    constexpr int segments = 12;
+    auto previous = point_from_screen_degrees(center, start_degrees, radius);
+    for (int i = 1; i <= segments; ++i) {
+        const auto t = static_cast<float>(i) / static_cast<float>(segments);
+        const auto degrees = start_degrees + (end_degrees - start_degrees) * t;
+        const auto current = point_from_screen_degrees(center, degrees, radius);
+        renderer.draw_line(previous, current, thickness, color, surface);
+        previous = current;
+    }
+}
+
+void draw_wind_indicator(GlesTextRenderer& renderer, RenderPoint horizon_center, WindSample wind, float scale, SurfaceSize surface)
+{
+    const RgbaColor glow { .red = 0.02F, .green = 0.95F, .blue = 0.45F, .alpha = 0.34F };
+    const RgbaColor line { .red = 0.60F, .green = 1.0F, .blue = 0.72F, .alpha = 0.92F };
+    const auto speed_kmh = std::max(0.0F, wind.speed_mps * 3.6F);
+    const auto wind_scale = 0.80F + std::min(speed_kmh, 45.0F) / 45.0F * 0.75F;
+    const auto blowing_to_degrees = normalize_degrees(wind.direction_degrees + 180.0F);
+    const auto marker_center = point_from_screen_degrees(horizon_center, blowing_to_degrees, (78.0F + speed_kmh * 0.35F) * scale);
+    const auto arc_center = point_from_screen_degrees(marker_center, blowing_to_degrees + 180.0F, 18.0F * wind_scale * scale);
+    const auto start = blowing_to_degrees - 34.0F;
+    const auto end = blowing_to_degrees + 34.0F;
+
+    for (int i = 0; i < 3; ++i) {
+        const auto radius = (16.0F + static_cast<float>(i) * 8.0F) * wind_scale * scale;
+        draw_arc(renderer, arc_center, radius, start, end, 4.2F * wind_scale * scale, glow, surface);
+        draw_arc(renderer, arc_center, radius, start, end, 1.7F * wind_scale * scale, line, surface);
+    }
+}
+
 } // namespace
 
-void PerformanceHorizon::draw(GlesTextRenderer& renderer, SurfaceSize surface, AttitudeSample attitude) const
+void PerformanceHorizon::draw(GlesTextRenderer& renderer, SurfaceSize surface, AttitudeSample attitude, WindSample wind) const
 {
     const auto scale = std::max(0.70F, std::min(
         static_cast<float>(surface.width) / 1280.0F,
@@ -102,6 +156,10 @@ void PerformanceHorizon::draw(GlesTextRenderer& renderer, SurfaceSize surface, A
         2.0F * scale,
         center_line,
         surface);
+
+    if (wind.valid) {
+        draw_wind_indicator(renderer, center, wind, scale, surface);
+    }
 }
 
 } // namespace glide::flow

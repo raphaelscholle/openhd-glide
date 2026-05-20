@@ -132,6 +132,7 @@ int main(int argc, char** argv)
     glide::ipc::Client ipc;
     glide::mavlink::Snapshot mavlink;
     bool coordinates_enabled = glide::preview_control::coordinates_overlay_enabled();
+    bool compact_readouts = glide::preview_control::compact_readouts_enabled();
     constexpr bool fps_overlay_enabled = false;
 
     if (options.preview) {
@@ -206,12 +207,16 @@ int main(int argc, char** argv)
                 if (line == "state coords 0" || line == "state coords 1") {
                     coordinates_enabled = line.back() == '1';
                     glide::preview_control::set_coordinates_overlay_enabled(coordinates_enabled);
+                } else if (line == "state compact 0" || line == "state compact 1") {
+                    compact_readouts = line.back() == '1';
+                    glide::preview_control::set_compact_readouts_enabled(compact_readouts);
                 } else {
                     glide::mavlink::apply_ipc_line(mavlink, line);
                 }
             }
         } else {
             coordinates_enabled = glide::preview_control::coordinates_overlay_enabled();
+            compact_readouts = glide::preview_control::compact_readouts_enabled();
         }
 
         options.surface = options.preview ? preview_window.surface_size() : options.surface;
@@ -229,9 +234,17 @@ int main(int argc, char** argv)
             auto link_sample = simulated_link.sample();
             link_sample.show_coordinates = coordinates_enabled;
             link_overview.draw(renderer, options.surface, link_sample);
-            performance_horizon.draw(renderer, options.surface, simulated_attitude.sample());
-            speed_widget.draw(renderer, options.surface, simulated_speed.sample());
-            altitude_widget.draw(renderer, options.surface, simulated_altitude.sample());
+            performance_horizon.draw(
+                renderer,
+                options.surface,
+                simulated_attitude.sample(),
+                glide::flow::WindSample {
+                    .direction_degrees = link_sample.wind_direction_deg,
+                    .speed_mps = link_sample.wind_speed_mps,
+                    .valid = true,
+                });
+            speed_widget.draw(renderer, options.surface, simulated_speed.sample(), compact_readouts);
+            altitude_widget.draw(renderer, options.surface, simulated_altitude.sample(), compact_readouts);
             if (fps_overlay_enabled) {
                 renderer.draw(placement, options.surface);
             }

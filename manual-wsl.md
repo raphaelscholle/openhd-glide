@@ -90,7 +90,7 @@ PowerShell form:
 wsl -d Ubuntu-22.04 -- openhd-glide --preview-stack --preview-width 1280 --flow-height 720 --ui-width 760 --preview-x 60 --preview-y 40 --ui-opacity 1.0
 ```
 
-The UI `OSD` panel has switches for the video FPS overlay and the Flow coordinate block. The coordinate switch sends `set coords 0/1` through the preview IPC socket, and Flow renders coordinates in a small block just above the bottom bar on the right.
+The UI `OSD` panel has switches for the video FPS overlay and the compact Flow coordinate field. The coordinate switch sends `set coords 0/1` through the preview IPC socket.
 
 ## Rebuild And Reinstall
 
