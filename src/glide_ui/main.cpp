@@ -2,6 +2,7 @@
 #include "common/logging.hpp"
 #include "common/mavlink_state.hpp"
 #include "common/preview_control.hpp"
+#include "glide_ui/minimap_widget.hpp"
 
 #if OPENHD_GLIDE_HAS_LVGL
 #include "lvgl.h"
@@ -19,6 +20,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -130,6 +133,12 @@ enum class SidebarPanel {
     developer = 8,
 };
 
+enum class OverlayMode {
+    menu,
+    minimap,
+    hidden,
+};
+
 struct UiState {
     glide::ipc::Client ipc;
     glide::mavlink::Snapshot mavlink;
@@ -139,6 +148,7 @@ struct UiState {
     bool advanced_visible {};
     bool focus_panel {};
     bool panel_rebuild_pending {};
+    OverlayMode overlay_mode { OverlayMode::menu };
     int selected_row {};
     int row_count {};
     std::chrono::steady_clock::time_point next_control_file_poll {};
@@ -156,6 +166,9 @@ struct UiState {
     lv_obj_t* scan_bar {};
     lv_obj_t* scan_percent {};
     lv_obj_t* nav_buttons[9] {};
+    std::unique_ptr<glide::ui::MinimapWidget> minimap;
+    std::chrono::steady_clock::time_point minimap_started {};
+    std::chrono::steady_clock::time_point minimap_last_render {};
 };
 
 struct BufferDisplay {
@@ -517,6 +530,7 @@ void setup_panel_column(lv_obj_t* body, int pad = 14)
 
 void set_active_panel(UiState& state, SidebarPanel panel);
 void build_sidebar(UiState& state, std::uint32_t width, std::uint32_t height);
+void build_overlay(UiState& state, std::uint32_t width, std::uint32_t height);
 
 bool panel_uses_mavlink(SidebarPanel panel)
 {
@@ -544,9 +558,36 @@ void rebuild_ui(UiState& state)
     }
     const auto width = lv_obj_get_width(state.root);
     const auto height = lv_obj_get_height(state.root);
+    state.minimap.reset();
     lv_obj_clean(state.root);
-    build_sidebar(state, static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
+    build_overlay(state, static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
     state.panel_rebuild_pending = false;
+}
+
+void cycle_overlay_from_menu_key(UiState& state)
+{
+    if (state.overlay_mode == OverlayMode::hidden) {
+        state.overlay_mode = OverlayMode::menu;
+    } else if (state.overlay_mode == OverlayMode::menu) {
+        state.overlay_mode = OverlayMode::minimap;
+    } else {
+        state.overlay_mode = OverlayMode::hidden;
+    }
+    state.focus_panel = false;
+    rebuild_ui(state);
+}
+
+void cycle_overlay_from_map_key(UiState& state)
+{
+    if (state.overlay_mode == OverlayMode::hidden) {
+        state.overlay_mode = OverlayMode::minimap;
+    } else if (state.overlay_mode == OverlayMode::minimap) {
+        state.overlay_mode = OverlayMode::menu;
+    } else {
+        state.overlay_mode = OverlayMode::hidden;
+    }
+    state.focus_panel = false;
+    rebuild_ui(state);
 }
 
 void apply_terminal_key(UiState& state, const std::string& line)
@@ -555,6 +596,27 @@ void apply_terminal_key(UiState& state, const std::string& line)
         return;
     }
     const auto key = line.substr(7);
+    if (key == "m" || key == "menu") {
+        cycle_overlay_from_menu_key(state);
+        return;
+    }
+    if (key == "n" || key == "map") {
+        cycle_overlay_from_map_key(state);
+        return;
+    }
+    if ((key == "+" || key == "=" || key == "zoom-in") && state.overlay_mode == OverlayMode::minimap && state.minimap) {
+        state.minimap->set_zoom(state.minimap->zoom() + 1);
+        state.minimap->render();
+        return;
+    }
+    if ((key == "-" || key == "_" || key == "zoom-out") && state.overlay_mode == OverlayMode::minimap && state.minimap) {
+        state.minimap->set_zoom(state.minimap->zoom() - 1);
+        state.minimap->render();
+        return;
+    }
+    if (state.overlay_mode != OverlayMode::menu) {
+        return;
+    }
     auto index = static_cast<int>(state.active_panel);
     if (key == "up") {
         if (state.focus_panel) {
@@ -627,6 +689,22 @@ void keyboard_event(lv_event_t* event)
     }
 
     switch (lv_event_get_key(event)) {
+    case 'm':
+    case 'M':
+        dispatch_key(*state, "m");
+        break;
+    case 'n':
+    case 'N':
+        dispatch_key(*state, "n");
+        break;
+    case '+':
+    case '=':
+        dispatch_key(*state, "+");
+        break;
+    case '-':
+    case '_':
+        dispatch_key(*state, "-");
+        break;
     case LV_KEY_UP:
         dispatch_key(*state, "up");
         break;
@@ -1090,6 +1168,82 @@ void build_sidebar(UiState& state, std::uint32_t width, std::uint32_t height)
     }
 }
 
+void build_minimap_card(UiState& state, std::uint32_t width, std::uint32_t height)
+{
+    auto* screen = lv_screen_active();
+    state.root = screen;
+    set_panel_style(screen, 0x000000, LV_OPA_TRANSP);
+
+    const int safe_width = static_cast<int>(std::max<std::uint32_t>(width, 220));
+    const int safe_height = static_cast<int>(std::max<std::uint32_t>(height, 220));
+    const int diameter = std::clamp(std::min(safe_width, safe_height) - 32, 180, 360);
+
+    auto* shadow = lv_obj_create(screen);
+    set_panel_style(shadow, 0x000000, LV_OPA_50);
+    lv_obj_set_style_radius(shadow, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_size(shadow, diameter + 18, diameter + 18);
+    lv_obj_align(shadow, LV_ALIGN_BOTTOM_LEFT, 16, -16);
+
+    auto* frame = lv_obj_create(screen);
+    set_panel_style(frame, 0x050808, LV_OPA_COVER);
+    lv_obj_set_style_radius(frame, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(frame, 2, 0);
+    lv_obj_set_style_border_color(frame, color(0xe9d8b5), 0);
+    lv_obj_set_style_pad_all(frame, 8, 0);
+    lv_obj_set_size(frame, diameter, diameter);
+    lv_obj_align(frame, LV_ALIGN_BOTTOM_LEFT, 20, -20);
+
+    glide::ui::MinimapOptions options;
+    options.tile_root = std::getenv("GLIDE_MINIMAP_TILE_ROOT") != nullptr ? std::getenv("GLIDE_MINIMAP_TILE_ROOT") : "assets/maps";
+    options.zoom = std::getenv("GLIDE_MINIMAP_ZOOM") != nullptr ? std::stoi(std::getenv("GLIDE_MINIMAP_ZOOM")) : 15;
+    options.grid_tiles = std::getenv("GLIDE_MINIMAP_GRID") != nullptr ? std::stoi(std::getenv("GLIDE_MINIMAP_GRID")) : 5;
+    options.round = true;
+    state.minimap = std::make_unique<glide::ui::MinimapWidget>(frame, diameter - 16, diameter - 16, options);
+    lv_obj_center(state.minimap->object());
+    state.minimap_started = std::chrono::steady_clock::now();
+    state.minimap_last_render = {};
+}
+
+void build_overlay(UiState& state, std::uint32_t width, std::uint32_t height)
+{
+    state.minimap.reset();
+    if (state.overlay_mode == OverlayMode::menu) {
+        build_sidebar(state, width, height);
+        return;
+    }
+    auto* screen = lv_screen_active();
+    state.root = screen;
+    set_panel_style(screen, 0x000000, LV_OPA_TRANSP);
+    if (state.overlay_mode == OverlayMode::minimap) {
+        build_minimap_card(state, width, height);
+    }
+}
+
+void update_minimap(UiState& state, std::chrono::steady_clock::time_point now)
+{
+    if (state.overlay_mode != OverlayMode::minimap || !state.minimap) {
+        return;
+    }
+    if (state.minimap_last_render.time_since_epoch().count() != 0 && now - state.minimap_last_render < std::chrono::milliseconds(100)) {
+        return;
+    }
+    constexpr double home_lat = 38.8976763;
+    constexpr double home_lon = -77.0365298;
+    const double seconds = std::chrono::duration<double>(now - state.minimap_started).count();
+    const double progress = std::min(1.0, seconds / 240.0);
+    const double eased = progress * progress * (3.0 - 2.0 * progress);
+    constexpr double city_lat = 38.8951100;
+    constexpr double city_lon = -77.0219570;
+    state.minimap->set_home(home_lat, home_lon);
+    state.minimap->set_position(glide::ui::MinimapPosition {
+        .latitude_deg = home_lat + (city_lat - home_lat) * eased,
+        .longitude_deg = home_lon + (city_lon - home_lon) * eased,
+        .heading_deg = 102.0F,
+    });
+    state.minimap->render();
+    state.minimap_last_render = now;
+}
+
 void poll_ipc(UiState& state, std::chrono::steady_clock::time_point now)
 {
     if (!state.ipc.connected()) {
@@ -1227,7 +1381,7 @@ int main(int argc, char** argv)
         glide::log(glide::LogLevel::warning, "GlideUI", "IPC controller unavailable; using preview fallback state");
     }
 
-    build_sidebar(state, options.width, options.height);
+    build_overlay(state, options.width, options.height);
 
     auto last_tick = std::chrono::steady_clock::now();
     constexpr auto ui_frame_interval = std::chrono::milliseconds(33);
@@ -1240,6 +1394,7 @@ int main(int argc, char** argv)
         }
 
         poll_ipc(state, now);
+        update_minimap(state, now);
         lv_timer_handler();
         std::this_thread::sleep_for(ui_frame_interval);
     }

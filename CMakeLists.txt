@@ -17,6 +17,9 @@ endif()
 
 option(OPENHD_GLIDE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 option(OPENHD_GLIDE_DEVICE_KMS "Enable the device-oriented DRM/KMS runtime mode" ON)
+set(OPENHD_GLIDE_PACKAGE_SUFFIX "" CACHE STRING "Optional suffix for the Debian package name")
+set(OPENHD_GLIDE_PACKAGE_VERSION "${PROJECT_VERSION}" CACHE STRING "Debian package version")
+set(OPENHD_GLIDE_PACKAGE_ARCHITECTURE "" CACHE STRING "Debian package architecture")
 
 add_library(glide_common
     src/common/ipc.cpp
@@ -48,6 +51,7 @@ endif()
 
 find_package(PkgConfig QUIET)
 find_package(Threads REQUIRED)
+find_package(ZLIB REQUIRED)
 if(PkgConfig_FOUND)
     pkg_check_modules(LIBDRM QUIET libdrm)
     pkg_check_modules(GBM QUIET gbm)
@@ -286,6 +290,24 @@ else()
 endif()
 target_compile_definitions(glide-ui PRIVATE OPENHD_GLIDE_HAS_LVGL=1)
 
+add_library(glide_minimap
+    src/glide_ui/minimap_widget.cpp
+)
+target_link_libraries(glide_minimap PUBLIC glide_common lvgl ZLIB::ZLIB)
+target_include_directories(glide_minimap PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(glide-ui PRIVATE glide_minimap)
+
+add_executable(glide-minimap-demo src/glide_ui/minimap_demo.cpp)
+target_link_libraries(glide-minimap-demo PRIVATE glide_minimap)
+if(SDL2_FOUND)
+    target_compile_definitions(glide-minimap-demo PRIVATE OPENHD_GLIDE_HAS_LVGL_SDL=1)
+    target_include_directories(glide-minimap-demo PRIVATE ${SDL2_INCLUDE_DIRS})
+    target_link_libraries(glide-minimap-demo PRIVATE lvgl ${SDL2_LIBRARIES})
+    target_link_directories(glide-minimap-demo PRIVATE ${SDL2_LIBRARY_DIRS})
+else()
+    target_compile_definitions(glide-minimap-demo PRIVATE OPENHD_GLIDE_HAS_LVGL_SDL=0)
+endif()
+
 add_executable(glide-flow src/glide_flow/main.cpp)
 target_link_libraries(glide-flow PRIVATE glide_flow_core glide_dev)
 if(OPENHD_GLIDE_DEVICE_KMS)
@@ -300,8 +322,15 @@ install(
         glide-view
         glide-flow
         glide-ui
+        glide-minimap-demo
         glide-send
     RUNTIME DESTINATION bin
+)
+
+install(
+    PROGRAMS
+        scripts/generate_fake_minimap_tiles.py
+    DESTINATION share/openhd-glide/scripts
 )
 
 install(
@@ -320,6 +349,24 @@ install(
         examples/stream-videotestsrc-to-glide-view.sh
         examples/run-wsl-flow-preview.sh
         examples/run-wsl-ui-preview.sh
+        examples/run-wsl-minimap-preview.sh
         examples/run-wsl-video-decode.sh
     DESTINATION share/openhd-glide/examples
 )
+
+set(CPACK_PACKAGE_NAME "openhd-glide${OPENHD_GLIDE_PACKAGE_SUFFIX}")
+set(CPACK_PACKAGE_VENDOR "OpenHD")
+set(CPACK_PACKAGE_CONTACT "OpenHD <contact@openhdfpv.org>")
+set(CPACK_PACKAGE_VERSION "${OPENHD_GLIDE_PACKAGE_VERSION}")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "OpenHD Glide DRM/KMS rendering stack")
+set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")
+set(CPACK_GENERATOR "DEB")
+if(OPENHD_GLIDE_PACKAGE_ARCHITECTURE)
+    set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "${OPENHD_GLIDE_PACKAGE_ARCHITECTURE}")
+endif()
+set(CPACK_DEBIAN_PACKAGE_SECTION "video")
+set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+set(CPACK_DEBIAN_PACKAGE_DEPENDS "libc6, libstdc++6, libdrm2, libgbm1, libegl1, libgles2, libfreetype6, zlib1g, libgstreamer1.0-0, libgstreamer-plugins-base1.0-0")
+set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+include(CPack)

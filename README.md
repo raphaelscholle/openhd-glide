@@ -251,12 +251,16 @@ The WSL helper scripts can also run each worker independently:
 examples/run-wsl-video-decode.sh 5600 h264
 examples/run-wsl-flow-preview.sh
 examples/run-wsl-ui-preview.sh
+examples/run-wsl-minimap-preview.sh
 ```
 
 For WSL development, `openhd-glide --preview-stack` starts `glide-flow` first and then places a
 `glide-ui` LVGL/SDL preview over the left side. In WSL, the UI preview is kept as a sidebar surface to avoid
 covering the Flow preview. The sidebar contains a `MISC` panel with an FPS overlay toggle wired through the
 controller Unix socket.
+The UI preview also owns the LVGL minimap layer. Press `M` to cycle menu -> minimap -> hidden, or press `N` to
+cycle minimap -> menu -> hidden. When the minimap is visible, `+` zooms in and `-` zooms out. The two views share one
+layer and are never displayed at the same time.
 The layout can be adjusted:
 
 ```sh
@@ -264,6 +268,56 @@ The layout can be adjusted:
 ```
 
 The default development IPC socket is `/tmp/openhd-glide.sock`; override it with `--ipc-socket <path>`.
+
+### LVGL minimap demo
+
+`glide-minimap-demo` is a standalone LVGL/SDL preview for the reusable minimap widget in
+`src/glide_ui/minimap_widget.*`. It is intentionally offline-only: it reads local raster PNG tiles from
+`assets/maps/{z}/{x}/{y}.png`, uses Web Mercator tile math, caches decoded tiles, and draws a small 3x3 or 5x5
+tile grid with the aircraft kept centered. The demo simulates aircraft motion and heading, and renders the home
+marker, route trail, aircraft icon, and border into a raster LVGL canvas. The map is heading-up: the card aligns to
+the current flight direction while the outer compass ring shows N/S/E/W and heading ticks.
+If a requested local tile is missing, the widget creates a deterministic free offline test tile at that path before
+rendering it, so `glide-minimap-demo --preview` works from a clean directory without paid APIs or tile downloads.
+
+Generate the tiny fake local tile set and run it on WSL/Linux:
+
+```sh
+python3 scripts/generate_fake_minimap_tiles.py --root assets/maps --zoom 15
+cmake -S . -B build-wsl
+cmake --build build-wsl --target glide-minimap-demo -j"$(nproc)"
+./build-wsl/glide-minimap-demo --preview --width 420 --height 420 --tile-root assets/maps --zoom 15
+```
+
+For a Linux buffer backend smoke test, use:
+
+```sh
+./build-wsl/glide-minimap-demo --buffer --width 420 --height 420 --tile-root assets/maps --zoom 15 --buffer-path /tmp/openhd-glide-minimap.argb
+```
+
+The helper script does the same build and tile generation steps:
+
+```sh
+examples/run-wsl-minimap-preview.sh
+```
+
+`examples/run-wsl-ui-preview.sh` also generates the fake minimap tiles and exports `GLIDE_MINIMAP_TILE_ROOT`, so the
+integrated UI preview can show the round minimap with `M` or `N` immediately. Use `+` and `-` to zoom the map.
+
+To install the WSL build into `~/.local`:
+
+```sh
+cmake -S . -B build-wsl -DCMAKE_INSTALL_PREFIX="$HOME/.local"
+cmake --build build-wsl --target glide-ui glide-minimap-demo -j"$(nproc)"
+cmake --install build-wsl
+python3 "$HOME/.local/share/openhd-glide/scripts/generate_fake_minimap_tiles.py" --root "$HOME/.local/share/openhd-glide/assets/maps" --zoom 15
+GLIDE_MINIMAP_TILE_ROOT="$HOME/.local/share/openhd-glide/assets/maps" "$HOME/.local/bin/glide-ui" --preview --width 760 --height 720
+```
+
+No paid map APIs are used. The fake generator creates only a small deterministic terrain tile fixture around the demo
+home position: elevation shading, forest patches, lowlands/water, and contour/ridge lines. Real deployments should
+place their own offline terrain tiles under the same `assets/maps/{z}/{x}/{y}.png` layout. Missing real tiles are
+replaced by generated offline terrain test tiles, never fetched from the network.
 
 Terminal and MAVLink-state IPC helpers:
 
