@@ -23,12 +23,12 @@ std::string fixed_1(float value)
     return stream.str();
 }
 
-RgbaColor quality_color(const OsdTheme& theme, int value)
+RgbaColor quality_color(int value)
 {
-    if (value >= 70) {
-        return theme.primary;
+    if (value > 60) {
+        return RgbaColor { .red = 0.30F, .green = 1.0F, .blue = 0.36F, .alpha = 0.92F };
     }
-    if (value >= 35) {
+    if (value >= 20) {
         return warn_color;
     }
     return bad_color;
@@ -114,7 +114,7 @@ void draw_skew_blocks(GlesTextRenderer& renderer, float x, float y, int value, S
     for (int i = 0; i < count; ++i) {
         const auto bx = x + static_cast<float>(i) * (block_width + skew + spacing);
         const auto active = value >= (i + 1) * 10;
-        const auto base = active ? quality_color(theme, value) : muted_color;
+        const auto base = active ? quality_color(value) : muted_color;
         const RgbaColor fill {
             .red = base.red,
             .green = base.green,
@@ -129,10 +129,10 @@ void draw_skew_blocks(GlesTextRenderer& renderer, float x, float y, int value, S
             { bx + block_width, y + block_height },
             fill,
             surface);
-        renderer.draw_line({ bx, y + block_height }, { bx + skew, y }, sx(1.2F, scale), theme.secondary, surface);
-        renderer.draw_line({ bx + skew, y }, { bx + block_width + skew, y }, sx(1.2F, scale), theme.secondary, surface);
-        renderer.draw_line({ bx + block_width + skew, y }, { bx + block_width, y + block_height }, sx(1.2F, scale), theme.secondary, surface);
-        renderer.draw_line({ bx + block_width, y + block_height }, { bx, y + block_height }, sx(1.2F, scale), theme.secondary, surface);
+        renderer.draw_line({ bx, y + block_height }, { bx + skew, y }, sx(1.2F, scale), base, surface);
+        renderer.draw_line({ bx + skew, y }, { bx + block_width + skew, y }, sx(1.2F, scale), base, surface);
+        renderer.draw_line({ bx + block_width + skew, y }, { bx + block_width, y + block_height }, sx(1.2F, scale), base, surface);
+        renderer.draw_line({ bx + block_width, y + block_height }, { bx, y + block_height }, sx(1.2F, scale), base, surface);
     }
 }
 
@@ -145,8 +145,8 @@ void draw_left(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOvervi
     const auto height = sx(72.0F, scale);
 
     draw_panel_left(renderer, x, y, width, height, surface, theme);
-    renderer.set_text_color(theme.bar_font);
-    renderer.draw_circle_outline({ x + sx(26.0F, scale), y + sx(28.0F, scale) }, sx(16.0F, scale), sx(2.0F, scale), theme.secondary, surface);
+    renderer.set_text_color(theme.text);
+    renderer.draw_circle_outline({ x + sx(26.0F, scale), y + sx(28.0F, scale) }, sx(16.0F, scale), sx(2.0F, scale), theme.text, surface);
     draw_text(renderer, "O", x + sx(17.0F, scale), y + sx(36.0F, scale), sx(16.0F, scale), surface);
     draw_text(
         renderer,
@@ -184,8 +184,8 @@ void draw_right(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverv
         sx(15.0F, scale),
         surface);
 
-    renderer.set_text_color(theme.bar_font);
-    const auto record_color = sample.recording ? bad_color : theme.bar_font;
+    renderer.set_text_color(theme.text);
+    const auto record_color = sample.recording ? bad_color : theme.text;
     renderer.draw_circle_outline({ x + width - sx(24.0F, scale), y + sx(33.0F, scale) }, sx(8.0F, scale), sx(3.0F, scale), record_color, surface);
     draw_skew_blocks(renderer, x + sx(162.0F, scale), y + sx(50.0F, scale), sample.rc_quality, surface, theme);
 }
@@ -372,7 +372,7 @@ void draw_bottom(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOver
 
     draw_gps_position(renderer, surface, sample);
     draw_bottom_panel(renderer, surface, theme);
-    renderer.set_text_color(theme.bar_font);
+    renderer.set_text_color(theme.text);
     draw_text(renderer, mode, center_x - mode_width * 0.5F, y + sx(21.0F, scale), mode_scale, surface);
     draw_text(renderer, timer, center_x - timer_width * 0.5F, y + sx(35.0F, scale), timer_scale, surface);
     draw_bottom_slots(renderer, primary_bottom_slots(sample), side_margin, left_width, side_baseline, scale, surface);

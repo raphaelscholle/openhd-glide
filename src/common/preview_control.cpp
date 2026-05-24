@@ -39,17 +39,11 @@ std::filesystem::path theme_color_path(const std::string& key)
 
 std::uint32_t default_theme_color(const std::string& key)
 {
-    if (key == "bar_font") {
+    if (key == "bar_text") {
         return 0xebf5ff;
     }
     if (key == "bar_background") {
         return 0x0e1318;
-    }
-    if (key == "primary") {
-        return 0x99ffb8;
-    }
-    if (key == "secondary") {
-        return 0x55a8ff;
     }
     return 0xffffff;
 }

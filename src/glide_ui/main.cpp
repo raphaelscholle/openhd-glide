@@ -162,10 +162,8 @@ struct UiState {
     bool coordinates_enabled { true };
     bool compact_readouts { false };
     std::string osd_layout { "drone" };
-    std::uint32_t theme_bar_font { 0xebf5ff };
+    std::uint32_t theme_bar_text { 0xebf5ff };
     std::uint32_t theme_bar_background { 0x0e1318 };
-    std::uint32_t theme_primary { 0x99ffb8 };
-    std::uint32_t theme_secondary { 0x55a8ff };
     bool advanced_visible {};
     bool focus_panel {};
     bool panel_rebuild_pending {};
@@ -186,8 +184,8 @@ struct UiState {
     lv_obj_t* compact_label {};
     lv_obj_t* osd_dropdown {};
     lv_obj_t* osd_label {};
-    std::array<lv_obj_t*, 4> theme_dropdowns {};
-    std::array<lv_obj_t*, 4> theme_labels {};
+    std::array<lv_obj_t*, 2> theme_dropdowns {};
+    std::array<lv_obj_t*, 2> theme_labels {};
     lv_obj_t* scan_bar {};
     lv_obj_t* scan_percent {};
     lv_obj_t* nav_buttons[10] {};
@@ -532,36 +530,27 @@ constexpr std::array<ColorPreset, 9> color_presets {{
     { "Graphite", 0x0e1318 },
 }};
 
-constexpr std::array<const char*, 4> theme_keys {{ "bar_font", "bar_background", "primary", "secondary" }};
-constexpr std::array<const char*, 4> theme_labels {{ "Bar font", "Bar background", "Primary", "Secondary" }};
+constexpr std::array<const char*, 2> theme_keys {{ "bar_text", "bar_background" }};
+constexpr std::array<const char*, 2> theme_labels {{ "Font color", "Background color" }};
 
 std::uint32_t default_theme_color(const char* key)
 {
     const std::string name { key };
-    if (name == "bar_font") {
+    if (name == "bar_text") {
         return 0xebf5ff;
     }
     if (name == "bar_background") {
         return 0x0e1318;
     }
-    if (name == "secondary") {
-        return 0x55a8ff;
-    }
-    return 0x99ffb8;
+    return 0xffffff;
 }
 
 std::uint32_t& theme_color_ref(UiState& state, std::size_t index)
 {
     if (index == 0U) {
-        return state.theme_bar_font;
+        return state.theme_bar_text;
     }
-    if (index == 1U) {
-        return state.theme_bar_background;
-    }
-    if (index == 2U) {
-        return state.theme_primary;
-    }
-    return state.theme_secondary;
+    return state.theme_bar_background;
 }
 
 std::uint32_t preset_rgb_for_index(std::size_t channel, std::uint16_t preset)
@@ -638,8 +627,7 @@ void sync_theme_controls(UiState& state)
             lv_dropdown_set_selected(state.theme_dropdowns[i], preset_index_for_rgb(i, theme_color_ref(state, i)));
         }
         if (state.theme_labels[i] != nullptr) {
-            const auto text = std::string(theme_labels[i]) + " #" + rgb_hex(theme_color_ref(state, i));
-            lv_label_set_text(state.theme_labels[i], text.c_str());
+            lv_label_set_text(state.theme_labels[i], theme_labels[i]);
         }
     }
 }
@@ -864,7 +852,7 @@ void apply_terminal_key(UiState& state, const std::string& line)
             state.compact_readouts = !state.compact_readouts;
             sync_compact_readouts_controls(state);
             send_compact_readouts_state(state);
-        } else if (state.active_panel == SidebarPanel::colors && state.selected_row >= 0 && state.selected_row <= 3) {
+        } else if (state.active_panel == SidebarPanel::colors && state.selected_row >= 0 && state.selected_row <= 1) {
             const auto index = static_cast<std::size_t>(state.selected_row);
             const auto current = preset_index_for_rgb(index, theme_color_ref(state, index));
             const auto next = static_cast<std::uint16_t>((current + 1U) % color_presets.size());

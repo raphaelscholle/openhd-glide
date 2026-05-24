@@ -62,7 +62,7 @@ std::string rgb_hex(std::uint32_t rgb)
 
 void send_theme_state(glide::ipc::Server& ipc_server, int client_id)
 {
-    for (const auto* key : { "bar_font", "bar_background", "primary", "secondary" }) {
+    for (const auto* key : { "bar_text", "bar_background" }) {
         ipc_server.send_line(client_id, std::string("state theme ") + key + " " + rgb_hex(glide::preview_control::theme_color(key)));
     }
 }

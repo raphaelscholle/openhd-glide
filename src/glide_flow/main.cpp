@@ -125,10 +125,8 @@ glide::flow::RgbaColor color_from_rgb(std::uint32_t rgb, float alpha)
 glide::flow::OsdTheme load_theme()
 {
     return glide::flow::OsdTheme {
-        .bar_font = color_from_rgb(glide::preview_control::theme_color("bar_font"), 0.98F),
+        .text = color_from_rgb(glide::preview_control::theme_color("bar_text"), 0.98F),
         .bar_background = color_from_rgb(glide::preview_control::theme_color("bar_background"), 0.94F),
-        .primary = color_from_rgb(glide::preview_control::theme_color("primary"), 0.90F),
-        .secondary = color_from_rgb(glide::preview_control::theme_color("secondary"), 0.90F),
     };
 }
 
