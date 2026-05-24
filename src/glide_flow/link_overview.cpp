@@ -370,9 +370,9 @@ void draw_bottom(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOver
     const auto mode_width = renderer.measure_text_width(mode, mode_scale);
     const auto timer_width = renderer.measure_text_width(timer, timer_scale);
 
-    draw_gps_position(renderer, surface, sample);
     draw_bottom_panel(renderer, surface, theme);
     renderer.set_text_color(theme.text);
+    draw_gps_position(renderer, surface, sample);
     draw_text(renderer, mode, center_x - mode_width * 0.5F, y + sx(21.0F, scale), mode_scale, surface);
     draw_text(renderer, timer, center_x - timer_width * 0.5F, y + sx(35.0F, scale), timer_scale, surface);
     draw_bottom_slots(renderer, primary_bottom_slots(sample), side_margin, left_width, side_baseline, scale, surface);

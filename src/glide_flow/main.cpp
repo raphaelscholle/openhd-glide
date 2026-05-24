@@ -309,7 +309,7 @@ int main(int argc, char** argv)
             }
             if (osd_layout == "rocket") {
                 link_overview.draw_top(renderer, options.surface, link_sample, theme);
-                rocket_osd.draw(renderer, options.surface, simulated_rocket.sample());
+                rocket_osd.draw(renderer, options.surface, simulated_rocket.sample(), theme);
             } else if (osd_layout == "rover") {
                 link_overview.draw(renderer, options.surface, link_sample, theme);
                 rover_osd.draw(renderer, options.surface, simulated_rover.sample());

@@ -157,7 +157,7 @@ void draw_side_readouts(GlesTextRenderer& renderer, SurfaceSize surface, const R
     draw_status_panel(renderer, sample, right_x, top_safe + sx(18.0F, scale), scale, surface);
 }
 
-void draw_bottom_panel(GlesTextRenderer& renderer, SurfaceSize surface)
+void draw_bottom_panel(GlesTextRenderer& renderer, SurfaceSize surface, const OsdTheme& theme)
 {
     const auto scale = layout_scale(surface);
     const auto height = sx(40.0F, scale);
@@ -174,11 +174,11 @@ void draw_bottom_panel(GlesTextRenderer& renderer, SurfaceSize surface)
     const auto notch_right = std::min(width - sx(6.0F, scale), notch_end + notch_slope);
     const auto bottom_y = y + height;
 
-    renderer.draw_filled_quad({ 0.0F, top_y }, { notch_left, top_y }, { 0.0F, bottom_y }, { notch_left, bottom_y }, panel_bg, surface);
-    renderer.draw_filled_quad({ notch_right, top_y }, { width, top_y }, { notch_right, bottom_y }, { width, bottom_y }, panel_bg, surface);
-    renderer.draw_filled_quad({ notch_left, top_y }, { notch_start, notch_top_y }, { notch_left, bottom_y }, { notch_start, bottom_y }, panel_bg, surface);
-    renderer.draw_filled_quad({ notch_start, notch_top_y }, { notch_end, notch_top_y }, { notch_start, bottom_y }, { notch_end, bottom_y }, panel_bg, surface);
-    renderer.draw_filled_quad({ notch_end, notch_top_y }, { notch_right, top_y }, { notch_end, bottom_y }, { notch_right, bottom_y }, panel_bg, surface);
+    renderer.draw_filled_quad({ 0.0F, top_y }, { notch_left, top_y }, { 0.0F, bottom_y }, { notch_left, bottom_y }, theme.bar_background, surface);
+    renderer.draw_filled_quad({ notch_right, top_y }, { width, top_y }, { notch_right, bottom_y }, { width, bottom_y }, theme.bar_background, surface);
+    renderer.draw_filled_quad({ notch_left, top_y }, { notch_start, notch_top_y }, { notch_left, bottom_y }, { notch_start, bottom_y }, theme.bar_background, surface);
+    renderer.draw_filled_quad({ notch_start, notch_top_y }, { notch_end, notch_top_y }, { notch_start, bottom_y }, { notch_end, bottom_y }, theme.bar_background, surface);
+    renderer.draw_filled_quad({ notch_end, notch_top_y }, { notch_right, top_y }, { notch_end, bottom_y }, { notch_right, bottom_y }, theme.bar_background, surface);
 }
 
 struct BottomSlot {
@@ -198,7 +198,7 @@ void draw_bottom_slot(GlesTextRenderer& renderer, const BottomSlot& slot, float 
     draw_text(renderer, text, center_x - width * 0.5F, baseline, font_scale, surface);
 }
 
-void draw_bottom_bars(GlesTextRenderer& renderer, SurfaceSize surface, const RocketOsdSample& sample)
+void draw_bottom_bars(GlesTextRenderer& renderer, SurfaceSize surface, const RocketOsdSample& sample, const OsdTheme& theme)
 {
     const auto scale = layout_scale(surface);
     const auto height = sx(40.0F, scale);
@@ -227,7 +227,8 @@ void draw_bottom_bars(GlesTextRenderer& renderer, SurfaceSize surface, const Roc
         BottomSlot { "Q", std::to_string(static_cast<int>(std::round(sample.velocity_mps * sample.g_force * 0.08F))) },
     };
 
-    draw_bottom_panel(renderer, surface);
+    draw_bottom_panel(renderer, surface, theme);
+    renderer.set_text_color(theme.text);
     draw_text(renderer, status, center_x - status_width * 0.5F, y + sx(21.0F, scale), status_scale, surface);
     draw_text(renderer, timer, center_x - timer_width * 0.5F, y + sx(35.0F, scale), timer_scale, surface);
     const auto left_slot = left_width / static_cast<float>(left.size());
@@ -337,11 +338,11 @@ RocketOsdSample SimulatedRocketOsd::sample(std::chrono::steady_clock::time_point
     };
 }
 
-void RocketOsdRenderer::draw(GlesTextRenderer& renderer, SurfaceSize surface, const RocketOsdSample& sample) const
+void RocketOsdRenderer::draw(GlesTextRenderer& renderer, SurfaceSize surface, const RocketOsdSample& sample, const OsdTheme& theme) const
 {
     draw_guidance(renderer, surface, sample);
     draw_side_readouts(renderer, surface, sample);
-    draw_bottom_bars(renderer, surface, sample);
+    draw_bottom_bars(renderer, surface, sample, theme);
 }
 
 } // namespace glide::flow
