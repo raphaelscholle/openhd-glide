@@ -48,6 +48,7 @@ private:
 class LinkOverviewRenderer {
 public:
     void draw(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverviewSample& sample) const;
+    void draw_top(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverviewSample& sample) const;
 };
 
 } // namespace glide::flow

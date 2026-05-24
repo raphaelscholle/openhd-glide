@@ -425,4 +425,10 @@ void LinkOverviewRenderer::draw(GlesTextRenderer& renderer, SurfaceSize surface,
     draw_bottom(renderer, surface, sample);
 }
 
+void LinkOverviewRenderer::draw_top(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverviewSample& sample) const
+{
+    draw_left(renderer, surface, sample);
+    draw_right(renderer, surface, sample);
+}
+
 } // namespace glide::flow

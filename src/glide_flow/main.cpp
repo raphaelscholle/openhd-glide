@@ -239,29 +239,30 @@ int main(int argc, char** argv)
 
         if (options.render_gles && renderer.available()) {
             renderer.clear(0.02F, 0.02F, 0.025F, 1.0F, options.surface);
+            auto link_sample = simulated_link.sample();
+            link_sample.show_coordinates = coordinates_enabled;
+            link_sample.armed = mavlink.armed;
+            if (mavlink.flight_mode != "N/A") {
+                link_sample.flight_mode = mavlink.flight_mode.c_str();
+            }
+            if (mavlink.position_valid) {
+                link_sample.latitude_deg = mavlink.latitude_deg;
+                link_sample.longitude_deg = mavlink.longitude_deg;
+                link_sample.height_m = mavlink.altitude_m;
+            }
+            if (mavlink.speed_valid) {
+                link_sample.air_speed_mps = mavlink.airspeed_mps > 0.0F ? mavlink.airspeed_mps : mavlink.ground_speed_mps;
+            }
+            if (mavlink.battery_valid) {
+                link_sample.air_voltage_v = mavlink.voltage_v;
+            }
+            if (mavlink.satellites > 0) {
+                link_sample.satellites = mavlink.satellites;
+            }
             if (osd_layout == "rocket") {
+                link_overview.draw_top(renderer, options.surface, link_sample);
                 rocket_osd.draw(renderer, options.surface, simulated_rocket.sample());
             } else {
-                auto link_sample = simulated_link.sample();
-                link_sample.show_coordinates = coordinates_enabled;
-                link_sample.armed = mavlink.armed;
-                if (mavlink.flight_mode != "N/A") {
-                    link_sample.flight_mode = mavlink.flight_mode.c_str();
-                }
-                if (mavlink.position_valid) {
-                    link_sample.latitude_deg = mavlink.latitude_deg;
-                    link_sample.longitude_deg = mavlink.longitude_deg;
-                    link_sample.height_m = mavlink.altitude_m;
-                }
-                if (mavlink.speed_valid) {
-                    link_sample.air_speed_mps = mavlink.airspeed_mps > 0.0F ? mavlink.airspeed_mps : mavlink.ground_speed_mps;
-                }
-                if (mavlink.battery_valid) {
-                    link_sample.air_voltage_v = mavlink.voltage_v;
-                }
-                if (mavlink.satellites > 0) {
-                    link_sample.satellites = mavlink.satellites;
-                }
                 link_overview.draw(renderer, options.surface, link_sample);
                 const auto attitude_sample = mavlink.attitude_valid
                     ? glide::flow::AttitudeSample { .roll_degrees = mavlink.roll_degrees, .pitch_degrees = mavlink.pitch_degrees }

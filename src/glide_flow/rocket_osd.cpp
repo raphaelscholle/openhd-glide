@@ -16,7 +16,6 @@ constexpr RgbaColor panel_bg { .red = 0.055F, .green = 0.075F, .blue = 0.095F, .
 constexpr RgbaColor panel_line { .red = 0.60F, .green = 1.0F, .blue = 0.72F, .alpha = 0.90F };
 constexpr RgbaColor panel_dim { .red = 0.44F, .green = 0.86F, .blue = 0.84F, .alpha = 0.22F };
 constexpr RgbaColor text_color { .red = 0.92F, .green = 0.96F, .blue = 1.0F, .alpha = 0.96F };
-constexpr RgbaColor muted_color { .red = 0.45F, .green = 0.50F, .blue = 0.52F, .alpha = 0.75F };
 constexpr RgbaColor purple { .red = 0.78F, .green = 0.48F, .blue = 1.0F, .alpha = 0.92F };
 constexpr RgbaColor purple_dim { .red = 0.78F, .green = 0.48F, .blue = 1.0F, .alpha = 0.30F };
 
@@ -72,16 +71,6 @@ RenderPoint polar(RenderPoint center, float degrees, float radius)
     };
 }
 
-void draw_panel_left(GlesTextRenderer& renderer, float x, float y, float width, float height, SurfaceSize surface)
-{
-    renderer.draw_filled_quad({ x, y }, { x + width, y }, { x, y + height }, { x + (width * 0.80F), y + height }, panel_bg, surface);
-}
-
-void draw_panel_right(GlesTextRenderer& renderer, float x, float y, float width, float height, SurfaceSize surface)
-{
-    renderer.draw_filled_quad({ x, y }, { x + width, y }, { x + (width * 0.20F), y + height }, { x + width, y + height }, panel_bg, surface);
-}
-
 void draw_bottom_panel(GlesTextRenderer& renderer, SurfaceSize surface)
 {
     const auto scale = layout_scale(surface);
@@ -104,63 +93,6 @@ void draw_bottom_panel(GlesTextRenderer& renderer, SurfaceSize surface)
     renderer.draw_filled_quad({ notch_left, top_y }, { notch_start, notch_top_y }, { notch_left, bottom_y }, { notch_start, bottom_y }, panel_bg, surface);
     renderer.draw_filled_quad({ notch_start, notch_top_y }, { notch_end, notch_top_y }, { notch_start, bottom_y }, { notch_end, bottom_y }, panel_bg, surface);
     renderer.draw_filled_quad({ notch_end, notch_top_y }, { notch_right, top_y }, { notch_end, bottom_y }, { notch_right, bottom_y }, panel_bg, surface);
-}
-
-void draw_skew_blocks(GlesTextRenderer& renderer, float x, float y, int value, SurfaceSize surface)
-{
-    const auto scale = layout_scale(surface);
-    constexpr int count = 8;
-    const auto block_width = sx(18.0F, scale);
-    const auto block_height = sx(9.0F, scale);
-    const auto skew = sx(5.0F, scale);
-    const auto spacing = sx(4.0F, scale);
-
-    for (int i = 0; i < count; ++i) {
-        const auto bx = x + static_cast<float>(i) * (block_width + skew + spacing);
-        const auto active = value >= (i + 1) * 10;
-        const auto base = active ? panel_line : muted_color;
-        const RgbaColor fill {
-            .red = base.red,
-            .green = base.green,
-            .blue = base.blue,
-            .alpha = active ? 0.92F : 0.18F,
-        };
-        renderer.draw_filled_quad(
-            { bx + skew, y },
-            { bx + block_width + skew, y },
-            { bx, y + block_height },
-            { bx + block_width, y + block_height },
-            fill,
-            surface);
-        renderer.draw_line({ bx, y + block_height }, { bx + skew, y }, sx(1.2F, scale), panel_line, surface);
-        renderer.draw_line({ bx + skew, y }, { bx + block_width + skew, y }, sx(1.2F, scale), panel_line, surface);
-        renderer.draw_line({ bx + block_width + skew, y }, { bx + block_width, y + block_height }, sx(1.2F, scale), panel_line, surface);
-        renderer.draw_line({ bx + block_width, y + block_height }, { bx, y + block_height }, sx(1.2F, scale), panel_line, surface);
-    }
-}
-
-void draw_top_bars(GlesTextRenderer& renderer, SurfaceSize surface, const RocketOsdSample& sample)
-{
-    const auto scale = layout_scale(surface);
-    const auto panel_width = sx(420.0F, scale);
-    const auto panel_height = sx(72.0F, scale);
-    const auto velocity = std::to_string(static_cast<int>(std::round(sample.velocity_mps))) + "M/S";
-    const auto throttle = std::clamp(static_cast<int>(std::round(sample.fuel_percent + 18.0F)), 0, 100);
-    const auto x_right = static_cast<float>(surface.width) - panel_width;
-
-    draw_panel_left(renderer, 0.0F, 0.0F, panel_width, panel_height, surface);
-    renderer.draw_circle_outline({ sx(26.0F, scale), sx(28.0F, scale) }, sx(16.0F, scale), sx(2.0F, scale), purple, surface);
-    draw_text(renderer, "R", sx(18.0F, scale), sx(36.0F, scale), sx(16.0F, scale), surface);
-    draw_text(renderer, "VEL " + velocity + "  G " + fixed_1(sample.g_force), sx(66.0F, scale), sx(36.0F, scale), sx(17.0F, scale), surface);
-    draw_text(renderer, "THR:" + std::to_string(throttle), sx(300.0F, scale), sx(36.0F, scale), sx(15.0F, scale), surface);
-    draw_skew_blocks(renderer, sx(66.0F, scale), sx(50.0F, scale), throttle, surface);
-
-    draw_panel_right(renderer, x_right, 0.0F, panel_width, panel_height, surface);
-    draw_text(renderer, "STG " + std::to_string(sample.stage), x_right + sx(92.0F, scale), sx(36.0F, scale), sx(15.0F, scale), surface);
-    draw_text(renderer, "ALT " + fixed_1(sample.altitude_km) + "KM", x_right + sx(165.0F, scale), sx(36.0F, scale), sx(15.0F, scale), surface);
-    draw_text(renderer, "FUEL " + std::to_string(static_cast<int>(std::round(sample.fuel_percent))) + "%", x_right + sx(290.0F, scale), sx(36.0F, scale), sx(15.0F, scale), surface);
-    renderer.draw_circle_outline({ x_right + panel_width - sx(24.0F, scale), sx(33.0F, scale) }, sx(8.0F, scale), sx(3.0F, scale), sample.fuel_percent > 18.0F ? panel_line : purple, surface);
-    draw_skew_blocks(renderer, x_right + sx(162.0F, scale), sx(50.0F, scale), static_cast<int>(std::round(sample.fuel_percent)), surface);
 }
 
 struct BottomSlot {
@@ -321,7 +253,6 @@ RocketOsdSample SimulatedRocketOsd::sample(std::chrono::steady_clock::time_point
 
 void RocketOsdRenderer::draw(GlesTextRenderer& renderer, SurfaceSize surface, const RocketOsdSample& sample) const
 {
-    draw_top_bars(renderer, surface, sample);
     draw_guidance(renderer, surface, sample);
     draw_bottom_bars(renderer, surface, sample);
 }
