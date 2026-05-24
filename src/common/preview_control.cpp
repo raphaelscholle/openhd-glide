@@ -89,7 +89,7 @@ std::string osd_layout()
     std::ifstream file(osd_layout_control_path());
     std::string value;
     file >> value;
-    if (value == "rocket") {
+    if (value == "rocket" || value == "rover") {
         return value;
     }
     return "drone";
@@ -98,7 +98,11 @@ std::string osd_layout()
 void set_osd_layout(const std::string& layout)
 {
     std::ofstream file(osd_layout_control_path(), std::ios::trunc);
-    file << (layout == "rocket" ? "rocket" : "drone") << '\n';
+    if (layout == "rocket" || layout == "rover") {
+        file << layout << '\n';
+    } else {
+        file << "drone\n";
+    }
 }
 
 } // namespace glide::preview_control
