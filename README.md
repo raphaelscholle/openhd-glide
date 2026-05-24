@@ -254,10 +254,10 @@ examples/run-wsl-ui-preview.sh
 examples/run-wsl-minimap-preview.sh
 ```
 
-For WSL development, `openhd-glide --preview-stack` starts `glide-flow` first and then places a
+For WSL development, `openhd-glide --preview-stack` starts `glide-view`, `glide-flow`, and then places a
 `glide-ui` LVGL/SDL preview over the left side. In WSL, the UI preview is kept as a sidebar surface to avoid
-covering the Flow preview. The sidebar contains a `MISC` panel with an FPS overlay toggle wired through the
-controller Unix socket.
+covering the Flow preview. The sidebar `OSD` panel has toggles for FPS, coordinates, and the Flow speed/altitude
+ladder versus compact text mode. The custom wind indicator is rendered by Flow inside the performance horizon.
 The UI preview also owns the LVGL minimap layer. Press `M` to cycle menu -> minimap -> hidden, or press `N` to
 cycle minimap -> menu -> hidden. When the minimap is visible, `+` zooms in and `-` zooms out. The two views share one
 layer and are never displayed at the same time.
@@ -301,8 +301,10 @@ The helper script does the same build and tile generation steps:
 examples/run-wsl-minimap-preview.sh
 ```
 
-`examples/run-wsl-ui-preview.sh` also generates the fake minimap tiles and exports `GLIDE_MINIMAP_TILE_ROOT`, so the
-integrated UI preview can show the round minimap with `M` or `N` immediately. Use `+` and `-` to zoom the map.
+`examples/run-wsl-ui-preview.sh` starts that full preview stack by default, generates the fake minimap tiles, and
+exports `GLIDE_MINIMAP_TILE_ROOT`, so the integrated UI preview can show the round minimap with `M` or `N`
+immediately. Use `GLIDE_UI_ONLY=1 examples/run-wsl-ui-preview.sh` for the old standalone UI window. Use `+` and `-`
+to zoom the map.
 
 To install the WSL build into `~/.local`:
 
@@ -333,9 +335,17 @@ Terminal and MAVLink-state IPC helpers:
 ./build-kms/glide-send mav message "FC heartbeat received"
 ```
 
-`mav ...` lines are intentionally a temporary bridge contract: the real MAVLink reader should publish the same state
-updates to the controller IPC socket, and UI actions emit `mav set ...` / `mav command ...` lines that the MAVLink
-writer can translate into OpenHD parameter writes and commands.
+`mav ...` lines are the internal bridge contract: the controller publishes decoded MAVLink state to workers, and UI
+actions emit `mav set ...` / `mav command ...` lines that the controller can translate into OpenHD parameter writes and
+commands.
+
+`openhd-glide --preview-stack` and `--kms-stack` now start a controller-owned MAVLink UDP bridge on `0.0.0.0:14550`
+by default. Override it with `--mavlink-udp-port <port>` or disable it with `--no-mavlink`. The bridge decodes common
+MAVLink flight data (`HEARTBEAT`, `ATTITUDE`, `GPS_RAW_INT`, `GLOBAL_POSITION_INT`, `VFR_HUD`, `SYS_STATUS`,
+`RC_CHANNELS`, `STATUSTEXT`) and OpenHD/QOpenHD-style parameter/status traffic (`PARAM_VALUE`, `PARAM_EXT_VALUE`,
+plus custom OpenHD message IDs as status lines), then broadcasts normalized `mav ...` state to Flow and UI. Menu
+actions are translated back into MAVLink `PARAM_EXT_SET`, numeric `PARAM_SET`, or command-long packets when a peer has
+been seen on the UDP socket.
 
 UI navigation is directional: `up/down` moves through the sidebar or focused setting rows, `right` enters the settings
 panel, `left` returns to the sidebar or collapses it, and `enter` activates the focused row.

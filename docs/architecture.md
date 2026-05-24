@@ -91,10 +91,12 @@ uses before drawing the FPS overlay. The socket path can be changed with `--ipc-
 
 The LVGL UI is intentionally backend-isolated: the current SDL display driver is for WSL/Windows-style iteration. The target backend should render the same LVGL tree into shared buffers or a plane-owned buffer path supplied by `openhd-glide`, without letting `glide-ui` become DRM/KMS master.
 
-The UI and Flow consume a small controller-broadcast `mav ...` IPC vocabulary while the real MAVLink bridge is being
-built. This keeps the rendering processes decoupled from MAVLink transport details: a bridge can publish snapshots such
-as `mav alive air 1`, `mav link 5745 20 2 1200`, `mav scan 50`, and `mav message ...`; UI actions emit `mav set ...` or
-`mav command ...` for the bridge to translate into OpenHD `PARAM_EXT_*` writes and command-long calls.
+The UI and Flow consume a small controller-broadcast `mav ...` IPC vocabulary. The controller owns the MAVLink UDP
+bridge by default on `0.0.0.0:14550` (`--mavlink-udp-port`, `--no-mavlink`) and keeps rendering processes decoupled
+from transport details. It decodes common flight messages into snapshots such as `mav attitude ...`, `mav position ...`,
+`mav speed ...`, `mav battery ...`, `mav rc ...`, plus OpenHD/QOpenHD-style `PARAM_VALUE` and `PARAM_EXT_VALUE` settings
+into `mav param ...`. UI actions emit `mav set ...` or `mav command ...`; the controller translates those back into
+MAVLink parameter writes or command-long packets once it has seen a UDP peer.
 
 ## Device KMS Mode
 

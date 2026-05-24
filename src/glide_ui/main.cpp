@@ -914,7 +914,25 @@ void build_recording_panel(UiState& state)
 void build_rc_panel(UiState& state)
 {
     setup_panel_column(state.panel_body);
-    value_row(state, "Joystick", "Disabled");
+    value_row(state, "FC", state.mavlink.fc_alive ? "Online" : "Waiting", state.mavlink.fc_alive ? 0x20b383 : 0xff8a00);
+    value_row(state, "Mode", state.mavlink.flight_mode);
+    value_row(state, "Armed", state.mavlink.armed ? "Yes" : "No", state.mavlink.armed ? 0x20b383 : 0xb3c6d6);
+    if (state.mavlink.attitude_valid) {
+        value_row(state, "Roll/Pitch", std::to_string(static_cast<int>(std::round(state.mavlink.roll_degrees))) + " / " + std::to_string(static_cast<int>(std::round(state.mavlink.pitch_degrees))) + " deg");
+    }
+    if (state.mavlink.altitude_valid) {
+        value_row(state, "Altitude", std::to_string(static_cast<int>(std::round(state.mavlink.altitude_m))) + " m");
+    }
+    if (state.mavlink.speed_valid) {
+        value_row(state, "Ground Speed", std::to_string(static_cast<int>(std::round(state.mavlink.ground_speed_mps * 3.6F))) + " km/h");
+    }
+    if (state.mavlink.battery_valid) {
+        value_row(state, "Battery", std::to_string(state.mavlink.battery_percent) + "% / " + std::to_string(state.mavlink.voltage_v).substr(0, 4) + " V");
+    }
+    if (state.mavlink.position_valid) {
+        value_row(state, "Position", std::to_string(state.mavlink.latitude_deg).substr(0, 9) + ", " + std::to_string(state.mavlink.longitude_deg).substr(0, 9));
+    }
+    value_row(state, "Satellites", std::to_string(state.mavlink.satellites));
     for (int i = 0; i < 4; ++i) {
         value_row(state, ("CH" + std::to_string(i + 1)).c_str(), std::to_string(state.mavlink.rc_channels[i]) + " us");
     }

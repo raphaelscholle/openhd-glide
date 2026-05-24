@@ -1,6 +1,7 @@
 #include "common/mavlink_state.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <sstream>
 
 namespace glide::mavlink {
@@ -36,6 +37,23 @@ void push_message(Snapshot& snapshot, std::string message)
     snapshot.messages.back() = std::move(message);
 }
 
+std::string upper_copy(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::toupper(c));
+    });
+    return value;
+}
+
+int parse_int_or(int fallback, const std::string& value)
+{
+    try {
+        return std::stoi(value);
+    } catch (...) {
+        return fallback;
+    }
+}
+
 } // namespace
 
 bool apply_ipc_line(Snapshot& snapshot, const std::string& line)
@@ -67,6 +85,35 @@ bool apply_ipc_line(Snapshot& snapshot, const std::string& line)
         snapshot.armed = armed != 0;
         return true;
     }
+    if (key == "attitude") {
+        stream >> snapshot.roll_degrees >> snapshot.pitch_degrees >> snapshot.yaw_degrees;
+        snapshot.attitude_valid = true;
+        return true;
+    }
+    if (key == "position") {
+        stream >> snapshot.latitude_deg >> snapshot.longitude_deg >> snapshot.altitude_m;
+        snapshot.position_valid = true;
+        snapshot.altitude_valid = true;
+        return true;
+    }
+    if (key == "speed") {
+        stream >> snapshot.ground_speed_mps >> snapshot.airspeed_mps;
+        snapshot.speed_valid = true;
+        return true;
+    }
+    if (key == "battery") {
+        stream >> snapshot.voltage_v >> snapshot.battery_percent;
+        snapshot.battery_valid = true;
+        return true;
+    }
+    if (key == "gps") {
+        stream >> snapshot.satellites;
+        return true;
+    }
+    if (key == "mode") {
+        snapshot.flight_mode = rest_after(stream);
+        return true;
+    }
     if (key == "link") {
         stream >> snapshot.frequency_mhz >> snapshot.channel_width_mhz >> snapshot.mcs_index >> snapshot.tx_power_mw;
         return true;
@@ -87,20 +134,37 @@ bool apply_ipc_line(Snapshot& snapshot, const std::string& line)
         std::string param;
         stream >> target >> param;
         const auto value = rest_after(stream);
-        if (param == "RESOLUTION_FPS") {
+        const auto upper_param = upper_copy(param);
+        if (upper_param == "RESOLUTION_FPS" || upper_param == "VIDEO_FORMAT" || upper_param == "CAMERA_FORMAT") {
             snapshot.resolution_fps = value;
-        } else if (param == "ROTATION_FLIP" || param == "ROTATION_DEG") {
+        } else if (upper_param == "ROTATION_FLIP" || upper_param == "ROTATION_DEG" || upper_param == "VIDEO_ROTATION") {
             snapshot.rotation = value;
-        } else if (param == "AIR_RECORDING_E") {
+        } else if (upper_param == "AIR_RECORDING_E" || upper_param == "RECORDING" || upper_param == "REC_ENABLED") {
             snapshot.recording = value;
-        } else if (param == "WIFI_MODE" && target == "air") {
+        } else if (upper_param == "WIFI_MODE" && target == "air") {
             snapshot.air_wifi_mode = value;
-        } else if (param == "WIFI_MODE" && target == "ground") {
+        } else if (upper_param == "WIFI_MODE" && target == "ground") {
             snapshot.ground_wifi_mode = value;
-        } else if (param == "WIFI_HOTSPOT_E" && target == "air") {
+        } else if (upper_param == "WIFI_HOTSPOT_E" && target == "air") {
             snapshot.air_hotspot = value;
-        } else if (param == "WIFI_HOTSPOT_E" && target == "ground") {
+        } else if (upper_param == "WIFI_HOTSPOT_E" && target == "ground") {
             snapshot.ground_hotspot = value;
+        } else if (upper_param == "FREQ" || upper_param == "FREQUENCY" || upper_param == "FREQUENCY_MHZ" || upper_param == "WB_FREQUENCY") {
+            snapshot.frequency_mhz = parse_int_or(snapshot.frequency_mhz, value);
+        } else if (upper_param == "CHANNEL_WIDTH" || upper_param == "CHANNEL_WIDTH_MHZ" || upper_param == "WB_CHANNEL_WIDTH" || upper_param == "BANDWIDTH") {
+            snapshot.channel_width_mhz = parse_int_or(snapshot.channel_width_mhz, value);
+        } else if (upper_param == "MCS" || upper_param == "MCS_INDEX" || upper_param == "WB_MCS_INDEX") {
+            snapshot.mcs_index = parse_int_or(snapshot.mcs_index, value);
+        } else if (upper_param == "TX_POWER" || upper_param == "TX_POWER_MW" || upper_param == "WB_TX_POWER_MW") {
+            snapshot.tx_power_mw = parse_int_or(snapshot.tx_power_mw, value);
+        } else if (upper_param == "OPENHD_VERSION" || upper_param == "VERSION") {
+            snapshot.openhd_version = value;
+        } else if (upper_param == "AIR_CHIPSET") {
+            snapshot.air_chipset = value;
+        } else if (upper_param == "GROUND_CHIPSET") {
+            snapshot.ground_chipset = value;
+        } else if (upper_param == "CAMERA" || upper_param == "CAMERA_TYPE") {
+            snapshot.camera = value;
         }
         return true;
     }

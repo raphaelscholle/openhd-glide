@@ -1,5 +1,6 @@
 #include "common/logging.hpp"
 #include "common/ipc.hpp"
+#include "common/mavlink_udp_bridge.hpp"
 #include "common/preview_control.hpp"
 #include "dev/kms_atomic_compositor.hpp"
 #include "dev/kms_dmabuf_video_plane.hpp"
@@ -66,6 +67,7 @@ struct Options {
     std::uint32_t ui_width { 760 };
     std::uint32_t ui_height { 720 };
     std::uint16_t view_udp_port { 5600 };
+    std::uint16_t mavlink_udp_port { 14550 };
     std::string view_udp_codec { "h264" };
     int view_plane_id { -1 };
     int flow_plane_id { -1 };
@@ -91,6 +93,7 @@ struct Options {
     std::string writeback_record_path {};
     std::uint32_t writeback_record_frames { 30 };
     std::uint32_t writeback_record_every { 6 };
+    bool mavlink_udp { true };
 };
 
 Options parse_options(int argc, char** argv)
@@ -116,6 +119,8 @@ Options parse_options(int argc, char** argv)
             options.display_refresh_hz = static_cast<std::uint32_t>(std::stoul(argv[++i]));
         } else if (argument == "--view-udp-port" && i + 1 < argc) {
             options.view_udp_port = static_cast<std::uint16_t>(std::stoul(argv[++i]));
+        } else if (argument == "--mavlink-udp-port" && i + 1 < argc) {
+            options.mavlink_udp_port = static_cast<std::uint16_t>(std::stoul(argv[++i]));
         } else if (argument == "--view-udp-codec" && i + 1 < argc) {
             options.view_udp_codec = argv[++i];
             std::transform(options.view_udp_codec.begin(), options.view_udp_codec.end(), options.view_udp_codec.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -176,6 +181,8 @@ Options parse_options(int argc, char** argv)
             options.writeback_record_frames = static_cast<std::uint32_t>(std::stoul(argv[++i]));
         } else if (argument == "--writeback-record-every" && i + 1 < argc) {
             options.writeback_record_every = static_cast<std::uint32_t>(std::stoul(argv[++i]));
+        } else if (argument == "--no-mavlink") {
+            options.mavlink_udp = false;
         }
     }
     return options;
@@ -237,7 +244,7 @@ std::vector<std::string> view_args(const char* executable, const Options& option
         "--ipc-socket",
         options.ipc_socket,
     };
-    if (options.kms_stack) {
+    if (options.kms_stack || options.preview_stack) {
         args.emplace_back("--udp-video");
         args.emplace_back("--udp-port");
         args.emplace_back(std::to_string(options.view_udp_port));
@@ -1483,6 +1490,25 @@ int run_kms_video_preview(const Options& options)
 #endif
 }
 
+void start_mavlink_bridge(glide::mavlink::UdpBridge& bridge, const Options& options)
+{
+    if (!options.mavlink_udp) {
+        return;
+    }
+    if (bridge.start(glide::mavlink::UdpBridgeOptions { .listen_port = options.mavlink_udp_port })) {
+        glide::log(glide::LogLevel::info, "OpenHD-Glide", "MAVLink UDP bridge listening on 0.0.0.0:" + std::to_string(options.mavlink_udp_port));
+    } else {
+        glide::log(glide::LogLevel::warning, "OpenHD-Glide", "MAVLink UDP bridge disabled: " + bridge.last_error());
+    }
+}
+
+void broadcast_mavlink_updates(glide::mavlink::UdpBridge& bridge, glide::ipc::Server& ipc_server)
+{
+    for (const auto& line : bridge.poll()) {
+        ipc_server.broadcast_line(line);
+    }
+}
+
 #if defined(__linux__)
 pid_t launch_child(const std::vector<std::string>& args)
 {
@@ -1530,6 +1556,8 @@ int run_preview_stack(char* argv0, const Options& options)
         glide::log(glide::LogLevel::error, "OpenHD-Glide", "failed to start IPC server: " + ipc_server.last_error());
         return 1;
     }
+    glide::mavlink::UdpBridge mavlink_bridge;
+    start_mavlink_bridge(mavlink_bridge, options);
 
     glide::log(glide::LogLevel::info, "OpenHD-Glide", "starting WSL preview stack");
     const auto view_pid = launch_child(video_args);
@@ -1561,13 +1589,15 @@ int run_preview_stack(char* argv0, const Options& options)
               << " opacity=" << options.ui_opacity << '\n'
               << "  glide-flow x=" << options.preview_x << " y=" << flow_y
               << " width=" << options.preview_width << " height=" << options.flow_height << '\n'
-              << "  ipc        " << options.ipc_socket << '\n';
+              << "  ipc        " << options.ipc_socket << '\n'
+              << "  mavlink    " << (mavlink_bridge.running() ? ("udp/0.0.0.0:" + std::to_string(options.mavlink_udp_port)) : "disabled") << '\n';
 
     bool fps_enabled = true;
     bool coordinates_enabled = true;
     bool compact_readouts = false;
 
     while (stop_requested == 0) {
+        broadcast_mavlink_updates(mavlink_bridge, ipc_server);
         for (const auto& event : ipc_server.poll()) {
             std::cout << "ipc[" << event.client_id << "] " << event.line << '\n';
             if (event.line.rfind("hello ", 0) == 0) {
@@ -1593,6 +1623,7 @@ int run_preview_stack(char* argv0, const Options& options)
                 glide::preview_control::set_compact_readouts_enabled(compact_readouts);
                 ipc_server.broadcast_line(std::string("state compact ") + (compact_readouts ? "1" : "0"));
             } else if (event.line.rfind("mav ", 0) == 0) {
+                mavlink_bridge.handle_action_line(event.line);
                 ipc_server.broadcast_line(event.line);
             } else if (event.line.rfind("ui ", 0) == 0) {
                 ipc_server.broadcast_line(event.line);
@@ -1656,6 +1687,8 @@ int run_kms_stack(char* argv0, const Options& options)
         glide::log(glide::LogLevel::error, "OpenHD-Glide", "failed to start IPC server: " + ipc_server.last_error());
         return 1;
     }
+    glide::mavlink::UdpBridge mavlink_bridge;
+    start_mavlink_bridge(mavlink_bridge, options);
 
     glide::log(glide::LogLevel::info, "OpenHD-Glide", "starting device DRM/KMS stack");
     const auto view_pid = launch_child(video_args);
@@ -1697,13 +1730,15 @@ int run_kms_stack(char* argv0, const Options& options)
     }
     std::cout << '\n'
               << "  glide-ui   headless LVGL control worker until shared-buffer UI backend exists\n"
-              << "  ipc        " << options.ipc_socket << '\n';
+              << "  ipc        " << options.ipc_socket << '\n'
+              << "  mavlink    " << (mavlink_bridge.running() ? ("udp/0.0.0.0:" + std::to_string(options.mavlink_udp_port)) : "disabled") << '\n';
 
     bool fps_enabled = true;
     bool coordinates_enabled = true;
     bool compact_readouts = false;
 
     while (stop_requested == 0) {
+        broadcast_mavlink_updates(mavlink_bridge, ipc_server);
         for (const auto& event : ipc_server.poll()) {
             std::cout << "ipc[" << event.client_id << "] " << event.line << '\n';
             if (event.line.rfind("hello ", 0) == 0) {
@@ -1729,6 +1764,7 @@ int run_kms_stack(char* argv0, const Options& options)
                 glide::preview_control::set_compact_readouts_enabled(compact_readouts);
                 ipc_server.broadcast_line(std::string("state compact ") + (compact_readouts ? "1" : "0"));
             } else if (event.line.rfind("mav ", 0) == 0) {
+                mavlink_bridge.handle_action_line(event.line);
                 ipc_server.broadcast_line(event.line);
             } else if (event.line.rfind("ui ", 0) == 0) {
                 ipc_server.broadcast_line(event.line);

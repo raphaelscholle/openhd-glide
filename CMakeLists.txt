@@ -25,6 +25,7 @@ add_library(glide_common
     src/common/ipc.cpp
     src/common/logging.cpp
     src/common/mavlink_state.cpp
+    src/common/mavlink_udp_bridge.cpp
     src/common/preview_control.cpp
     src/platform/core_assignment.cpp
     src/platform/cpu_topology.cpp

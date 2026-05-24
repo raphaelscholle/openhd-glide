@@ -90,7 +90,7 @@ PowerShell form:
 wsl -d Ubuntu-22.04 -- openhd-glide --preview-stack --preview-width 1280 --flow-height 720 --ui-width 760 --preview-x 60 --preview-y 40 --ui-opacity 1.0
 ```
 
-The UI `OSD` panel has switches for the video FPS overlay and the compact Flow coordinate field. The coordinate switch sends `set coords 0/1` through the preview IPC socket.
+The UI `OSD` panel has switches for the video FPS overlay, coordinates, and the speed/altitude ladder versus compact text mode. The wind indicator is drawn by Flow in the performance horizon, so run the controller-owned preview stack or `examples/run-wsl-ui-preview.sh` without `GLIDE_UI_ONLY=1` when checking it.
 
 ## Rebuild And Reinstall
 

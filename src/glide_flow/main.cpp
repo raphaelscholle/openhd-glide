@@ -233,18 +233,45 @@ int main(int argc, char** argv)
             renderer.clear(0.02F, 0.02F, 0.025F, 1.0F, options.surface);
             auto link_sample = simulated_link.sample();
             link_sample.show_coordinates = coordinates_enabled;
+            link_sample.armed = mavlink.armed;
+            if (mavlink.flight_mode != "N/A") {
+                link_sample.flight_mode = mavlink.flight_mode.c_str();
+            }
+            if (mavlink.position_valid) {
+                link_sample.latitude_deg = mavlink.latitude_deg;
+                link_sample.longitude_deg = mavlink.longitude_deg;
+                link_sample.height_m = mavlink.altitude_m;
+            }
+            if (mavlink.speed_valid) {
+                link_sample.air_speed_mps = mavlink.airspeed_mps > 0.0F ? mavlink.airspeed_mps : mavlink.ground_speed_mps;
+            }
+            if (mavlink.battery_valid) {
+                link_sample.air_voltage_v = mavlink.voltage_v;
+            }
+            if (mavlink.satellites > 0) {
+                link_sample.satellites = mavlink.satellites;
+            }
             link_overview.draw(renderer, options.surface, link_sample);
+            const auto attitude_sample = mavlink.attitude_valid
+                ? glide::flow::AttitudeSample { .roll_degrees = mavlink.roll_degrees, .pitch_degrees = mavlink.pitch_degrees }
+                : simulated_attitude.sample();
             performance_horizon.draw(
                 renderer,
                 options.surface,
-                simulated_attitude.sample(),
+                attitude_sample,
                 glide::flow::WindSample {
                     .direction_degrees = link_sample.wind_direction_deg,
                     .speed_mps = link_sample.wind_speed_mps,
                     .valid = true,
                 });
-            speed_widget.draw(renderer, options.surface, simulated_speed.sample(), compact_readouts);
-            altitude_widget.draw(renderer, options.surface, simulated_altitude.sample(), compact_readouts);
+            const auto speed_sample = mavlink.speed_valid
+                ? glide::flow::SpeedSample { .speed_mps = mavlink.ground_speed_mps }
+                : simulated_speed.sample();
+            const auto altitude_sample = mavlink.altitude_valid
+                ? glide::flow::AltitudeSample { .altitude_m = mavlink.altitude_m }
+                : simulated_altitude.sample();
+            speed_widget.draw(renderer, options.surface, speed_sample, compact_readouts);
+            altitude_widget.draw(renderer, options.surface, altitude_sample, compact_readouts);
             if (fps_overlay_enabled) {
                 renderer.draw(placement, options.surface);
             }

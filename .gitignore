@@ -6,3 +6,4 @@ CMakeUserPresets.json
 *.deb
 examples/media/
 examples/examples/
+/CMakeFiles
