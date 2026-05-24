@@ -71,6 +71,92 @@ RenderPoint polar(RenderPoint center, float degrees, float radius)
     };
 }
 
+void draw_metric_rule(GlesTextRenderer& renderer, float x, float y, float width, float scale, SurfaceSize surface)
+{
+    renderer.draw_line({ x, y }, { x + width, y }, sx(1.0F, scale), panel_dim, surface);
+}
+
+void draw_left_metric(
+    GlesTextRenderer& renderer,
+    const char* label,
+    std::string value,
+    const char* unit,
+    float x,
+    float y,
+    float scale,
+    SurfaceSize surface)
+{
+    draw_text(renderer, label, x, y + sx(16.0F, scale), sx(11.0F, scale), surface);
+    draw_text(renderer, std::move(value), x + sx(8.0F, scale), y + sx(44.0F, scale), sx(24.0F, scale), surface);
+    draw_text(renderer, unit, x + sx(18.0F, scale), y + sx(64.0F, scale), sx(10.5F, scale), surface);
+    draw_metric_rule(renderer, x - sx(12.0F, scale), y + sx(73.0F, scale), sx(142.0F, scale), scale, surface);
+}
+
+void draw_status_panel(GlesTextRenderer& renderer, const RocketOsdSample& sample, float x, float y, float scale, SurfaceSize surface)
+{
+    const auto width = sx(148.0F, scale);
+    const auto row_height = sx(50.0F, scale);
+    const auto height = row_height * 4.0F;
+    renderer.draw_filled_quad({ x, y }, { x + width, y }, { x, y + height }, { x + width, y + height }, panel_bg, surface);
+    renderer.draw_line({ x, y }, { x + width, y }, sx(1.0F, scale), panel_dim, surface);
+    renderer.draw_line({ x + width, y }, { x + width, y + height }, sx(1.0F, scale), panel_dim, surface);
+    renderer.draw_line({ x, y + height }, { x + width, y + height }, sx(1.0F, scale), panel_dim, surface);
+    renderer.draw_line({ x, y }, { x, y + height }, sx(1.0F, scale), panel_dim, surface);
+
+    const std::array labels { "STAGE", "FUEL", "STATUS", "Q" };
+    const std::array values {
+        std::to_string(sample.stage),
+        std::to_string(static_cast<int>(std::round(sample.fuel_percent))) + "%",
+        std::string(sample.status != nullptr ? sample.status : "NOMINAL"),
+        std::to_string(static_cast<int>(std::round(sample.velocity_mps * sample.g_force * 0.08F))),
+    };
+    for (std::size_t i = 0; i < labels.size(); ++i) {
+        const auto row_y = y + static_cast<float>(i) * row_height;
+        if (i > 0) {
+            renderer.draw_line({ x, row_y }, { x + width, row_y }, sx(1.0F, scale), panel_dim, surface);
+        }
+        draw_text(renderer, labels[i], x + sx(16.0F, scale), row_y + sx(17.0F, scale), sx(10.0F, scale), surface);
+        draw_text(renderer, values[i], x + sx(16.0F, scale), row_y + sx(39.0F, scale), sx(i == 2 ? 13.0F : 18.0F, scale), surface);
+    }
+}
+
+void draw_side_readouts(GlesTextRenderer& renderer, SurfaceSize surface, const RocketOsdSample& sample)
+{
+    const auto scale = layout_scale(surface);
+    const auto top_safe = sx(86.0F, scale);
+    const auto left_x = sx(42.0F, scale);
+    const auto right_x = static_cast<float>(surface.width) - sx(190.0F, scale);
+
+    draw_left_metric(
+        renderer,
+        "VELOCITY",
+        std::to_string(static_cast<int>(std::round(sample.velocity_mps))),
+        "m/s",
+        left_x,
+        top_safe + sx(8.0F, scale),
+        scale,
+        surface);
+    draw_left_metric(
+        renderer,
+        "ALTITUDE",
+        fixed_1(sample.altitude_km),
+        "km",
+        left_x,
+        top_safe + sx(94.0F, scale),
+        scale,
+        surface);
+    draw_left_metric(
+        renderer,
+        "G-FORCE",
+        fixed_1(sample.g_force),
+        "G",
+        left_x,
+        top_safe + sx(180.0F, scale),
+        scale,
+        surface);
+    draw_status_panel(renderer, sample, right_x, top_safe + sx(18.0F, scale), scale, surface);
+}
+
 void draw_bottom_panel(GlesTextRenderer& renderer, SurfaceSize surface)
 {
     const auto scale = layout_scale(surface);
@@ -254,6 +340,7 @@ RocketOsdSample SimulatedRocketOsd::sample(std::chrono::steady_clock::time_point
 void RocketOsdRenderer::draw(GlesTextRenderer& renderer, SurfaceSize surface, const RocketOsdSample& sample) const
 {
     draw_guidance(renderer, surface, sample);
+    draw_side_readouts(renderer, surface, sample);
     draw_bottom_bars(renderer, surface, sample);
 }
 
