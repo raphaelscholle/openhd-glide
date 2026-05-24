@@ -1595,6 +1595,7 @@ int run_preview_stack(char* argv0, const Options& options)
     bool fps_enabled = true;
     bool coordinates_enabled = true;
     bool compact_readouts = false;
+    std::string osd_layout = glide::preview_control::osd_layout();
 
     while (stop_requested == 0) {
         broadcast_mavlink_updates(mavlink_bridge, ipc_server);
@@ -1604,12 +1605,15 @@ int run_preview_stack(char* argv0, const Options& options)
                 ipc_server.send_line(event.client_id, std::string("state fps ") + (fps_enabled ? "1" : "0"));
                 ipc_server.send_line(event.client_id, std::string("state coords ") + (coordinates_enabled ? "1" : "0"));
                 ipc_server.send_line(event.client_id, std::string("state compact ") + (compact_readouts ? "1" : "0"));
+                ipc_server.send_line(event.client_id, "state osd " + osd_layout);
             } else if (event.line == "get fps") {
                 ipc_server.send_line(event.client_id, std::string("state fps ") + (fps_enabled ? "1" : "0"));
             } else if (event.line == "get coords") {
                 ipc_server.send_line(event.client_id, std::string("state coords ") + (coordinates_enabled ? "1" : "0"));
             } else if (event.line == "get compact") {
                 ipc_server.send_line(event.client_id, std::string("state compact ") + (compact_readouts ? "1" : "0"));
+            } else if (event.line == "get osd") {
+                ipc_server.send_line(event.client_id, "state osd " + osd_layout);
             } else if (event.line == "set fps 0" || event.line == "set fps 1") {
                 fps_enabled = event.line.back() == '1';
                 glide::preview_control::set_fps_overlay_enabled(fps_enabled);
@@ -1622,6 +1626,10 @@ int run_preview_stack(char* argv0, const Options& options)
                 compact_readouts = event.line.back() == '1';
                 glide::preview_control::set_compact_readouts_enabled(compact_readouts);
                 ipc_server.broadcast_line(std::string("state compact ") + (compact_readouts ? "1" : "0"));
+            } else if (event.line == "set osd drone" || event.line == "set osd rocket") {
+                osd_layout = event.line.substr(8);
+                glide::preview_control::set_osd_layout(osd_layout);
+                ipc_server.broadcast_line("state osd " + osd_layout);
             } else if (event.line.rfind("mav ", 0) == 0) {
                 mavlink_bridge.handle_action_line(event.line);
                 ipc_server.broadcast_line(event.line);
@@ -1736,6 +1744,7 @@ int run_kms_stack(char* argv0, const Options& options)
     bool fps_enabled = true;
     bool coordinates_enabled = true;
     bool compact_readouts = false;
+    std::string osd_layout = glide::preview_control::osd_layout();
 
     while (stop_requested == 0) {
         broadcast_mavlink_updates(mavlink_bridge, ipc_server);
@@ -1745,12 +1754,15 @@ int run_kms_stack(char* argv0, const Options& options)
                 ipc_server.send_line(event.client_id, std::string("state fps ") + (fps_enabled ? "1" : "0"));
                 ipc_server.send_line(event.client_id, std::string("state coords ") + (coordinates_enabled ? "1" : "0"));
                 ipc_server.send_line(event.client_id, std::string("state compact ") + (compact_readouts ? "1" : "0"));
+                ipc_server.send_line(event.client_id, "state osd " + osd_layout);
             } else if (event.line == "get fps") {
                 ipc_server.send_line(event.client_id, std::string("state fps ") + (fps_enabled ? "1" : "0"));
             } else if (event.line == "get coords") {
                 ipc_server.send_line(event.client_id, std::string("state coords ") + (coordinates_enabled ? "1" : "0"));
             } else if (event.line == "get compact") {
                 ipc_server.send_line(event.client_id, std::string("state compact ") + (compact_readouts ? "1" : "0"));
+            } else if (event.line == "get osd") {
+                ipc_server.send_line(event.client_id, "state osd " + osd_layout);
             } else if (event.line == "set fps 0" || event.line == "set fps 1") {
                 fps_enabled = event.line.back() == '1';
                 glide::preview_control::set_fps_overlay_enabled(fps_enabled);
@@ -1763,6 +1775,10 @@ int run_kms_stack(char* argv0, const Options& options)
                 compact_readouts = event.line.back() == '1';
                 glide::preview_control::set_compact_readouts_enabled(compact_readouts);
                 ipc_server.broadcast_line(std::string("state compact ") + (compact_readouts ? "1" : "0"));
+            } else if (event.line == "set osd drone" || event.line == "set osd rocket") {
+                osd_layout = event.line.substr(8);
+                glide::preview_control::set_osd_layout(osd_layout);
+                ipc_server.broadcast_line("state osd " + osd_layout);
             } else if (event.line.rfind("mav ", 0) == 0) {
                 mavlink_bridge.handle_action_line(event.line);
                 ipc_server.broadcast_line(event.line);

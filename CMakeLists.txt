@@ -188,6 +188,7 @@ add_library(glide_flow_core
     src/glide_flow/gles_text_renderer.cpp
     src/glide_flow/link_overview.cpp
     src/glide_flow/performance_horizon.cpp
+    src/glide_flow/rocket_osd.cpp
     src/glide_flow/simulated_attitude.cpp
     src/glide_flow/speed_widget.cpp
     src/glide_flow/vector_font.cpp

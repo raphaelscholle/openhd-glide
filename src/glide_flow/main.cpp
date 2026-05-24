@@ -10,6 +10,7 @@
 #include "glide_flow/gles_text_renderer.hpp"
 #include "glide_flow/link_overview.hpp"
 #include "glide_flow/performance_horizon.hpp"
+#include "glide_flow/rocket_osd.hpp"
 #include "glide_flow/simulated_attitude.hpp"
 #include "glide_flow/speed_widget.hpp"
 
@@ -127,12 +128,15 @@ int main(int argc, char** argv)
     glide::flow::SimulatedLinkOverview simulated_link;
     glide::flow::PerformanceHorizon performance_horizon;
     glide::flow::SimulatedAttitude simulated_attitude;
+    glide::flow::RocketOsdRenderer rocket_osd;
+    glide::flow::SimulatedRocketOsd simulated_rocket;
     glide::dev::KmsGlesWindow kms_window;
     glide::dev::SdlGlesWindow preview_window;
     glide::ipc::Client ipc;
     glide::mavlink::Snapshot mavlink;
     bool coordinates_enabled = glide::preview_control::coordinates_overlay_enabled();
     bool compact_readouts = glide::preview_control::compact_readouts_enabled();
+    std::string osd_layout = glide::preview_control::osd_layout();
     constexpr bool fps_overlay_enabled = false;
 
     if (options.preview) {
@@ -210,6 +214,9 @@ int main(int argc, char** argv)
                 } else if (line == "state compact 0" || line == "state compact 1") {
                     compact_readouts = line.back() == '1';
                     glide::preview_control::set_compact_readouts_enabled(compact_readouts);
+                } else if (line == "state osd drone" || line == "state osd rocket") {
+                    osd_layout = line.substr(10);
+                    glide::preview_control::set_osd_layout(osd_layout);
                 } else {
                     glide::mavlink::apply_ipc_line(mavlink, line);
                 }
@@ -217,6 +224,7 @@ int main(int argc, char** argv)
         } else {
             coordinates_enabled = glide::preview_control::coordinates_overlay_enabled();
             compact_readouts = glide::preview_control::compact_readouts_enabled();
+            osd_layout = glide::preview_control::osd_layout();
         }
 
         options.surface = options.preview ? preview_window.surface_size() : options.surface;
@@ -231,47 +239,51 @@ int main(int argc, char** argv)
 
         if (options.render_gles && renderer.available()) {
             renderer.clear(0.02F, 0.02F, 0.025F, 1.0F, options.surface);
-            auto link_sample = simulated_link.sample();
-            link_sample.show_coordinates = coordinates_enabled;
-            link_sample.armed = mavlink.armed;
-            if (mavlink.flight_mode != "N/A") {
-                link_sample.flight_mode = mavlink.flight_mode.c_str();
+            if (osd_layout == "rocket") {
+                rocket_osd.draw(renderer, options.surface, simulated_rocket.sample());
+            } else {
+                auto link_sample = simulated_link.sample();
+                link_sample.show_coordinates = coordinates_enabled;
+                link_sample.armed = mavlink.armed;
+                if (mavlink.flight_mode != "N/A") {
+                    link_sample.flight_mode = mavlink.flight_mode.c_str();
+                }
+                if (mavlink.position_valid) {
+                    link_sample.latitude_deg = mavlink.latitude_deg;
+                    link_sample.longitude_deg = mavlink.longitude_deg;
+                    link_sample.height_m = mavlink.altitude_m;
+                }
+                if (mavlink.speed_valid) {
+                    link_sample.air_speed_mps = mavlink.airspeed_mps > 0.0F ? mavlink.airspeed_mps : mavlink.ground_speed_mps;
+                }
+                if (mavlink.battery_valid) {
+                    link_sample.air_voltage_v = mavlink.voltage_v;
+                }
+                if (mavlink.satellites > 0) {
+                    link_sample.satellites = mavlink.satellites;
+                }
+                link_overview.draw(renderer, options.surface, link_sample);
+                const auto attitude_sample = mavlink.attitude_valid
+                    ? glide::flow::AttitudeSample { .roll_degrees = mavlink.roll_degrees, .pitch_degrees = mavlink.pitch_degrees }
+                    : simulated_attitude.sample();
+                performance_horizon.draw(
+                    renderer,
+                    options.surface,
+                    attitude_sample,
+                    glide::flow::WindSample {
+                        .direction_degrees = link_sample.wind_direction_deg,
+                        .speed_mps = link_sample.wind_speed_mps,
+                        .valid = true,
+                    });
+                const auto speed_sample = mavlink.speed_valid
+                    ? glide::flow::SpeedSample { .speed_mps = mavlink.ground_speed_mps }
+                    : simulated_speed.sample();
+                const auto altitude_sample = mavlink.altitude_valid
+                    ? glide::flow::AltitudeSample { .altitude_m = mavlink.altitude_m }
+                    : simulated_altitude.sample();
+                speed_widget.draw(renderer, options.surface, speed_sample, compact_readouts);
+                altitude_widget.draw(renderer, options.surface, altitude_sample, compact_readouts);
             }
-            if (mavlink.position_valid) {
-                link_sample.latitude_deg = mavlink.latitude_deg;
-                link_sample.longitude_deg = mavlink.longitude_deg;
-                link_sample.height_m = mavlink.altitude_m;
-            }
-            if (mavlink.speed_valid) {
-                link_sample.air_speed_mps = mavlink.airspeed_mps > 0.0F ? mavlink.airspeed_mps : mavlink.ground_speed_mps;
-            }
-            if (mavlink.battery_valid) {
-                link_sample.air_voltage_v = mavlink.voltage_v;
-            }
-            if (mavlink.satellites > 0) {
-                link_sample.satellites = mavlink.satellites;
-            }
-            link_overview.draw(renderer, options.surface, link_sample);
-            const auto attitude_sample = mavlink.attitude_valid
-                ? glide::flow::AttitudeSample { .roll_degrees = mavlink.roll_degrees, .pitch_degrees = mavlink.pitch_degrees }
-                : simulated_attitude.sample();
-            performance_horizon.draw(
-                renderer,
-                options.surface,
-                attitude_sample,
-                glide::flow::WindSample {
-                    .direction_degrees = link_sample.wind_direction_deg,
-                    .speed_mps = link_sample.wind_speed_mps,
-                    .valid = true,
-                });
-            const auto speed_sample = mavlink.speed_valid
-                ? glide::flow::SpeedSample { .speed_mps = mavlink.ground_speed_mps }
-                : simulated_speed.sample();
-            const auto altitude_sample = mavlink.altitude_valid
-                ? glide::flow::AltitudeSample { .altitude_m = mavlink.altitude_m }
-                : simulated_altitude.sample();
-            speed_widget.draw(renderer, options.surface, speed_sample, compact_readouts);
-            altitude_widget.draw(renderer, options.surface, altitude_sample, compact_readouts);
             if (fps_overlay_enabled) {
                 renderer.draw(placement, options.surface);
             }
