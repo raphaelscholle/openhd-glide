@@ -542,7 +542,7 @@ bool GlesTextRenderer::draw_antialiased_text(const TextPlacement& placement, Sur
     glEnable(GL_BLEND);
     glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     glUseProgram(text_program_);
-    glUniform4f(text_color_location_, 0.92F, 0.96F, 1.0F, 0.98F);
+    glUniform4f(text_color_location_, text_color_.red, text_color_.green, text_color_.blue, text_color_.alpha);
     glUniform1i(text_sampler_location_, 0);
     glActiveTexture(GL_TEXTURE0);
 
@@ -763,6 +763,11 @@ void GlesTextRenderer::draw_cached_argb_texture(RenderPoint top_left, SurfaceSiz
 #endif
 }
 
+void GlesTextRenderer::set_text_color(RgbaColor color)
+{
+    text_color_ = color;
+}
+
 void GlesTextRenderer::draw_line(
     RenderPoint start,
     RenderPoint end,
@@ -876,7 +881,7 @@ void GlesTextRenderer::draw(const TextPlacement& placement, SurfaceSize surface)
                 .x = cursor_x + (stroke.end.x * placement.scale),
                 .y = placement.y - (stroke.end.y * placement.scale),
             };
-            glUniform4f(color_location_, 0.92F, 0.96F, 1.0F, 0.96F);
+            glUniform4f(color_location_, text_color_.red, text_color_.green, text_color_.blue, text_color_.alpha);
             draw_stroke_quad(position_location_, start, end, placement.scale * 0.095F, surface);
         }
 

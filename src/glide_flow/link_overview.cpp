@@ -10,9 +10,6 @@
 namespace glide::flow {
 namespace {
 
-constexpr RgbaColor panel_bg { .red = 0.055F, .green = 0.075F, .blue = 0.095F, .alpha = 0.94F };
-constexpr RgbaColor panel_line { .red = 0.60F, .green = 1.0F, .blue = 0.72F, .alpha = 0.90F };
-constexpr RgbaColor text_color { .red = 0.92F, .green = 0.96F, .blue = 1.0F, .alpha = 0.96F };
 constexpr RgbaColor muted_color { .red = 0.45F, .green = 0.50F, .blue = 0.52F, .alpha = 0.75F };
 constexpr RgbaColor warn_color { .red = 1.0F, .green = 0.84F, .blue = 0.18F, .alpha = 0.96F };
 constexpr RgbaColor bad_color { .red = 1.0F, .green = 0.16F, .blue = 0.14F, .alpha = 0.96F };
@@ -26,10 +23,10 @@ std::string fixed_1(float value)
     return stream.str();
 }
 
-RgbaColor quality_color(int value)
+RgbaColor quality_color(const OsdTheme& theme, int value)
 {
     if (value >= 70) {
-        return panel_line;
+        return theme.signal;
     }
     if (value >= 35) {
         return warn_color;
@@ -59,29 +56,29 @@ float sx(float value, float scale)
     return value * scale;
 }
 
-void draw_panel_left(GlesTextRenderer& renderer, float x, float y, float width, float height, SurfaceSize surface)
+void draw_panel_left(GlesTextRenderer& renderer, float x, float y, float width, float height, SurfaceSize surface, const OsdTheme& theme)
 {
     renderer.draw_filled_quad(
         { x, y },
         { x + width, y },
         { x, y + height },
         { x + (width * 0.80F), y + height },
-        panel_bg,
+        theme.top_panel,
         surface);
 }
 
-void draw_panel_right(GlesTextRenderer& renderer, float x, float y, float width, float height, SurfaceSize surface)
+void draw_panel_right(GlesTextRenderer& renderer, float x, float y, float width, float height, SurfaceSize surface, const OsdTheme& theme)
 {
     renderer.draw_filled_quad(
         { x, y },
         { x + width, y },
         { x + (width * 0.20F), y + height },
         { x + width, y + height },
-        panel_bg,
+        theme.top_panel,
         surface);
 }
 
-void draw_bottom_panel(GlesTextRenderer& renderer, SurfaceSize surface)
+void draw_bottom_panel(GlesTextRenderer& renderer, SurfaceSize surface, const OsdTheme& theme)
 {
     const auto scale = layout_scale(surface);
     const auto height = sx(40.0F, scale);
@@ -98,14 +95,14 @@ void draw_bottom_panel(GlesTextRenderer& renderer, SurfaceSize surface)
     const auto notch_right = std::min(width - sx(6.0F, scale), notch_end + notch_slope);
     const auto bottom_y = y + height;
 
-    renderer.draw_filled_quad({ 0.0F, top_y }, { notch_left, top_y }, { 0.0F, bottom_y }, { notch_left, bottom_y }, panel_bg, surface);
-    renderer.draw_filled_quad({ notch_right, top_y }, { width, top_y }, { notch_right, bottom_y }, { width, bottom_y }, panel_bg, surface);
-    renderer.draw_filled_quad({ notch_left, top_y }, { notch_start, notch_top_y }, { notch_left, bottom_y }, { notch_start, bottom_y }, panel_bg, surface);
-    renderer.draw_filled_quad({ notch_start, notch_top_y }, { notch_end, notch_top_y }, { notch_start, bottom_y }, { notch_end, bottom_y }, panel_bg, surface);
-    renderer.draw_filled_quad({ notch_end, notch_top_y }, { notch_right, top_y }, { notch_end, bottom_y }, { notch_right, bottom_y }, panel_bg, surface);
+    renderer.draw_filled_quad({ 0.0F, top_y }, { notch_left, top_y }, { 0.0F, bottom_y }, { notch_left, bottom_y }, theme.bottom_panel, surface);
+    renderer.draw_filled_quad({ notch_right, top_y }, { width, top_y }, { notch_right, bottom_y }, { width, bottom_y }, theme.bottom_panel, surface);
+    renderer.draw_filled_quad({ notch_left, top_y }, { notch_start, notch_top_y }, { notch_left, bottom_y }, { notch_start, bottom_y }, theme.bottom_panel, surface);
+    renderer.draw_filled_quad({ notch_start, notch_top_y }, { notch_end, notch_top_y }, { notch_start, bottom_y }, { notch_end, bottom_y }, theme.bottom_panel, surface);
+    renderer.draw_filled_quad({ notch_end, notch_top_y }, { notch_right, top_y }, { notch_end, bottom_y }, { notch_right, bottom_y }, theme.bottom_panel, surface);
 }
 
-void draw_skew_blocks(GlesTextRenderer& renderer, float x, float y, int value, SurfaceSize surface)
+void draw_skew_blocks(GlesTextRenderer& renderer, float x, float y, int value, SurfaceSize surface, const OsdTheme& theme)
 {
     const auto scale = layout_scale(surface);
     constexpr int count = 8;
@@ -117,7 +114,7 @@ void draw_skew_blocks(GlesTextRenderer& renderer, float x, float y, int value, S
     for (int i = 0; i < count; ++i) {
         const auto bx = x + static_cast<float>(i) * (block_width + skew + spacing);
         const auto active = value >= (i + 1) * 10;
-        const auto base = active ? quality_color(value) : muted_color;
+        const auto base = active ? quality_color(theme, value) : muted_color;
         const RgbaColor fill {
             .red = base.red,
             .green = base.green,
@@ -132,14 +129,14 @@ void draw_skew_blocks(GlesTextRenderer& renderer, float x, float y, int value, S
             { bx + block_width, y + block_height },
             fill,
             surface);
-        renderer.draw_line({ bx, y + block_height }, { bx + skew, y }, sx(1.2F, scale), panel_line, surface);
-        renderer.draw_line({ bx + skew, y }, { bx + block_width + skew, y }, sx(1.2F, scale), panel_line, surface);
-        renderer.draw_line({ bx + block_width + skew, y }, { bx + block_width, y + block_height }, sx(1.2F, scale), panel_line, surface);
-        renderer.draw_line({ bx + block_width, y + block_height }, { bx, y + block_height }, sx(1.2F, scale), panel_line, surface);
+        renderer.draw_line({ bx, y + block_height }, { bx + skew, y }, sx(1.2F, scale), theme.vector, surface);
+        renderer.draw_line({ bx + skew, y }, { bx + block_width + skew, y }, sx(1.2F, scale), theme.vector, surface);
+        renderer.draw_line({ bx + block_width + skew, y }, { bx + block_width, y + block_height }, sx(1.2F, scale), theme.vector, surface);
+        renderer.draw_line({ bx + block_width, y + block_height }, { bx, y + block_height }, sx(1.2F, scale), theme.vector, surface);
     }
 }
 
-void draw_left(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverviewSample& sample)
+void draw_left(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverviewSample& sample, const OsdTheme& theme)
 {
     const auto scale = layout_scale(surface);
     constexpr float x = 0.0F;
@@ -147,8 +144,8 @@ void draw_left(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOvervi
     const auto width = sx(420.0F, scale);
     const auto height = sx(72.0F, scale);
 
-    draw_panel_left(renderer, x, y, width, height, surface);
-    renderer.draw_circle_outline({ x + sx(26.0F, scale), y + sx(28.0F, scale) }, sx(16.0F, scale), sx(2.0F, scale), panel_line, surface);
+    draw_panel_left(renderer, x, y, width, height, surface, theme);
+    renderer.draw_circle_outline({ x + sx(26.0F, scale), y + sx(28.0F, scale) }, sx(16.0F, scale), sx(2.0F, scale), theme.vector, surface);
     draw_text(renderer, "O", x + sx(17.0F, scale), y + sx(36.0F, scale), sx(16.0F, scale), surface);
     draw_text(
         renderer,
@@ -158,10 +155,10 @@ void draw_left(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOvervi
         sx(18.0F, scale),
         surface);
     draw_text(renderer, "MCS:" + std::to_string(sample.mcs), x + sx(300.0F, scale), y + sx(36.0F, scale), sx(15.0F, scale), surface);
-    draw_skew_blocks(renderer, x + sx(66.0F, scale), y + sx(50.0F, scale), sample.downlink_quality, surface);
+    draw_skew_blocks(renderer, x + sx(66.0F, scale), y + sx(50.0F, scale), sample.downlink_quality, surface, theme);
 }
 
-void draw_right(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverviewSample& sample)
+void draw_right(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverviewSample& sample, const OsdTheme& theme)
 {
     const auto scale = layout_scale(surface);
     const auto width = sx(420.0F, scale);
@@ -169,7 +166,7 @@ void draw_right(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverv
     const auto x = static_cast<float>(surface.width) - width;
     constexpr float y = 0.0F;
 
-    draw_panel_right(renderer, x, y, width, height, surface);
+    draw_panel_right(renderer, x, y, width, height, surface, theme);
     draw_text(renderer, sample.uplink_ok ? "UP" : "NO", x + sx(92.0F, scale), y + sx(36.0F, scale), sx(15.0F, scale), surface);
     draw_text(
         renderer,
@@ -186,9 +183,9 @@ void draw_right(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverv
         sx(15.0F, scale),
         surface);
 
-    const auto record_color = sample.recording ? bad_color : text_color;
+    const auto record_color = sample.recording ? bad_color : theme.font;
     renderer.draw_circle_outline({ x + width - sx(24.0F, scale), y + sx(33.0F, scale) }, sx(8.0F, scale), sx(3.0F, scale), record_color, surface);
-    draw_skew_blocks(renderer, x + sx(162.0F, scale), y + sx(50.0F, scale), sample.rc_quality, surface);
+    draw_skew_blocks(renderer, x + sx(162.0F, scale), y + sx(50.0F, scale), sample.rc_quality, surface, theme);
 }
 
 struct BottomSlot {
@@ -351,7 +348,7 @@ void draw_gps_position(GlesTextRenderer& renderer, SurfaceSize surface, const Li
     draw_text(renderer, lon_fraction, fraction_x, baseline_2, font_scale, surface);
 }
 
-void draw_bottom(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverviewSample& sample)
+void draw_bottom(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverviewSample& sample, const OsdTheme& theme)
 {
     const auto scale = layout_scale(surface);
     const auto height = sx(40.0F, scale);
@@ -372,7 +369,7 @@ void draw_bottom(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOver
     const auto timer_width = renderer.measure_text_width(timer, timer_scale);
 
     draw_gps_position(renderer, surface, sample);
-    draw_bottom_panel(renderer, surface);
+    draw_bottom_panel(renderer, surface, theme);
     draw_text(renderer, mode, center_x - mode_width * 0.5F, y + sx(21.0F, scale), mode_scale, surface);
     draw_text(renderer, timer, center_x - timer_width * 0.5F, y + sx(35.0F, scale), timer_scale, surface);
     draw_bottom_slots(renderer, primary_bottom_slots(sample), side_margin, left_width, side_baseline, scale, surface);
@@ -418,17 +415,17 @@ LinkOverviewSample SimulatedLinkOverview::sample(std::chrono::steady_clock::time
     };
 }
 
-void LinkOverviewRenderer::draw(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverviewSample& sample) const
+void LinkOverviewRenderer::draw(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverviewSample& sample, const OsdTheme& theme) const
 {
-    draw_left(renderer, surface, sample);
-    draw_right(renderer, surface, sample);
-    draw_bottom(renderer, surface, sample);
+    draw_left(renderer, surface, sample, theme);
+    draw_right(renderer, surface, sample, theme);
+    draw_bottom(renderer, surface, sample, theme);
 }
 
-void LinkOverviewRenderer::draw_top(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverviewSample& sample) const
+void LinkOverviewRenderer::draw_top(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverviewSample& sample, const OsdTheme& theme) const
 {
-    draw_left(renderer, surface, sample);
-    draw_right(renderer, surface, sample);
+    draw_left(renderer, surface, sample, theme);
+    draw_right(renderer, surface, sample, theme);
 }
 
 } // namespace glide::flow

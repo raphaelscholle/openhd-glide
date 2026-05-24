@@ -45,6 +45,7 @@ public:
         SurfaceSize surface);
     bool update_argb_texture(const void* pixels, std::uint32_t width, std::uint32_t height, std::uint32_t stride_bytes);
     void draw_cached_argb_texture(RenderPoint top_left, SurfaceSize surface);
+    void set_text_color(RgbaColor color);
     void draw(const TextPlacement& placement, SurfaceSize surface);
     float measure_text_width(std::string_view text, float scale);
     std::string runtime_description() const;
@@ -84,6 +85,7 @@ private:
     std::uint32_t image_texture_width_ {};
     std::uint32_t image_texture_height_ {};
     bool image_texture_ready_ {};
+    RgbaColor text_color_ { .red = 0.92F, .green = 0.96F, .blue = 1.0F, .alpha = 0.98F };
     void* freetype_library_ {};
     void* freetype_face_ {};
     bool text_init_attempted_ {};

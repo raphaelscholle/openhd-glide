@@ -1,7 +1,12 @@
 #include "common/preview_control.hpp"
 
+#include <algorithm>
+#include <cstdint>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
+#include <sstream>
 #include <string>
 
 namespace glide::preview_control {
@@ -25,6 +30,33 @@ std::filesystem::path compact_readouts_control_path()
 std::filesystem::path osd_layout_control_path()
 {
     return std::filesystem::temp_directory_path() / "openhd-glide-flow-osd.layout";
+}
+
+std::filesystem::path theme_color_path(const std::string& key)
+{
+    return std::filesystem::temp_directory_path() / ("openhd-glide-theme-" + key + ".rgb");
+}
+
+std::filesystem::path theme_sync_control_path()
+{
+    return std::filesystem::temp_directory_path() / "openhd-glide-theme-sync.enabled";
+}
+
+std::uint32_t default_theme_color(const std::string& key)
+{
+    if (key == "font") {
+        return 0xebf5ff;
+    }
+    if (key == "vector") {
+        return 0x99ffb8;
+    }
+    if (key == "top" || key == "bottom" || key == "panel") {
+        return 0x0e1318;
+    }
+    if (key == "signal") {
+        return 0x99ffb8;
+    }
+    return 0xffffff;
 }
 
 bool read_enabled_file(const std::filesystem::path& path)
@@ -103,6 +135,42 @@ void set_osd_layout(const std::string& layout)
     } else {
         file << "drone\n";
     }
+}
+
+std::uint32_t theme_color(const std::string& key)
+{
+    std::ifstream file(theme_color_path(key));
+    std::string value;
+    file >> value;
+    if (value.size() == 6 && std::all_of(value.begin(), value.end(), [](unsigned char character) {
+            return std::isxdigit(character) != 0;
+        })) {
+        return static_cast<std::uint32_t>(std::stoul(value, nullptr, 16));
+    }
+    return default_theme_color(key);
+}
+
+void set_theme_color(const std::string& key, std::uint32_t rgb)
+{
+    std::ofstream file(theme_color_path(key), std::ios::trunc);
+    file << std::hex << std::setw(6) << std::setfill('0') << (rgb & 0xffffffU) << '\n';
+}
+
+bool theme_sync_enabled()
+{
+    std::ifstream file(theme_sync_control_path());
+    if (!file) {
+        return false;
+    }
+
+    char value {};
+    file >> value;
+    return value != '0';
+}
+
+void set_theme_sync_enabled(bool enabled)
+{
+    write_enabled_file(theme_sync_control_path(), enabled);
 }
 
 } // namespace glide::preview_control

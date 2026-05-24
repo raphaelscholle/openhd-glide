@@ -10,6 +10,7 @@
 #include "glide_flow/gles_text_renderer.hpp"
 #include "glide_flow/link_overview.hpp"
 #include "glide_flow/naval_osd.hpp"
+#include "glide_flow/osd_theme.hpp"
 #include "glide_flow/performance_horizon.hpp"
 #include "glide_flow/rocket_osd.hpp"
 #include "glide_flow/rover_osd.hpp"
@@ -111,6 +112,45 @@ std::string describe_placement(const glide::flow::TextPlacement& placement)
     return stream.str();
 }
 
+glide::flow::RgbaColor color_from_rgb(std::uint32_t rgb, float alpha)
+{
+    return glide::flow::RgbaColor {
+        .red = static_cast<float>((rgb >> 16U) & 0xffU) / 255.0F,
+        .green = static_cast<float>((rgb >> 8U) & 0xffU) / 255.0F,
+        .blue = static_cast<float>(rgb & 0xffU) / 255.0F,
+        .alpha = alpha,
+    };
+}
+
+glide::flow::OsdTheme load_theme()
+{
+    return glide::flow::OsdTheme {
+        .font = color_from_rgb(glide::preview_control::theme_color("font"), 0.98F),
+        .vector = color_from_rgb(glide::preview_control::theme_color("vector"), 0.90F),
+        .top_panel = color_from_rgb(glide::preview_control::theme_color("top"), 0.94F),
+        .bottom_panel = color_from_rgb(glide::preview_control::theme_color("bottom"), 0.94F),
+        .signal = color_from_rgb(glide::preview_control::theme_color("signal"), 0.90F),
+    };
+}
+
+bool apply_theme_line(const std::string& line)
+{
+    if (line.rfind("state theme ", 0) != 0) {
+        return false;
+    }
+    const auto key_start = std::string("state theme ").size();
+    const auto split = line.find(' ', key_start);
+    if (split == std::string::npos) {
+        return true;
+    }
+    const auto key = line.substr(key_start, split - key_start);
+    const auto value = line.substr(split + 1U);
+    if (value.size() == 6) {
+        glide::preview_control::set_theme_color(key, static_cast<std::uint32_t>(std::stoul(value, nullptr, 16)));
+    }
+    return true;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -143,6 +183,7 @@ int main(int argc, char** argv)
     bool coordinates_enabled = glide::preview_control::coordinates_overlay_enabled();
     bool compact_readouts = glide::preview_control::compact_readouts_enabled();
     std::string osd_layout = glide::preview_control::osd_layout();
+    auto theme = load_theme();
     constexpr bool fps_overlay_enabled = false;
 
     if (options.preview) {
@@ -223,6 +264,8 @@ int main(int argc, char** argv)
                 } else if (line == "state osd drone" || line == "state osd rocket" || line == "state osd rover" || line == "state osd ship") {
                     osd_layout = line.substr(10);
                     glide::preview_control::set_osd_layout(osd_layout);
+                } else if (apply_theme_line(line)) {
+                    theme = load_theme();
                 } else {
                     glide::mavlink::apply_ipc_line(mavlink, line);
                 }
@@ -231,6 +274,7 @@ int main(int argc, char** argv)
             coordinates_enabled = glide::preview_control::coordinates_overlay_enabled();
             compact_readouts = glide::preview_control::compact_readouts_enabled();
             osd_layout = glide::preview_control::osd_layout();
+            theme = load_theme();
         }
 
         options.surface = options.preview ? preview_window.surface_size() : options.surface;
@@ -245,6 +289,7 @@ int main(int argc, char** argv)
 
         if (options.render_gles && renderer.available()) {
             renderer.clear(0.02F, 0.02F, 0.025F, 1.0F, options.surface);
+            renderer.set_text_color(theme.font);
             auto link_sample = simulated_link.sample();
             link_sample.show_coordinates = coordinates_enabled;
             link_sample.armed = mavlink.armed;
@@ -266,16 +311,16 @@ int main(int argc, char** argv)
                 link_sample.satellites = mavlink.satellites;
             }
             if (osd_layout == "rocket") {
-                link_overview.draw_top(renderer, options.surface, link_sample);
+                link_overview.draw_top(renderer, options.surface, link_sample, theme);
                 rocket_osd.draw(renderer, options.surface, simulated_rocket.sample());
             } else if (osd_layout == "rover") {
-                link_overview.draw(renderer, options.surface, link_sample);
+                link_overview.draw(renderer, options.surface, link_sample, theme);
                 rover_osd.draw(renderer, options.surface, simulated_rover.sample());
             } else if (osd_layout == "ship") {
-                link_overview.draw(renderer, options.surface, link_sample);
+                link_overview.draw(renderer, options.surface, link_sample, theme);
                 naval_osd.draw(renderer, options.surface, simulated_naval.sample());
             } else {
-                link_overview.draw(renderer, options.surface, link_sample);
+                link_overview.draw(renderer, options.surface, link_sample, theme);
                 const auto attitude_sample = mavlink.attitude_valid
                     ? glide::flow::AttitudeSample { .roll_degrees = mavlink.roll_degrees, .pitch_degrees = mavlink.pitch_degrees }
                     : simulated_attitude.sample();

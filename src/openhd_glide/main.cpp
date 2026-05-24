@@ -26,6 +26,7 @@
 #include <cctype>
 #include <csignal>
 #include <cstdint>
+#include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -51,6 +52,48 @@
 namespace {
 
 volatile std::sig_atomic_t stop_requested = 0;
+
+std::string rgb_hex(std::uint32_t rgb)
+{
+    std::ostringstream stream;
+    stream << std::hex << std::setw(6) << std::setfill('0') << (rgb & 0xffffffU);
+    return stream.str();
+}
+
+void send_theme_state(glide::ipc::Server& ipc_server, int client_id)
+{
+    for (const auto* key : { "font", "vector", "top", "bottom", "signal" }) {
+        ipc_server.send_line(client_id, std::string("state theme ") + key + " " + rgb_hex(glide::preview_control::theme_color(key)));
+    }
+    ipc_server.send_line(client_id, std::string("state theme sync ") + (glide::preview_control::theme_sync_enabled() ? "1" : "0"));
+}
+
+bool handle_theme_line(const std::string& line, glide::ipc::Server& ipc_server)
+{
+    if (line == "get theme") {
+        return false;
+    }
+    if (line == "set theme sync 0" || line == "set theme sync 1") {
+        glide::preview_control::set_theme_sync_enabled(line.back() == '1');
+        ipc_server.broadcast_line(std::string("state theme sync ") + (line.back() == '1' ? "1" : "0"));
+        return true;
+    }
+    if (line.rfind("set theme ", 0) != 0) {
+        return false;
+    }
+    const auto key_start = std::string("set theme ").size();
+    const auto split = line.find(' ', key_start);
+    if (split == std::string::npos) {
+        return true;
+    }
+    const auto key = line.substr(key_start, split - key_start);
+    const auto value = line.substr(split + 1U);
+    if (value.size() == 6) {
+        glide::preview_control::set_theme_color(key, static_cast<std::uint32_t>(std::stoul(value, nullptr, 16)));
+        ipc_server.broadcast_line("state theme " + key + " " + rgb_hex(glide::preview_control::theme_color(key)));
+    }
+    return true;
+}
 
 void request_stop(int)
 {
@@ -766,7 +809,7 @@ int run_kms_video_preview(const Options& options)
         if (options.flow_overlay) {
             auto link_sample = simulated_link.sample();
             link_sample.show_coordinates = glide::preview_control::coordinates_overlay_enabled();
-            link_overview.draw(flow_renderer, flow_surface, link_sample);
+            link_overview.draw(flow_renderer, flow_surface, link_sample, glide::flow::OsdTheme {});
             performance_horizon.draw(
                 flow_renderer,
                 flow_surface,
@@ -1606,6 +1649,7 @@ int run_preview_stack(char* argv0, const Options& options)
                 ipc_server.send_line(event.client_id, std::string("state coords ") + (coordinates_enabled ? "1" : "0"));
                 ipc_server.send_line(event.client_id, std::string("state compact ") + (compact_readouts ? "1" : "0"));
                 ipc_server.send_line(event.client_id, "state osd " + osd_layout);
+                send_theme_state(ipc_server, event.client_id);
             } else if (event.line == "get fps") {
                 ipc_server.send_line(event.client_id, std::string("state fps ") + (fps_enabled ? "1" : "0"));
             } else if (event.line == "get coords") {
@@ -1614,6 +1658,8 @@ int run_preview_stack(char* argv0, const Options& options)
                 ipc_server.send_line(event.client_id, std::string("state compact ") + (compact_readouts ? "1" : "0"));
             } else if (event.line == "get osd") {
                 ipc_server.send_line(event.client_id, "state osd " + osd_layout);
+            } else if (event.line == "get theme") {
+                send_theme_state(ipc_server, event.client_id);
             } else if (event.line == "set fps 0" || event.line == "set fps 1") {
                 fps_enabled = event.line.back() == '1';
                 glide::preview_control::set_fps_overlay_enabled(fps_enabled);
@@ -1630,6 +1676,7 @@ int run_preview_stack(char* argv0, const Options& options)
                 osd_layout = event.line.substr(8);
                 glide::preview_control::set_osd_layout(osd_layout);
                 ipc_server.broadcast_line("state osd " + osd_layout);
+            } else if (handle_theme_line(event.line, ipc_server)) {
             } else if (event.line.rfind("mav ", 0) == 0) {
                 mavlink_bridge.handle_action_line(event.line);
                 ipc_server.broadcast_line(event.line);
@@ -1755,6 +1802,7 @@ int run_kms_stack(char* argv0, const Options& options)
                 ipc_server.send_line(event.client_id, std::string("state coords ") + (coordinates_enabled ? "1" : "0"));
                 ipc_server.send_line(event.client_id, std::string("state compact ") + (compact_readouts ? "1" : "0"));
                 ipc_server.send_line(event.client_id, "state osd " + osd_layout);
+                send_theme_state(ipc_server, event.client_id);
             } else if (event.line == "get fps") {
                 ipc_server.send_line(event.client_id, std::string("state fps ") + (fps_enabled ? "1" : "0"));
             } else if (event.line == "get coords") {
@@ -1763,6 +1811,8 @@ int run_kms_stack(char* argv0, const Options& options)
                 ipc_server.send_line(event.client_id, std::string("state compact ") + (compact_readouts ? "1" : "0"));
             } else if (event.line == "get osd") {
                 ipc_server.send_line(event.client_id, "state osd " + osd_layout);
+            } else if (event.line == "get theme") {
+                send_theme_state(ipc_server, event.client_id);
             } else if (event.line == "set fps 0" || event.line == "set fps 1") {
                 fps_enabled = event.line.back() == '1';
                 glide::preview_control::set_fps_overlay_enabled(fps_enabled);
@@ -1779,6 +1829,7 @@ int run_kms_stack(char* argv0, const Options& options)
                 osd_layout = event.line.substr(8);
                 glide::preview_control::set_osd_layout(osd_layout);
                 ipc_server.broadcast_line("state osd " + osd_layout);
+            } else if (handle_theme_line(event.line, ipc_server)) {
             } else if (event.line.rfind("mav ", 0) == 0) {
                 mavlink_bridge.handle_action_line(event.line);
                 ipc_server.broadcast_line(event.line);
