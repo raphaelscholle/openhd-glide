@@ -941,7 +941,7 @@ int run_kms_video_preview(const Options& options)
                     }
                     auto link_sample = simulated_link.sample();
                     link_sample.show_coordinates = glide::preview_control::coordinates_overlay_enabled();
-                    links.draw(renderer, surface, link_sample);
+                    links.draw(renderer, surface, link_sample, glide::flow::OsdTheme {});
                     horizon.draw(
                         renderer,
                         surface,
