@@ -157,19 +157,6 @@ void RoverOsdRenderer::draw(GlesTextRenderer& renderer, SurfaceSize surface, con
         }
     }
 
-    renderer.draw_line(
-        { center.x - sx(8.0F, scale), center.y - radius - sx(12.0F, scale) },
-        { center.x, center.y - radius + sx(10.0F, scale) },
-        sx(2.4F, scale),
-        blue,
-        surface);
-    renderer.draw_line(
-        { center.x + sx(8.0F, scale), center.y - radius - sx(12.0F, scale) },
-        { center.x, center.y - radius + sx(10.0F, scale) },
-        sx(2.4F, scale),
-        blue,
-        surface);
-
     const auto speed = std::to_string(static_cast<int>(std::round(sample.speed_kmh)));
     const auto speed_scale = sx(42.0F, scale);
     const auto speed_width = renderer.measure_text_width(speed, speed_scale);

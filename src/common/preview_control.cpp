@@ -89,7 +89,7 @@ std::string osd_layout()
     std::ifstream file(osd_layout_control_path());
     std::string value;
     file >> value;
-    if (value == "rocket" || value == "rover") {
+    if (value == "rocket" || value == "rover" || value == "ship") {
         return value;
     }
     return "drone";
@@ -98,7 +98,7 @@ std::string osd_layout()
 void set_osd_layout(const std::string& layout)
 {
     std::ofstream file(osd_layout_control_path(), std::ios::trunc);
-    if (layout == "rocket" || layout == "rover") {
+    if (layout == "rocket" || layout == "rover" || layout == "ship") {
         file << layout << '\n';
     } else {
         file << "drone\n";

@@ -9,6 +9,7 @@
 #include "glide_flow/fps_overlay.hpp"
 #include "glide_flow/gles_text_renderer.hpp"
 #include "glide_flow/link_overview.hpp"
+#include "glide_flow/naval_osd.hpp"
 #include "glide_flow/performance_horizon.hpp"
 #include "glide_flow/rocket_osd.hpp"
 #include "glide_flow/rover_osd.hpp"
@@ -133,6 +134,8 @@ int main(int argc, char** argv)
     glide::flow::SimulatedRocketOsd simulated_rocket;
     glide::flow::RoverOsdRenderer rover_osd;
     glide::flow::SimulatedRoverOsd simulated_rover;
+    glide::flow::NavalOsdRenderer naval_osd;
+    glide::flow::SimulatedNavalOsd simulated_naval;
     glide::dev::KmsGlesWindow kms_window;
     glide::dev::SdlGlesWindow preview_window;
     glide::ipc::Client ipc;
@@ -217,7 +220,7 @@ int main(int argc, char** argv)
                 } else if (line == "state compact 0" || line == "state compact 1") {
                     compact_readouts = line.back() == '1';
                     glide::preview_control::set_compact_readouts_enabled(compact_readouts);
-                } else if (line == "state osd drone" || line == "state osd rocket" || line == "state osd rover") {
+                } else if (line == "state osd drone" || line == "state osd rocket" || line == "state osd rover" || line == "state osd ship") {
                     osd_layout = line.substr(10);
                     glide::preview_control::set_osd_layout(osd_layout);
                 } else {
@@ -268,6 +271,9 @@ int main(int argc, char** argv)
             } else if (osd_layout == "rover") {
                 link_overview.draw(renderer, options.surface, link_sample);
                 rover_osd.draw(renderer, options.surface, simulated_rover.sample());
+            } else if (osd_layout == "ship") {
+                link_overview.draw(renderer, options.surface, link_sample);
+                naval_osd.draw(renderer, options.surface, simulated_naval.sample());
             } else {
                 link_overview.draw(renderer, options.surface, link_sample);
                 const auto attitude_sample = mavlink.attitude_valid

@@ -85,7 +85,7 @@ int run_headless_ui(const HeadlessOptions& options)
                     glide::preview_control::set_coordinates_overlay_enabled(line.back() == '1');
                 } else if (line == "state compact 0" || line == "state compact 1") {
                     glide::preview_control::set_compact_readouts_enabled(line.back() == '1');
-                } else if (line == "state osd drone" || line == "state osd rocket" || line == "state osd rover") {
+                } else if (line == "state osd drone" || line == "state osd rocket" || line == "state osd rover" || line == "state osd ship") {
                     glide::preview_control::set_osd_layout(line.substr(10));
                 } else {
                     glide::mavlink::apply_ipc_line(mavlink, line);
@@ -485,9 +485,9 @@ void sync_osd_layout_controls(UiState& state)
         return;
     }
 
-    const auto selected = state.osd_layout == "rocket" ? 1U : (state.osd_layout == "rover" ? 2U : 0U);
+    const auto selected = state.osd_layout == "rocket" ? 1U : (state.osd_layout == "rover" ? 2U : (state.osd_layout == "ship" ? 3U : 0U));
     lv_dropdown_set_selected(state.osd_dropdown, selected);
-    lv_label_set_text(state.osd_label, selected == 1U ? "Rocket OSD" : (selected == 2U ? "Rover OSD" : "Drone OSD"));
+    lv_label_set_text(state.osd_label, selected == 1U ? "Rocket OSD" : (selected == 2U ? "Rover OSD" : (selected == 3U ? "Ship OSD" : "Drone OSD")));
 }
 
 bool update_bool(bool& target, bool value)
@@ -691,6 +691,8 @@ void apply_terminal_key(UiState& state, const std::string& line)
                 state.osd_layout = "rocket";
             } else if (state.osd_layout == "rocket") {
                 state.osd_layout = "rover";
+            } else if (state.osd_layout == "rover") {
+                state.osd_layout = "ship";
             } else {
                 state.osd_layout = "drone";
             }
@@ -826,7 +828,7 @@ void build_osd_panel(UiState& state)
 
     state.osd_label = label(selector_row, "Drone OSD", &lv_font_montserrat_16, 0xdce8f0);
     state.osd_dropdown = lv_dropdown_create(selector_row);
-    lv_dropdown_set_options(state.osd_dropdown, "Drone\nRocket\nRover");
+    lv_dropdown_set_options(state.osd_dropdown, "Drone\nRocket\nRover\nShip");
     lv_obj_set_size(state.osd_dropdown, 150, 38);
     lv_obj_set_style_bg_color(state.osd_dropdown, color(0x162a3a), 0);
     lv_obj_set_style_text_color(state.osd_dropdown, color(0xffffff), 0);
@@ -835,7 +837,7 @@ void build_osd_panel(UiState& state)
         [](lv_event_t* event) {
             auto* state = static_cast<UiState*>(lv_event_get_user_data(event));
             const auto selected = lv_dropdown_get_selected(state->osd_dropdown);
-            state->osd_layout = selected == 1U ? "rocket" : (selected == 2U ? "rover" : "drone");
+            state->osd_layout = selected == 1U ? "rocket" : (selected == 2U ? "rover" : (selected == 3U ? "ship" : "drone"));
             sync_osd_layout_controls(*state);
             send_osd_layout_state(*state);
         },
@@ -843,7 +845,7 @@ void build_osd_panel(UiState& state)
         &state);
     sync_osd_layout_controls(state);
 
-    auto* future = label(state.panel_body, "Future: Ship / Sub", &lv_font_montserrat_12, 0x8fa4b4);
+    auto* future = label(state.panel_body, "Future: Sub", &lv_font_montserrat_12, 0x8fa4b4);
     lv_obj_set_width(future, LV_PCT(100));
 
     auto* section = label(state.panel_body, "Overlay", &lv_font_montserrat_18, 0xffffff);
@@ -1384,7 +1386,7 @@ void poll_ipc(UiState& state, std::chrono::steady_clock::time_point now)
                 glide::preview_control::set_compact_readouts_enabled(state.compact_readouts);
                 sync_compact_readouts_controls(state);
             }
-        } else if (line == "state osd drone" || line == "state osd rocket" || line == "state osd rover") {
+        } else if (line == "state osd drone" || line == "state osd rocket" || line == "state osd rover" || line == "state osd ship") {
             if (update_string(state.osd_layout, line.substr(10))) {
                 glide::preview_control::set_osd_layout(state.osd_layout);
                 sync_osd_layout_controls(state);

@@ -1626,7 +1626,7 @@ int run_preview_stack(char* argv0, const Options& options)
                 compact_readouts = event.line.back() == '1';
                 glide::preview_control::set_compact_readouts_enabled(compact_readouts);
                 ipc_server.broadcast_line(std::string("state compact ") + (compact_readouts ? "1" : "0"));
-            } else if (event.line == "set osd drone" || event.line == "set osd rocket" || event.line == "set osd rover") {
+            } else if (event.line == "set osd drone" || event.line == "set osd rocket" || event.line == "set osd rover" || event.line == "set osd ship") {
                 osd_layout = event.line.substr(8);
                 glide::preview_control::set_osd_layout(osd_layout);
                 ipc_server.broadcast_line("state osd " + osd_layout);
@@ -1775,7 +1775,7 @@ int run_kms_stack(char* argv0, const Options& options)
                 compact_readouts = event.line.back() == '1';
                 glide::preview_control::set_compact_readouts_enabled(compact_readouts);
                 ipc_server.broadcast_line(std::string("state compact ") + (compact_readouts ? "1" : "0"));
-            } else if (event.line == "set osd drone" || event.line == "set osd rocket" || event.line == "set osd rover") {
+            } else if (event.line == "set osd drone" || event.line == "set osd rocket" || event.line == "set osd rover" || event.line == "set osd ship") {
                 osd_layout = event.line.substr(8);
                 glide::preview_control::set_osd_layout(osd_layout);
                 ipc_server.broadcast_line("state osd " + osd_layout);
