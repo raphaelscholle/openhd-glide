@@ -37,24 +37,19 @@ std::filesystem::path theme_color_path(const std::string& key)
     return std::filesystem::temp_directory_path() / ("openhd-glide-theme-" + key + ".rgb");
 }
 
-std::filesystem::path theme_sync_control_path()
-{
-    return std::filesystem::temp_directory_path() / "openhd-glide-theme-sync.enabled";
-}
-
 std::uint32_t default_theme_color(const std::string& key)
 {
-    if (key == "font") {
+    if (key == "bar_font") {
         return 0xebf5ff;
     }
-    if (key == "vector") {
-        return 0x99ffb8;
-    }
-    if (key == "top" || key == "bottom" || key == "panel") {
+    if (key == "bar_background") {
         return 0x0e1318;
     }
-    if (key == "signal") {
+    if (key == "primary") {
         return 0x99ffb8;
+    }
+    if (key == "secondary") {
+        return 0x55a8ff;
     }
     return 0xffffff;
 }
@@ -154,23 +149,6 @@ void set_theme_color(const std::string& key, std::uint32_t rgb)
 {
     std::ofstream file(theme_color_path(key), std::ios::trunc);
     file << std::hex << std::setw(6) << std::setfill('0') << (rgb & 0xffffffU) << '\n';
-}
-
-bool theme_sync_enabled()
-{
-    std::ifstream file(theme_sync_control_path());
-    if (!file) {
-        return false;
-    }
-
-    char value {};
-    file >> value;
-    return value != '0';
-}
-
-void set_theme_sync_enabled(bool enabled)
-{
-    write_enabled_file(theme_sync_control_path(), enabled);
 }
 
 } // namespace glide::preview_control

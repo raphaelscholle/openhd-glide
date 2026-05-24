@@ -62,21 +62,15 @@ std::string rgb_hex(std::uint32_t rgb)
 
 void send_theme_state(glide::ipc::Server& ipc_server, int client_id)
 {
-    for (const auto* key : { "font", "vector", "top", "bottom", "signal" }) {
+    for (const auto* key : { "bar_font", "bar_background", "primary", "secondary" }) {
         ipc_server.send_line(client_id, std::string("state theme ") + key + " " + rgb_hex(glide::preview_control::theme_color(key)));
     }
-    ipc_server.send_line(client_id, std::string("state theme sync ") + (glide::preview_control::theme_sync_enabled() ? "1" : "0"));
 }
 
 bool handle_theme_line(const std::string& line, glide::ipc::Server& ipc_server)
 {
     if (line == "get theme") {
         return false;
-    }
-    if (line == "set theme sync 0" || line == "set theme sync 1") {
-        glide::preview_control::set_theme_sync_enabled(line.back() == '1');
-        ipc_server.broadcast_line(std::string("state theme sync ") + (line.back() == '1' ? "1" : "0"));
-        return true;
     }
     if (line.rfind("set theme ", 0) != 0) {
         return false;

@@ -125,11 +125,10 @@ glide::flow::RgbaColor color_from_rgb(std::uint32_t rgb, float alpha)
 glide::flow::OsdTheme load_theme()
 {
     return glide::flow::OsdTheme {
-        .font = color_from_rgb(glide::preview_control::theme_color("font"), 0.98F),
-        .vector = color_from_rgb(glide::preview_control::theme_color("vector"), 0.90F),
-        .top_panel = color_from_rgb(glide::preview_control::theme_color("top"), 0.94F),
-        .bottom_panel = color_from_rgb(glide::preview_control::theme_color("bottom"), 0.94F),
-        .signal = color_from_rgb(glide::preview_control::theme_color("signal"), 0.90F),
+        .bar_font = color_from_rgb(glide::preview_control::theme_color("bar_font"), 0.98F),
+        .bar_background = color_from_rgb(glide::preview_control::theme_color("bar_background"), 0.94F),
+        .primary = color_from_rgb(glide::preview_control::theme_color("primary"), 0.90F),
+        .secondary = color_from_rgb(glide::preview_control::theme_color("secondary"), 0.90F),
     };
 }
 
@@ -289,7 +288,7 @@ int main(int argc, char** argv)
 
         if (options.render_gles && renderer.available()) {
             renderer.clear(0.02F, 0.02F, 0.025F, 1.0F, options.surface);
-            renderer.set_text_color(theme.font);
+            renderer.set_text_color(theme.primary);
             auto link_sample = simulated_link.sample();
             link_sample.show_coordinates = coordinates_enabled;
             link_sample.armed = mavlink.armed;

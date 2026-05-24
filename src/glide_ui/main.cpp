@@ -90,8 +90,6 @@ int run_headless_ui(const HeadlessOptions& options)
                     glide::preview_control::set_compact_readouts_enabled(line.back() == '1');
                 } else if (line == "state osd drone" || line == "state osd rocket" || line == "state osd rover" || line == "state osd ship") {
                     glide::preview_control::set_osd_layout(line.substr(10));
-                } else if (line == "state theme sync 0" || line == "state theme sync 1") {
-                    glide::preview_control::set_theme_sync_enabled(line.back() == '1');
                 } else if (line.rfind("state theme ", 0) == 0) {
                     const auto key_start = std::string("state theme ").size();
                     const auto split = line.find(' ', key_start);
@@ -164,12 +162,10 @@ struct UiState {
     bool coordinates_enabled { true };
     bool compact_readouts { false };
     std::string osd_layout { "drone" };
-    bool theme_sync {};
-    std::uint32_t theme_font { 0xebf5ff };
-    std::uint32_t theme_vector { 0x99ffb8 };
-    std::uint32_t theme_top { 0x0e1318 };
-    std::uint32_t theme_bottom { 0x0e1318 };
-    std::uint32_t theme_signal { 0x99ffb8 };
+    std::uint32_t theme_bar_font { 0xebf5ff };
+    std::uint32_t theme_bar_background { 0x0e1318 };
+    std::uint32_t theme_primary { 0x99ffb8 };
+    std::uint32_t theme_secondary { 0x55a8ff };
     bool advanced_visible {};
     bool focus_panel {};
     bool panel_rebuild_pending {};
@@ -190,9 +186,8 @@ struct UiState {
     lv_obj_t* compact_label {};
     lv_obj_t* osd_dropdown {};
     lv_obj_t* osd_label {};
-    lv_obj_t* theme_sync_switch {};
-    std::array<lv_obj_t*, 5> theme_dropdowns {};
-    std::array<lv_obj_t*, 5> theme_labels {};
+    std::array<lv_obj_t*, 4> theme_dropdowns {};
+    std::array<lv_obj_t*, 4> theme_labels {};
     lv_obj_t* scan_bar {};
     lv_obj_t* scan_percent {};
     lv_obj_t* nav_buttons[10] {};
@@ -525,28 +520,32 @@ struct ColorPreset {
     std::uint32_t rgb;
 };
 
-constexpr std::array<ColorPreset, 8> color_presets {{
+constexpr std::array<ColorPreset, 9> color_presets {{
     { "Default", 0x000000 },
+    { "Yellow", 0xffd447 },
+    { "Warm White", 0xfff4d6 },
     { "White", 0xebf5ff },
-    { "Green", 0x99ffb8 },
+    { "Cyan", 0x70f4ff },
     { "Blue", 0x55a8ff },
-    { "Purple", 0xaa6dff },
-    { "Amber", 0xffc647 },
-    { "Red", 0xff4c66 },
-    { "Dark", 0x0e1318 },
+    { "Deep Blue", 0x2456ff },
+    { "Black", 0x02070a },
+    { "Graphite", 0x0e1318 },
 }};
 
-constexpr std::array<const char*, 5> theme_keys {{ "font", "vector", "top", "bottom", "signal" }};
-constexpr std::array<const char*, 5> theme_labels {{ "Font", "Vectors", "Top background", "Bottom background", "Signal bars" }};
+constexpr std::array<const char*, 4> theme_keys {{ "bar_font", "bar_background", "primary", "secondary" }};
+constexpr std::array<const char*, 4> theme_labels {{ "Bar font", "Bar background", "Primary", "Secondary" }};
 
 std::uint32_t default_theme_color(const char* key)
 {
     const std::string name { key };
-    if (name == "font") {
+    if (name == "bar_font") {
         return 0xebf5ff;
     }
-    if (name == "top" || name == "bottom") {
+    if (name == "bar_background") {
         return 0x0e1318;
+    }
+    if (name == "secondary") {
+        return 0x55a8ff;
     }
     return 0x99ffb8;
 }
@@ -554,18 +553,15 @@ std::uint32_t default_theme_color(const char* key)
 std::uint32_t& theme_color_ref(UiState& state, std::size_t index)
 {
     if (index == 0U) {
-        return state.theme_font;
+        return state.theme_bar_font;
     }
     if (index == 1U) {
-        return state.theme_vector;
+        return state.theme_bar_background;
     }
     if (index == 2U) {
-        return state.theme_top;
+        return state.theme_primary;
     }
-    if (index == 3U) {
-        return state.theme_bottom;
-    }
-    return state.theme_signal;
+    return state.theme_secondary;
 }
 
 std::uint32_t preset_rgb_for_index(std::size_t channel, std::uint16_t preset)
@@ -602,12 +598,6 @@ void sync_theme_controls(UiState& state);
 
 bool apply_theme_state_line(UiState& state, const std::string& line)
 {
-    if (line == "state theme sync 0" || line == "state theme sync 1") {
-        state.theme_sync = line.back() == '1';
-        glide::preview_control::set_theme_sync_enabled(state.theme_sync);
-        sync_theme_controls(state);
-        return true;
-    }
     if (line.rfind("state theme ", 0) != 0) {
         return false;
     }
@@ -641,23 +631,8 @@ void send_theme_color(UiState& state, std::size_t index)
     }
 }
 
-void send_theme_sync(UiState& state)
-{
-    glide::preview_control::set_theme_sync_enabled(state.theme_sync);
-    if (state.ipc.connected()) {
-        state.ipc.send_line(std::string("set theme sync ") + (state.theme_sync ? "1" : "0"));
-    }
-}
-
 void sync_theme_controls(UiState& state)
 {
-    if (state.theme_sync_switch != nullptr) {
-        if (state.theme_sync) {
-            lv_obj_add_state(state.theme_sync_switch, LV_STATE_CHECKED);
-        } else {
-            lv_obj_remove_state(state.theme_sync_switch, LV_STATE_CHECKED);
-        }
-    }
     for (std::size_t i = 0; i < theme_keys.size(); ++i) {
         if (state.theme_dropdowns[i] != nullptr) {
             lv_dropdown_set_selected(state.theme_dropdowns[i], preset_index_for_rgb(i, theme_color_ref(state, i)));
@@ -889,26 +864,13 @@ void apply_terminal_key(UiState& state, const std::string& line)
             state.compact_readouts = !state.compact_readouts;
             sync_compact_readouts_controls(state);
             send_compact_readouts_state(state);
-        } else if (state.active_panel == SidebarPanel::colors && state.selected_row == 0) {
-            state.theme_sync = !state.theme_sync;
-            sync_theme_controls(state);
-            send_theme_sync(state);
-        } else if (state.active_panel == SidebarPanel::colors && state.selected_row >= 1 && state.selected_row <= 5) {
-            const auto index = static_cast<std::size_t>(state.selected_row - 1);
+        } else if (state.active_panel == SidebarPanel::colors && state.selected_row >= 0 && state.selected_row <= 3) {
+            const auto index = static_cast<std::size_t>(state.selected_row);
             const auto current = preset_index_for_rgb(index, theme_color_ref(state, index));
             const auto next = static_cast<std::uint16_t>((current + 1U) % color_presets.size());
             const auto rgb = preset_rgb_for_index(index, next);
             theme_color_ref(state, index) = rgb;
             send_theme_color(state, index);
-            if (state.theme_sync) {
-                for (std::size_t channel = 0; channel < theme_keys.size(); ++channel) {
-                    if (channel == index) {
-                        continue;
-                    }
-                    theme_color_ref(state, channel) = rgb;
-                    send_theme_color(state, channel);
-                }
-            }
             sync_theme_controls(state);
         } else if (state.active_panel == SidebarPanel::recording && state.selected_row == 2) {
             send_mavlink_action(state, glide::mavlink::format_action_set_param("camera1", "AIR_RECORDING_E", "toggle"));
@@ -1139,39 +1101,7 @@ void build_colors_panel(UiState& state)
     auto* section = label(state.panel_body, "Theme", &lv_font_montserrat_18, 0xffffff);
     lv_obj_set_width(section, LV_PCT(100));
 
-    const int sync_row_index = state.row_count++;
-    auto* sync_row = lv_obj_create(state.panel_body);
-    set_panel_style(sync_row, state.focus_panel && state.selected_row == sync_row_index ? 0x2d210e : 0x0f2130, LV_OPA_80);
-    lv_obj_set_style_radius(sync_row, 6, 0);
-    lv_obj_set_style_border_width(sync_row, state.focus_panel && state.selected_row == sync_row_index ? 1 : 0, 0);
-    lv_obj_set_style_border_color(sync_row, color(0xff8a00), 0);
-    lv_obj_set_size(sync_row, LV_PCT(100), 54);
-    lv_obj_set_style_pad_left(sync_row, 16, 0);
-    lv_obj_set_style_pad_right(sync_row, 16, 0);
-    lv_obj_set_flex_flow(sync_row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(sync_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    label(sync_row, "Synchronize colors", &lv_font_montserrat_16, 0xdce8f0);
-    state.theme_sync_switch = lv_switch_create(sync_row);
-    lv_obj_set_size(state.theme_sync_switch, 58, 30);
-    lv_obj_add_event_cb(
-        state.theme_sync_switch,
-        [](lv_event_t* event) {
-            auto* state = static_cast<UiState*>(lv_event_get_user_data(event));
-            state->theme_sync = lv_obj_has_state(state->theme_sync_switch, LV_STATE_CHECKED);
-            if (state->theme_sync) {
-                const auto shared = state->theme_font;
-                for (std::size_t i = 1; i < theme_keys.size(); ++i) {
-                    theme_color_ref(*state, i) = shared;
-                    send_theme_color(*state, i);
-                }
-            }
-            sync_theme_controls(*state);
-            send_theme_sync(*state);
-        },
-        LV_EVENT_VALUE_CHANGED,
-        &state);
-
-    const char* options = "Default\nWhite\nGreen\nBlue\nPurple\nAmber\nRed\nDark";
+    const char* options = "Default\nYellow\nWarm White\nWhite\nCyan\nBlue\nDeep Blue\nBlack\nGraphite";
     for (std::size_t i = 0; i < theme_keys.size(); ++i) {
         const int row_index = state.row_count++;
         auto* row = lv_obj_create(state.panel_body);
@@ -1204,15 +1134,6 @@ void build_colors_panel(UiState& state)
                 const auto rgb = preset_rgb_for_index(index, selected);
                 theme_color_ref(*state, index) = rgb;
                 send_theme_color(*state, index);
-                if (state->theme_sync) {
-                    for (std::size_t channel = 0; channel < theme_keys.size(); ++channel) {
-                        if (channel == index) {
-                            continue;
-                        }
-                        theme_color_ref(*state, channel) = rgb;
-                        send_theme_color(*state, channel);
-                    }
-                }
                 sync_theme_controls(*state);
             },
             LV_EVENT_VALUE_CHANGED,
@@ -1358,7 +1279,6 @@ void clear_panel(UiState& state)
     state.compact_label = nullptr;
     state.osd_dropdown = nullptr;
     state.osd_label = nullptr;
-    state.theme_sync_switch = nullptr;
     state.theme_dropdowns.fill(nullptr);
     state.theme_labels.fill(nullptr);
     state.scan_bar = nullptr;
@@ -1662,7 +1582,6 @@ void poll_ipc(UiState& state, std::chrono::steady_clock::time_point now)
         if (update_string(state.osd_layout, glide::preview_control::osd_layout())) {
             sync_osd_layout_controls(state);
         }
-        state.theme_sync = glide::preview_control::theme_sync_enabled();
         for (std::size_t i = 0; i < theme_keys.size(); ++i) {
             theme_color_ref(state, i) = glide::preview_control::theme_color(theme_keys[i]);
         }
@@ -1776,7 +1695,6 @@ int main(int argc, char** argv)
     state.coordinates_enabled = glide::preview_control::coordinates_overlay_enabled();
     state.compact_readouts = glide::preview_control::compact_readouts_enabled();
     state.osd_layout = glide::preview_control::osd_layout();
-    state.theme_sync = glide::preview_control::theme_sync_enabled();
     for (std::size_t i = 0; i < theme_keys.size(); ++i) {
         theme_color_ref(state, i) = glide::preview_control::theme_color(theme_keys[i]);
     }

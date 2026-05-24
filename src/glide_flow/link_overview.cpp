@@ -26,7 +26,7 @@ std::string fixed_1(float value)
 RgbaColor quality_color(const OsdTheme& theme, int value)
 {
     if (value >= 70) {
-        return theme.signal;
+        return theme.primary;
     }
     if (value >= 35) {
         return warn_color;
@@ -63,7 +63,7 @@ void draw_panel_left(GlesTextRenderer& renderer, float x, float y, float width, 
         { x + width, y },
         { x, y + height },
         { x + (width * 0.80F), y + height },
-        theme.top_panel,
+        theme.bar_background,
         surface);
 }
 
@@ -74,7 +74,7 @@ void draw_panel_right(GlesTextRenderer& renderer, float x, float y, float width,
         { x + width, y },
         { x + (width * 0.20F), y + height },
         { x + width, y + height },
-        theme.top_panel,
+        theme.bar_background,
         surface);
 }
 
@@ -95,11 +95,11 @@ void draw_bottom_panel(GlesTextRenderer& renderer, SurfaceSize surface, const Os
     const auto notch_right = std::min(width - sx(6.0F, scale), notch_end + notch_slope);
     const auto bottom_y = y + height;
 
-    renderer.draw_filled_quad({ 0.0F, top_y }, { notch_left, top_y }, { 0.0F, bottom_y }, { notch_left, bottom_y }, theme.bottom_panel, surface);
-    renderer.draw_filled_quad({ notch_right, top_y }, { width, top_y }, { notch_right, bottom_y }, { width, bottom_y }, theme.bottom_panel, surface);
-    renderer.draw_filled_quad({ notch_left, top_y }, { notch_start, notch_top_y }, { notch_left, bottom_y }, { notch_start, bottom_y }, theme.bottom_panel, surface);
-    renderer.draw_filled_quad({ notch_start, notch_top_y }, { notch_end, notch_top_y }, { notch_start, bottom_y }, { notch_end, bottom_y }, theme.bottom_panel, surface);
-    renderer.draw_filled_quad({ notch_end, notch_top_y }, { notch_right, top_y }, { notch_end, bottom_y }, { notch_right, bottom_y }, theme.bottom_panel, surface);
+    renderer.draw_filled_quad({ 0.0F, top_y }, { notch_left, top_y }, { 0.0F, bottom_y }, { notch_left, bottom_y }, theme.bar_background, surface);
+    renderer.draw_filled_quad({ notch_right, top_y }, { width, top_y }, { notch_right, bottom_y }, { width, bottom_y }, theme.bar_background, surface);
+    renderer.draw_filled_quad({ notch_left, top_y }, { notch_start, notch_top_y }, { notch_left, bottom_y }, { notch_start, bottom_y }, theme.bar_background, surface);
+    renderer.draw_filled_quad({ notch_start, notch_top_y }, { notch_end, notch_top_y }, { notch_start, bottom_y }, { notch_end, bottom_y }, theme.bar_background, surface);
+    renderer.draw_filled_quad({ notch_end, notch_top_y }, { notch_right, top_y }, { notch_end, bottom_y }, { notch_right, bottom_y }, theme.bar_background, surface);
 }
 
 void draw_skew_blocks(GlesTextRenderer& renderer, float x, float y, int value, SurfaceSize surface, const OsdTheme& theme)
@@ -129,10 +129,10 @@ void draw_skew_blocks(GlesTextRenderer& renderer, float x, float y, int value, S
             { bx + block_width, y + block_height },
             fill,
             surface);
-        renderer.draw_line({ bx, y + block_height }, { bx + skew, y }, sx(1.2F, scale), theme.vector, surface);
-        renderer.draw_line({ bx + skew, y }, { bx + block_width + skew, y }, sx(1.2F, scale), theme.vector, surface);
-        renderer.draw_line({ bx + block_width + skew, y }, { bx + block_width, y + block_height }, sx(1.2F, scale), theme.vector, surface);
-        renderer.draw_line({ bx + block_width, y + block_height }, { bx, y + block_height }, sx(1.2F, scale), theme.vector, surface);
+        renderer.draw_line({ bx, y + block_height }, { bx + skew, y }, sx(1.2F, scale), theme.secondary, surface);
+        renderer.draw_line({ bx + skew, y }, { bx + block_width + skew, y }, sx(1.2F, scale), theme.secondary, surface);
+        renderer.draw_line({ bx + block_width + skew, y }, { bx + block_width, y + block_height }, sx(1.2F, scale), theme.secondary, surface);
+        renderer.draw_line({ bx + block_width, y + block_height }, { bx, y + block_height }, sx(1.2F, scale), theme.secondary, surface);
     }
 }
 
@@ -145,7 +145,8 @@ void draw_left(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOvervi
     const auto height = sx(72.0F, scale);
 
     draw_panel_left(renderer, x, y, width, height, surface, theme);
-    renderer.draw_circle_outline({ x + sx(26.0F, scale), y + sx(28.0F, scale) }, sx(16.0F, scale), sx(2.0F, scale), theme.vector, surface);
+    renderer.set_text_color(theme.bar_font);
+    renderer.draw_circle_outline({ x + sx(26.0F, scale), y + sx(28.0F, scale) }, sx(16.0F, scale), sx(2.0F, scale), theme.secondary, surface);
     draw_text(renderer, "O", x + sx(17.0F, scale), y + sx(36.0F, scale), sx(16.0F, scale), surface);
     draw_text(
         renderer,
@@ -183,7 +184,8 @@ void draw_right(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverv
         sx(15.0F, scale),
         surface);
 
-    const auto record_color = sample.recording ? bad_color : theme.font;
+    renderer.set_text_color(theme.bar_font);
+    const auto record_color = sample.recording ? bad_color : theme.bar_font;
     renderer.draw_circle_outline({ x + width - sx(24.0F, scale), y + sx(33.0F, scale) }, sx(8.0F, scale), sx(3.0F, scale), record_color, surface);
     draw_skew_blocks(renderer, x + sx(162.0F, scale), y + sx(50.0F, scale), sample.rc_quality, surface, theme);
 }
@@ -370,6 +372,7 @@ void draw_bottom(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOver
 
     draw_gps_position(renderer, surface, sample);
     draw_bottom_panel(renderer, surface, theme);
+    renderer.set_text_color(theme.bar_font);
     draw_text(renderer, mode, center_x - mode_width * 0.5F, y + sx(21.0F, scale), mode_scale, surface);
     draw_text(renderer, timer, center_x - timer_width * 0.5F, y + sx(35.0F, scale), timer_scale, surface);
     draw_bottom_slots(renderer, primary_bottom_slots(sample), side_margin, left_width, side_baseline, scale, surface);
