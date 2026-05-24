@@ -844,7 +844,7 @@ void apply_terminal_key(UiState& state, const std::string& line)
             state.selected_row = std::min(std::max(0, state.row_count - 1), state.selected_row + 1);
             rebuild_ui(state);
         } else {
-            index = std::min(8, index + 1);
+            index = std::min(9, index + 1);
             set_active_panel(state, static_cast<SidebarPanel>(index));
         }
     } else if (key == "left" || key == "back") {
@@ -1445,8 +1445,8 @@ void build_sidebar(UiState& state, std::uint32_t width, std::uint32_t height)
     lv_obj_set_size(rail, menu_width, menu_height);
     lv_obj_align(rail, LV_ALIGN_LEFT_MID, 14, 0);
     lv_obj_set_flex_flow(rail, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_top(rail, 24, 0);
-    lv_obj_set_style_pad_bottom(rail, 12, 0);
+    lv_obj_set_style_pad_top(rail, 16, 0);
+    lv_obj_set_style_pad_bottom(rail, 8, 0);
     lv_obj_set_style_pad_left(rail, 0, 0);
     lv_obj_set_style_pad_right(rail, 0, 0);
     lv_obj_set_style_pad_row(rail, 2, 0);
@@ -1454,19 +1454,19 @@ void build_sidebar(UiState& state, std::uint32_t width, std::uint32_t height)
     auto* brand = label(rail, "OPENHD", &lv_font_montserrat_20, 0xffffff);
     lv_obj_set_width(brand, LV_PCT(100));
     lv_obj_set_style_pad_left(brand, 26, 0);
-    lv_obj_set_height(brand, 36);
+    lv_obj_set_height(brand, 32);
 
     auto* accent = lv_obj_create(rail);
     set_panel_style(accent, 0xff8a00);
     lv_obj_set_size(accent, 70, 1);
     lv_obj_set_style_margin_left(accent, 38, 0);
-    lv_obj_set_style_margin_bottom(accent, 14, 0);
+    lv_obj_set_style_margin_bottom(accent, 8, 0);
 
     for (int i = 0; i < 10; ++i) {
         auto* button = lv_button_create(rail);
         state.nav_buttons[i] = button;
         lv_obj_set_user_data(button, reinterpret_cast<void*>(static_cast<std::intptr_t>(i)));
-        lv_obj_set_size(button, LV_PCT(100), 42);
+        lv_obj_set_size(button, LV_PCT(100), 36);
         lv_obj_set_style_radius(button, 6, 0);
         lv_obj_set_style_border_width(button, 0, 0);
         lv_obj_set_style_margin_left(button, 6, 0);
@@ -1491,7 +1491,7 @@ void build_sidebar(UiState& state, std::uint32_t width, std::uint32_t height)
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_left(row, 28, 0);
-        lv_obj_set_style_pad_column(row, 14, 0);
+        lv_obj_set_style_pad_column(row, 12, 0);
 
         auto* icon = label(row, nav_symbol(i), &lv_font_montserrat_18, checked ? 0xff8a00 : 0xdce5ec);
         lv_obj_set_width(icon, 24);
@@ -1503,7 +1503,7 @@ void build_sidebar(UiState& state, std::uint32_t width, std::uint32_t height)
 
     auto* footer = lv_obj_create(rail);
     set_panel_style(footer, 0x020d15, LV_OPA_TRANSP);
-    lv_obj_set_size(footer, LV_PCT(100), 32);
+    lv_obj_set_size(footer, LV_PCT(100), 28);
     lv_obj_set_flex_flow(footer, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(footer, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_left(footer, 26, 0);
