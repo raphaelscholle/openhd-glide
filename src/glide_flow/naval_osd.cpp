@@ -8,17 +8,17 @@ namespace glide::flow {
 namespace {
 
 constexpr float pi = 3.14159265358979323846F;
-constexpr RgbaColor purple { .red = 0.67F, .green = 0.43F, .blue = 1.0F, .alpha = 0.90F };
-constexpr RgbaColor purple_dim { .red = 0.67F, .green = 0.43F, .blue = 1.0F, .alpha = 0.30F };
-constexpr RgbaColor purple_faint { .red = 0.67F, .green = 0.43F, .blue = 1.0F, .alpha = 0.15F };
-constexpr RgbaColor amber { .red = 1.0F, .green = 0.78F, .blue = 0.28F, .alpha = 0.85F };
-constexpr RgbaColor blue { .red = 0.48F, .green = 0.72F, .blue = 1.0F, .alpha = 0.78F };
-
 float layout_scale(SurfaceSize surface)
 {
     return std::max(0.70F, std::min(
         static_cast<float>(surface.width) / 1280.0F,
         static_cast<float>(surface.height) / 720.0F));
+}
+
+RgbaColor with_alpha(RgbaColor color, float alpha)
+{
+    color.alpha = alpha;
+    return color;
 }
 
 float sx(float value, float scale)
@@ -63,12 +63,12 @@ void draw_diamond(GlesTextRenderer& renderer, RenderPoint center, float radius, 
     renderer.draw_line(left, top, 1.6F, color, surface);
 }
 
-void draw_scope(GlesTextRenderer& renderer, SurfaceSize surface, RenderPoint center, float radius)
+void draw_scope(GlesTextRenderer& renderer, SurfaceSize surface, RenderPoint center, float radius, const OsdTheme& theme)
 {
     const auto scale = layout_scale(surface);
-    renderer.draw_circle_outline(center, radius, sx(2.0F, scale), purple_dim, surface);
-    renderer.draw_circle_outline(center, radius - sx(9.0F, scale), sx(1.0F, scale), purple_faint, surface);
-    renderer.draw_circle_outline(center, radius * 0.52F, sx(1.0F, scale), purple_faint, surface);
+    renderer.draw_circle_outline(center, radius, sx(2.0F, scale), with_alpha(theme.secondary, 0.30F), surface);
+    renderer.draw_circle_outline(center, radius - sx(9.0F, scale), sx(1.0F, scale), with_alpha(theme.secondary, 0.15F), surface);
+    renderer.draw_circle_outline(center, radius * 0.52F, sx(1.0F, scale), with_alpha(theme.secondary, 0.15F), surface);
 
     constexpr int ticks = 72;
     for (int i = 0; i < ticks; ++i) {
@@ -76,7 +76,7 @@ void draw_scope(GlesTextRenderer& renderer, SurfaceSize surface, RenderPoint cen
         const auto major = i % 9 == 0;
         const auto outer = compass_point(center, radius, degrees);
         const auto inner = compass_point(center, radius - sx(major ? 18.0F : 9.0F, scale), degrees);
-        renderer.draw_line(inner, outer, sx(major ? 1.6F : 1.0F, scale), major ? purple : purple_faint, surface);
+        renderer.draw_line(inner, outer, sx(major ? 1.6F : 1.0F, scale), major ? theme.primary : with_alpha(theme.secondary, 0.15F), surface);
     }
 }
 
@@ -97,30 +97,30 @@ void draw_cardinals(GlesTextRenderer& renderer, SurfaceSize surface, RenderPoint
     }
 }
 
-void draw_heading_marker(GlesTextRenderer& renderer, SurfaceSize surface, RenderPoint center, float radius)
+void draw_heading_marker(GlesTextRenderer& renderer, SurfaceSize surface, RenderPoint center, float radius, const OsdTheme& theme)
 {
     const auto scale = layout_scale(surface);
     const auto top = compass_point(center, radius + sx(16.0F, scale), 0.0F);
-    renderer.draw_line({ top.x - sx(9.0F, scale), top.y - sx(4.0F, scale) }, top, sx(2.4F, scale), purple, surface);
-    renderer.draw_line({ top.x + sx(9.0F, scale), top.y - sx(4.0F, scale) }, top, sx(2.4F, scale), purple, surface);
+    renderer.draw_line({ top.x - sx(9.0F, scale), top.y - sx(4.0F, scale) }, top, sx(2.4F, scale), theme.primary, surface);
+    renderer.draw_line({ top.x + sx(9.0F, scale), top.y - sx(4.0F, scale) }, top, sx(2.4F, scale), theme.primary, surface);
 
     const auto bow = compass_point(center, radius * 0.72F, 0.0F);
     const auto stern = compass_point(center, radius * 0.72F, 180.0F);
-    renderer.draw_line(stern, bow, sx(1.8F, scale), purple, surface);
-    renderer.draw_circle_outline(center, sx(12.0F, scale), sx(2.0F, scale), purple, surface);
-    renderer.draw_line({ center.x - sx(18.0F, scale), center.y }, { center.x + sx(18.0F, scale), center.y }, sx(1.5F, scale), purple_dim, surface);
+    renderer.draw_line(stern, bow, sx(1.8F, scale), theme.primary, surface);
+    renderer.draw_circle_outline(center, sx(12.0F, scale), sx(2.0F, scale), theme.primary, surface);
+    renderer.draw_line({ center.x - sx(18.0F, scale), center.y }, { center.x + sx(18.0F, scale), center.y }, sx(1.5F, scale), with_alpha(theme.secondary, 0.30F), surface);
 }
 
-void draw_contacts(GlesTextRenderer& renderer, SurfaceSize surface, RenderPoint center, float radius, const NavalOsdSample& sample)
+void draw_contacts(GlesTextRenderer& renderer, SurfaceSize surface, RenderPoint center, float radius, const NavalOsdSample& sample, const OsdTheme& theme)
 {
     const auto scale = layout_scale(surface);
     for (const auto& contact : sample.contacts) {
         const auto relative = normalize_degrees(contact.bearing_degrees - sample.heading_degrees);
         const auto point = compass_point(center, radius * std::clamp(contact.range_normalized, 0.10F, 0.92F), relative);
-        const auto color = contact.selected ? amber : (contact.ship ? purple : blue);
+        const auto color = contact.ship ? theme.primary : theme.secondary;
         draw_diamond(renderer, point, sx(contact.ship ? 4.5F : 3.2F, scale), color, surface);
         if (contact.selected) {
-            renderer.draw_circle_outline(point, sx(8.0F, scale), sx(1.0F, scale), amber, surface);
+            renderer.draw_circle_outline(point, sx(8.0F, scale), sx(1.0F, scale), theme.secondary, surface);
         }
     }
 }
@@ -145,8 +145,9 @@ NavalOsdSample SimulatedNavalOsd::sample(std::chrono::steady_clock::time_point n
     };
 }
 
-void NavalOsdRenderer::draw(GlesTextRenderer& renderer, SurfaceSize surface, const NavalOsdSample& sample) const
+void NavalOsdRenderer::draw(GlesTextRenderer& renderer, SurfaceSize surface, const NavalOsdSample& sample, const OsdTheme& theme) const
 {
+    renderer.set_text_color(theme.primary);
     const auto scale = layout_scale(surface);
     const auto radius = sx(205.0F, scale);
     const RenderPoint center {
@@ -154,10 +155,10 @@ void NavalOsdRenderer::draw(GlesTextRenderer& renderer, SurfaceSize surface, con
         .y = static_cast<float>(surface.height) * 0.50F,
     };
 
-    draw_scope(renderer, surface, center, radius);
+    draw_scope(renderer, surface, center, radius, theme);
     draw_cardinals(renderer, surface, center, radius, sample.heading_degrees);
-    draw_contacts(renderer, surface, center, radius, sample);
-    draw_heading_marker(renderer, surface, center, radius);
+    draw_contacts(renderer, surface, center, radius, sample, theme);
+    draw_heading_marker(renderer, surface, center, radius, theme);
 }
 
 } // namespace glide::flow

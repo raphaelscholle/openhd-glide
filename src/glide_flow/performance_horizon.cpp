@@ -21,6 +21,12 @@ RenderPoint rotate_around(RenderPoint point, RenderPoint origin, float degrees)
     };
 }
 
+RgbaColor with_alpha(RgbaColor color, float alpha)
+{
+    color.alpha = alpha;
+    return color;
+}
+
 void draw_horizon_segment(
     GlesTextRenderer& renderer,
     RenderPoint center,
@@ -29,10 +35,9 @@ void draw_horizon_segment(
     float local_y,
     float roll_degrees,
     float thickness,
+    const OsdTheme& theme,
     SurfaceSize surface)
 {
-    const RgbaColor glow { .red = 0.02F, .green = 0.95F, .blue = 0.45F, .alpha = 0.42F };
-    const RgbaColor line { .red = 0.60F, .green = 1.0F, .blue = 0.72F, .alpha = 0.96F };
     const auto rotation = -roll_degrees;
 
     const RenderPoint start {
@@ -46,8 +51,8 @@ void draw_horizon_segment(
 
     const auto rotated_start = rotate_around(start, center, rotation);
     const auto rotated_end = rotate_around(end, center, rotation);
-    renderer.draw_line(rotated_start, rotated_end, thickness + 3.0F, glow, surface);
-    renderer.draw_line(rotated_start, rotated_end, thickness, line, surface);
+    renderer.draw_line(rotated_start, rotated_end, thickness + 3.0F, with_alpha(theme.secondary, 0.40F), surface);
+    renderer.draw_line(rotated_start, rotated_end, thickness, with_alpha(theme.primary, 0.96F), surface);
 }
 
 float normalize_degrees(float degrees)
@@ -85,10 +90,8 @@ void draw_arc(
     }
 }
 
-void draw_wind_indicator(GlesTextRenderer& renderer, RenderPoint horizon_center, WindSample wind, float scale, SurfaceSize surface)
+void draw_wind_indicator(GlesTextRenderer& renderer, RenderPoint horizon_center, WindSample wind, float scale, const OsdTheme& theme, SurfaceSize surface)
 {
-    const RgbaColor glow { .red = 0.02F, .green = 0.95F, .blue = 0.45F, .alpha = 0.34F };
-    const RgbaColor line { .red = 0.60F, .green = 1.0F, .blue = 0.72F, .alpha = 0.92F };
     const auto speed_kmh = std::max(0.0F, wind.speed_mps * 3.6F);
     const auto wind_scale = 0.80F + std::min(speed_kmh, 45.0F) / 45.0F * 0.75F;
     const auto blowing_to_degrees = normalize_degrees(wind.direction_degrees + 180.0F);
@@ -99,14 +102,14 @@ void draw_wind_indicator(GlesTextRenderer& renderer, RenderPoint horizon_center,
 
     for (int i = 0; i < 3; ++i) {
         const auto radius = (16.0F + static_cast<float>(i) * 8.0F) * wind_scale * scale;
-        draw_arc(renderer, arc_center, radius, start, end, 4.2F * wind_scale * scale, glow, surface);
-        draw_arc(renderer, arc_center, radius, start, end, 1.7F * wind_scale * scale, line, surface);
+        draw_arc(renderer, arc_center, radius, start, end, 4.2F * wind_scale * scale, with_alpha(theme.secondary, 0.34F), surface);
+        draw_arc(renderer, arc_center, radius, start, end, 1.7F * wind_scale * scale, with_alpha(theme.primary, 0.92F), surface);
     }
 }
 
 } // namespace
 
-void PerformanceHorizon::draw(GlesTextRenderer& renderer, SurfaceSize surface, AttitudeSample attitude, WindSample wind) const
+void PerformanceHorizon::draw(GlesTextRenderer& renderer, SurfaceSize surface, AttitudeSample attitude, WindSample wind, const OsdTheme& theme) const
 {
     const auto scale = std::max(0.70F, std::min(
         static_cast<float>(surface.width) / 1280.0F,
@@ -129,6 +132,7 @@ void PerformanceHorizon::draw(GlesTextRenderer& renderer, SurfaceSize surface, A
         pitch_y,
         attitude.roll_degrees,
         thickness,
+        theme,
         surface);
     draw_horizon_segment(
         renderer,
@@ -138,10 +142,11 @@ void PerformanceHorizon::draw(GlesTextRenderer& renderer, SurfaceSize surface, A
         pitch_y,
         attitude.roll_degrees,
         thickness,
+        theme,
         surface);
 
-    const RgbaColor center_glow { .red = 0.02F, .green = 0.95F, .blue = 0.45F, .alpha = 0.38F };
-    const RgbaColor center_line { .red = 0.60F, .green = 1.0F, .blue = 0.72F, .alpha = 0.96F };
+    const auto center_glow = with_alpha(theme.secondary, 0.38F);
+    const auto center_line = with_alpha(theme.primary, 0.96F);
     renderer.draw_circle_outline(center, 10.0F * scale, 5.0F * scale, center_glow, surface);
     renderer.draw_circle_outline(center, 10.0F * scale, 2.0F * scale, center_line, surface);
     renderer.draw_line(
@@ -158,7 +163,7 @@ void PerformanceHorizon::draw(GlesTextRenderer& renderer, SurfaceSize surface, A
         surface);
 
     if (wind.valid) {
-        draw_wind_indicator(renderer, center, wind, scale, surface);
+        draw_wind_indicator(renderer, center, wind, scale, theme, surface);
     }
 }
 

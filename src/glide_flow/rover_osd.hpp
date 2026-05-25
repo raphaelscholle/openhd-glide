@@ -2,6 +2,7 @@
 
 #include "glide_flow/fps_overlay.hpp"
 #include "glide_flow/gles_text_renderer.hpp"
+#include "glide_flow/osd_theme.hpp"
 
 #include <chrono>
 
@@ -22,7 +23,7 @@ private:
 
 class RoverOsdRenderer {
 public:
-    void draw(GlesTextRenderer& renderer, SurfaceSize surface, const RoverOsdSample& sample) const;
+    void draw(GlesTextRenderer& renderer, SurfaceSize surface, const RoverOsdSample& sample, const OsdTheme& theme) const;
 };
 
 } // namespace glide::flow

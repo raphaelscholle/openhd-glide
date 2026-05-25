@@ -2,6 +2,7 @@
 
 #include "glide_flow/fps_overlay.hpp"
 #include "glide_flow/gles_text_renderer.hpp"
+#include "glide_flow/osd_theme.hpp"
 
 #include <array>
 #include <chrono>
@@ -30,7 +31,7 @@ private:
 
 class NavalOsdRenderer {
 public:
-    void draw(GlesTextRenderer& renderer, SurfaceSize surface, const NavalOsdSample& sample) const;
+    void draw(GlesTextRenderer& renderer, SurfaceSize surface, const NavalOsdSample& sample, const OsdTheme& theme) const;
 };
 
 } // namespace glide::flow

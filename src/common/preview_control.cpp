@@ -45,6 +45,12 @@ std::uint32_t default_theme_color(const std::string& key)
     if (key == "bar_background") {
         return 0x0e1318;
     }
+    if (key == "primary") {
+        return 0x99ffb8;
+    }
+    if (key == "secondary") {
+        return 0x55a8ff;
+    }
     return 0xffffff;
 }
 

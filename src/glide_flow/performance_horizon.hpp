@@ -2,6 +2,7 @@
 
 #include "glide_flow/fps_overlay.hpp"
 #include "glide_flow/gles_text_renderer.hpp"
+#include "glide_flow/osd_theme.hpp"
 
 namespace glide::flow {
 
@@ -18,7 +19,7 @@ struct WindSample {
 
 class PerformanceHorizon {
 public:
-    void draw(GlesTextRenderer& renderer, SurfaceSize surface, AttitudeSample attitude, WindSample wind = {}) const;
+    void draw(GlesTextRenderer& renderer, SurfaceSize surface, AttitudeSample attitude, WindSample wind = {}, const OsdTheme& theme = OsdTheme {}) const;
 
 private:
     static constexpr float widget_width_ = 250.0F;

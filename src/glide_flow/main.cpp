@@ -127,6 +127,8 @@ glide::flow::OsdTheme load_theme()
     return glide::flow::OsdTheme {
         .text = color_from_rgb(glide::preview_control::theme_color("bar_text"), 0.98F),
         .bar_background = color_from_rgb(glide::preview_control::theme_color("bar_background"), 0.94F),
+        .primary = color_from_rgb(glide::preview_control::theme_color("primary"), 0.92F),
+        .secondary = color_from_rgb(glide::preview_control::theme_color("secondary"), 0.90F),
     };
 }
 
@@ -312,10 +314,10 @@ int main(int argc, char** argv)
                 rocket_osd.draw(renderer, options.surface, simulated_rocket.sample(), theme);
             } else if (osd_layout == "rover") {
                 link_overview.draw(renderer, options.surface, link_sample, theme);
-                rover_osd.draw(renderer, options.surface, simulated_rover.sample());
+                rover_osd.draw(renderer, options.surface, simulated_rover.sample(), theme);
             } else if (osd_layout == "ship") {
                 link_overview.draw(renderer, options.surface, link_sample, theme);
-                naval_osd.draw(renderer, options.surface, simulated_naval.sample());
+                naval_osd.draw(renderer, options.surface, simulated_naval.sample(), theme);
             } else {
                 link_overview.draw(renderer, options.surface, link_sample, theme);
                 const auto attitude_sample = mavlink.attitude_valid
@@ -329,15 +331,16 @@ int main(int argc, char** argv)
                         .direction_degrees = link_sample.wind_direction_deg,
                         .speed_mps = link_sample.wind_speed_mps,
                         .valid = true,
-                    });
+                    },
+                    theme);
                 const auto speed_sample = mavlink.speed_valid
                     ? glide::flow::SpeedSample { .speed_mps = mavlink.ground_speed_mps }
                     : simulated_speed.sample();
                 const auto altitude_sample = mavlink.altitude_valid
                     ? glide::flow::AltitudeSample { .altitude_m = mavlink.altitude_m }
                     : simulated_altitude.sample();
-                speed_widget.draw(renderer, options.surface, speed_sample, compact_readouts);
-                altitude_widget.draw(renderer, options.surface, altitude_sample, compact_readouts);
+                speed_widget.draw(renderer, options.surface, speed_sample, theme, compact_readouts);
+                altitude_widget.draw(renderer, options.surface, altitude_sample, theme, compact_readouts);
             }
             if (fps_overlay_enabled) {
                 renderer.draw(placement, options.surface);

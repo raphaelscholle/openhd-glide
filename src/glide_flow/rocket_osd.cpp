@@ -12,13 +12,6 @@ namespace glide::flow {
 namespace {
 
 constexpr float pi = 3.14159265358979323846F;
-constexpr RgbaColor panel_bg { .red = 0.055F, .green = 0.075F, .blue = 0.095F, .alpha = 0.94F };
-constexpr RgbaColor panel_line { .red = 0.60F, .green = 1.0F, .blue = 0.72F, .alpha = 0.90F };
-constexpr RgbaColor panel_dim { .red = 0.44F, .green = 0.86F, .blue = 0.84F, .alpha = 0.22F };
-constexpr RgbaColor text_color { .red = 0.92F, .green = 0.96F, .blue = 1.0F, .alpha = 0.96F };
-constexpr RgbaColor purple { .red = 0.78F, .green = 0.48F, .blue = 1.0F, .alpha = 0.92F };
-constexpr RgbaColor purple_dim { .red = 0.78F, .green = 0.48F, .blue = 1.0F, .alpha = 0.30F };
-
 float layout_scale(SurfaceSize surface)
 {
     return std::max(0.70F, std::min(
@@ -39,6 +32,12 @@ void draw_text(GlesTextRenderer& renderer, std::string text, float x, float base
         .y = baseline,
         .scale = scale,
     }, surface);
+}
+
+RgbaColor with_alpha(RgbaColor color, float alpha)
+{
+    color.alpha = alpha;
+    return color;
 }
 
 std::string fixed_1(float value)
@@ -71,9 +70,9 @@ RenderPoint polar(RenderPoint center, float degrees, float radius)
     };
 }
 
-void draw_metric_rule(GlesTextRenderer& renderer, float x, float y, float width, float scale, SurfaceSize surface)
+void draw_metric_rule(GlesTextRenderer& renderer, float x, float y, float width, float scale, const OsdTheme& theme, SurfaceSize surface)
 {
-    renderer.draw_line({ x, y }, { x + width, y }, sx(1.0F, scale), panel_dim, surface);
+    renderer.draw_line({ x, y }, { x + width, y }, sx(1.0F, scale), with_alpha(theme.secondary, 0.24F), surface);
 }
 
 void draw_left_metric(
@@ -84,24 +83,25 @@ void draw_left_metric(
     float x,
     float y,
     float scale,
+    const OsdTheme& theme,
     SurfaceSize surface)
 {
     draw_text(renderer, label, x, y + sx(16.0F, scale), sx(11.0F, scale), surface);
     draw_text(renderer, std::move(value), x + sx(8.0F, scale), y + sx(44.0F, scale), sx(24.0F, scale), surface);
     draw_text(renderer, unit, x + sx(18.0F, scale), y + sx(64.0F, scale), sx(10.5F, scale), surface);
-    draw_metric_rule(renderer, x - sx(12.0F, scale), y + sx(73.0F, scale), sx(142.0F, scale), scale, surface);
+    draw_metric_rule(renderer, x - sx(12.0F, scale), y + sx(73.0F, scale), sx(142.0F, scale), scale, theme, surface);
 }
 
-void draw_status_panel(GlesTextRenderer& renderer, const RocketOsdSample& sample, float x, float y, float scale, SurfaceSize surface)
+void draw_status_panel(GlesTextRenderer& renderer, const RocketOsdSample& sample, float x, float y, float scale, const OsdTheme& theme, SurfaceSize surface)
 {
     const auto width = sx(148.0F, scale);
     const auto row_height = sx(50.0F, scale);
     const auto height = row_height * 4.0F;
-    renderer.draw_filled_quad({ x, y }, { x + width, y }, { x, y + height }, { x + width, y + height }, panel_bg, surface);
-    renderer.draw_line({ x, y }, { x + width, y }, sx(1.0F, scale), panel_dim, surface);
-    renderer.draw_line({ x + width, y }, { x + width, y + height }, sx(1.0F, scale), panel_dim, surface);
-    renderer.draw_line({ x, y + height }, { x + width, y + height }, sx(1.0F, scale), panel_dim, surface);
-    renderer.draw_line({ x, y }, { x, y + height }, sx(1.0F, scale), panel_dim, surface);
+    renderer.draw_filled_quad({ x, y }, { x + width, y }, { x, y + height }, { x + width, y + height }, with_alpha(theme.secondary, 0.24F), surface);
+    renderer.draw_line({ x, y }, { x + width, y }, sx(1.0F, scale), with_alpha(theme.secondary, 0.30F), surface);
+    renderer.draw_line({ x + width, y }, { x + width, y + height }, sx(1.0F, scale), with_alpha(theme.secondary, 0.30F), surface);
+    renderer.draw_line({ x, y + height }, { x + width, y + height }, sx(1.0F, scale), with_alpha(theme.secondary, 0.30F), surface);
+    renderer.draw_line({ x, y }, { x, y + height }, sx(1.0F, scale), with_alpha(theme.secondary, 0.30F), surface);
 
     const std::array labels { "STAGE", "FUEL", "STATUS", "Q" };
     const std::array values {
@@ -113,14 +113,14 @@ void draw_status_panel(GlesTextRenderer& renderer, const RocketOsdSample& sample
     for (std::size_t i = 0; i < labels.size(); ++i) {
         const auto row_y = y + static_cast<float>(i) * row_height;
         if (i > 0) {
-            renderer.draw_line({ x, row_y }, { x + width, row_y }, sx(1.0F, scale), panel_dim, surface);
+            renderer.draw_line({ x, row_y }, { x + width, row_y }, sx(1.0F, scale), with_alpha(theme.secondary, 0.30F), surface);
         }
         draw_text(renderer, labels[i], x + sx(16.0F, scale), row_y + sx(17.0F, scale), sx(10.0F, scale), surface);
         draw_text(renderer, values[i], x + sx(16.0F, scale), row_y + sx(39.0F, scale), sx(i == 2 ? 13.0F : 18.0F, scale), surface);
     }
 }
 
-void draw_side_readouts(GlesTextRenderer& renderer, SurfaceSize surface, const RocketOsdSample& sample)
+void draw_side_readouts(GlesTextRenderer& renderer, SurfaceSize surface, const RocketOsdSample& sample, const OsdTheme& theme)
 {
     const auto scale = layout_scale(surface);
     const auto top_safe = sx(86.0F, scale);
@@ -135,6 +135,7 @@ void draw_side_readouts(GlesTextRenderer& renderer, SurfaceSize surface, const R
         left_x,
         top_safe + sx(8.0F, scale),
         scale,
+        theme,
         surface);
     draw_left_metric(
         renderer,
@@ -144,6 +145,7 @@ void draw_side_readouts(GlesTextRenderer& renderer, SurfaceSize surface, const R
         left_x,
         top_safe + sx(94.0F, scale),
         scale,
+        theme,
         surface);
     draw_left_metric(
         renderer,
@@ -153,8 +155,9 @@ void draw_side_readouts(GlesTextRenderer& renderer, SurfaceSize surface, const R
         left_x,
         top_safe + sx(180.0F, scale),
         scale,
+        theme,
         surface);
-    draw_status_panel(renderer, sample, right_x, top_safe + sx(18.0F, scale), scale, surface);
+    draw_status_panel(renderer, sample, right_x, top_safe + sx(18.0F, scale), scale, theme, surface);
 }
 
 void draw_bottom_panel(GlesTextRenderer& renderer, SurfaceSize surface, const OsdTheme& theme)
@@ -253,7 +256,7 @@ void draw_dashed_circle(GlesTextRenderer& renderer, RenderPoint center, float ra
     }
 }
 
-void draw_rocket_body(GlesTextRenderer& renderer, RenderPoint base, float scale, float lean_degrees, SurfaceSize surface)
+void draw_rocket_body(GlesTextRenderer& renderer, RenderPoint base, float scale, float lean_degrees, const OsdTheme& theme, SurfaceSize surface)
 {
     const auto lean = std::sin(lean_degrees * pi / 180.0F);
     const auto top = RenderPoint { base.x + sx(lean * 26.0F, scale), base.y - sx(142.0F, scale) };
@@ -262,20 +265,20 @@ void draw_rocket_body(GlesTextRenderer& renderer, RenderPoint base, float scale,
     const auto left_base = RenderPoint { base.x - sx(8.0F, scale), base.y - sx(52.0F, scale) };
     const auto right_base = RenderPoint { base.x + sx(8.0F, scale), base.y - sx(52.0F, scale) };
 
-    renderer.draw_line(top, left_shoulder, sx(2.0F, scale), text_color, surface);
-    renderer.draw_line(top, right_shoulder, sx(2.0F, scale), text_color, surface);
-    renderer.draw_line(left_shoulder, left_base, sx(2.0F, scale), text_color, surface);
-    renderer.draw_line(right_shoulder, right_base, sx(2.0F, scale), text_color, surface);
-    renderer.draw_line(left_base, right_base, sx(2.0F, scale), text_color, surface);
-    renderer.draw_line({ left_base.x, left_base.y - sx(22.0F, scale) }, { base.x - sx(22.0F, scale), base.y - sx(40.0F, scale) }, sx(2.0F, scale), text_color, surface);
-    renderer.draw_line({ right_base.x, right_base.y - sx(22.0F, scale) }, { base.x + sx(22.0F, scale), base.y - sx(40.0F, scale) }, sx(2.0F, scale), text_color, surface);
-    renderer.draw_line({ base.x - sx(22.0F, scale), base.y - sx(40.0F, scale) }, left_base, sx(2.0F, scale), text_color, surface);
-    renderer.draw_line({ base.x + sx(22.0F, scale), base.y - sx(40.0F, scale) }, right_base, sx(2.0F, scale), text_color, surface);
-    renderer.draw_line({ base.x - sx(3.0F, scale), base.y - sx(45.0F, scale) }, { base.x - sx(5.0F, scale), base.y }, sx(1.2F, scale), purple_dim, surface);
-    renderer.draw_line({ base.x + sx(3.0F, scale), base.y - sx(45.0F, scale) }, { base.x + sx(5.0F, scale), base.y }, sx(1.2F, scale), purple_dim, surface);
+    renderer.draw_line(top, left_shoulder, sx(2.0F, scale), theme.primary, surface);
+    renderer.draw_line(top, right_shoulder, sx(2.0F, scale), theme.primary, surface);
+    renderer.draw_line(left_shoulder, left_base, sx(2.0F, scale), theme.primary, surface);
+    renderer.draw_line(right_shoulder, right_base, sx(2.0F, scale), theme.primary, surface);
+    renderer.draw_line(left_base, right_base, sx(2.0F, scale), theme.primary, surface);
+    renderer.draw_line({ left_base.x, left_base.y - sx(22.0F, scale) }, { base.x - sx(22.0F, scale), base.y - sx(40.0F, scale) }, sx(2.0F, scale), theme.primary, surface);
+    renderer.draw_line({ right_base.x, right_base.y - sx(22.0F, scale) }, { base.x + sx(22.0F, scale), base.y - sx(40.0F, scale) }, sx(2.0F, scale), theme.primary, surface);
+    renderer.draw_line({ base.x - sx(22.0F, scale), base.y - sx(40.0F, scale) }, left_base, sx(2.0F, scale), theme.primary, surface);
+    renderer.draw_line({ base.x + sx(22.0F, scale), base.y - sx(40.0F, scale) }, right_base, sx(2.0F, scale), theme.primary, surface);
+    renderer.draw_line({ base.x - sx(3.0F, scale), base.y - sx(45.0F, scale) }, { base.x - sx(5.0F, scale), base.y }, sx(1.2F, scale), with_alpha(theme.secondary, 0.30F), surface);
+    renderer.draw_line({ base.x + sx(3.0F, scale), base.y - sx(45.0F, scale) }, { base.x + sx(5.0F, scale), base.y }, sx(1.2F, scale), with_alpha(theme.secondary, 0.30F), surface);
 }
 
-void draw_guidance(GlesTextRenderer& renderer, SurfaceSize surface, const RocketOsdSample& sample)
+void draw_guidance(GlesTextRenderer& renderer, SurfaceSize surface, const RocketOsdSample& sample, const OsdTheme& theme)
 {
     const auto scale = layout_scale(surface);
     const RenderPoint center {
@@ -288,8 +291,8 @@ void draw_guidance(GlesTextRenderer& renderer, SurfaceSize surface, const Rocket
     const auto inner_radius = sx(92.0F + progress * 60.0F, scale);
     const auto lean = std::clamp((sample.g_force - 2.0F) * 20.0F, -12.0F, 12.0F);
 
-    draw_dashed_circle(renderer, center, outer_radius, sx(1.4F, scale), panel_dim, surface);
-    draw_dashed_circle(renderer, center, inner_radius, sx(1.2F, scale), panel_dim, surface);
+    draw_dashed_circle(renderer, center, outer_radius, sx(1.4F, scale), with_alpha(theme.secondary, 0.22F), surface);
+    draw_dashed_circle(renderer, center, inner_radius, sx(1.2F, scale), with_alpha(theme.secondary, 0.22F), surface);
 
     RenderPoint previous {
         .x = center.x - sx(18.0F, scale),
@@ -302,7 +305,7 @@ void draw_guidance(GlesTextRenderer& renderer, SurfaceSize surface, const Rocket
             .x = center.x - sx(18.0F, scale) + curve,
             .y = center.y + sx(180.0F, scale) - sx(392.0F * t, scale),
         };
-        renderer.draw_line(previous, current, sx(i < 17 ? 1.7F : 1.2F, scale), i < 17 ? text_color : purple, surface);
+        renderer.draw_line(previous, current, sx(i < 17 ? 1.7F : 1.2F, scale), i < 17 ? theme.primary : theme.secondary, surface);
         previous = current;
     }
 
@@ -311,15 +314,15 @@ void draw_guidance(GlesTextRenderer& renderer, SurfaceSize surface, const Rocket
         const auto t = 0.18F + static_cast<float>(i) * 0.135F;
         const auto x = center.x - sx(18.0F, scale) + std::sin(t * pi * 0.85F) * sx(34.0F + energy * 54.0F, scale);
         const auto y = center.y + sx(180.0F, scale) - sx(392.0F * t, scale);
-        renderer.draw_line({ x, y - sx(14.0F, scale) }, { x - sx(8.0F, scale), y }, sx(2.0F, scale), purple, surface);
-        renderer.draw_line({ x, y - sx(14.0F, scale) }, { x + sx(8.0F, scale), y }, sx(2.0F, scale), purple, surface);
+        renderer.draw_line({ x, y - sx(14.0F, scale) }, { x - sx(8.0F, scale), y }, sx(2.0F, scale), theme.secondary, surface);
+        renderer.draw_line({ x, y - sx(14.0F, scale) }, { x + sx(8.0F, scale), y }, sx(2.0F, scale), theme.secondary, surface);
     }
 
     const RenderPoint rocket_base {
         .x = center.x - sx(18.0F, scale) + std::sin(progress * pi * 0.85F) * sx(34.0F + energy * 54.0F, scale),
         .y = center.y + sx(180.0F, scale) - sx(110.0F * progress, scale),
     };
-    draw_rocket_body(renderer, rocket_base, scale, lean, surface);
+    draw_rocket_body(renderer, rocket_base, scale, lean, theme, surface);
 }
 
 } // namespace
@@ -340,8 +343,9 @@ RocketOsdSample SimulatedRocketOsd::sample(std::chrono::steady_clock::time_point
 
 void RocketOsdRenderer::draw(GlesTextRenderer& renderer, SurfaceSize surface, const RocketOsdSample& sample, const OsdTheme& theme) const
 {
-    draw_guidance(renderer, surface, sample);
-    draw_side_readouts(renderer, surface, sample);
+    renderer.set_text_color(theme.primary);
+    draw_guidance(renderer, surface, sample, theme);
+    draw_side_readouts(renderer, surface, sample, theme);
     draw_bottom_bars(renderer, surface, sample, theme);
 }
 

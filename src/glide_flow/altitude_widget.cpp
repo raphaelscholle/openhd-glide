@@ -8,15 +8,17 @@
 namespace glide::flow {
 namespace {
 
-constexpr RgbaColor line_color { .red = 0.60F, .green = 1.0F, .blue = 0.72F, .alpha = 0.96F };
-constexpr RgbaColor glow_color { .red = 0.02F, .green = 0.95F, .blue = 0.45F, .alpha = 0.40F };
-constexpr RgbaColor panel_bg { .red = 0.0F, .green = 0.0F, .blue = 0.0F, .alpha = 0.35F };
-
 float layout_scale(SurfaceSize surface)
 {
     return std::max(0.70F, std::min(
         static_cast<float>(surface.width) / 1280.0F,
         static_cast<float>(surface.height) / 720.0F));
+}
+
+RgbaColor with_alpha(RgbaColor color, float alpha)
+{
+    color.alpha = alpha;
+    return color;
 }
 
 void draw_rect(
@@ -78,7 +80,7 @@ float fitted_text_scale(const std::string& text, float requested_scale, float av
     return std::max(10.0F, requested_scale * (available_width / estimated_width));
 }
 
-void draw_compact_altitude(GlesTextRenderer& renderer, SurfaceSize surface, AltitudeSample sample)
+void draw_compact_altitude(GlesTextRenderer& renderer, SurfaceSize surface, AltitudeSample sample, const OsdTheme& theme)
 {
     const auto scale = layout_scale(surface);
     const auto width = 74.0F * scale;
@@ -90,7 +92,8 @@ void draw_compact_altitude(GlesTextRenderer& renderer, SurfaceSize surface, Alti
     const auto label_scale = 9.0F * scale;
     const auto value_scale = fitted_text_scale(value, 23.0F * scale, width - 12.0F * scale);
 
-    draw_rect(renderer, x, y, width, height, panel_bg, surface);
+    renderer.set_text_color(theme.primary);
+    draw_rect(renderer, x, y, width, height, with_alpha(theme.secondary, 0.25F), surface);
     draw_text(renderer, label, x + (width - renderer.measure_text_width(label, label_scale)) * 0.5F, y + 19.0F * scale, label_scale, surface);
     draw_text(renderer, value, x + (width - renderer.measure_text_width(value, value_scale)) * 0.5F, y + 51.0F * scale, value_scale, surface);
 }
@@ -105,10 +108,14 @@ AltitudeSample SimulatedAltitude::sample(std::chrono::steady_clock::time_point n
     };
 }
 
-void AltitudeWidgetRenderer::draw(GlesTextRenderer& renderer, SurfaceSize surface, AltitudeSample sample, bool compact) const
+void AltitudeWidgetRenderer::draw(GlesTextRenderer& renderer, SurfaceSize surface, AltitudeSample sample, const OsdTheme& theme, bool compact) const
 {
+    const auto line_color = with_alpha(theme.primary, 0.96F);
+    const auto glow_color = with_alpha(theme.secondary, 0.40F);
+    const auto panel_bg = with_alpha(theme.secondary, 0.25F);
+    renderer.set_text_color(theme.primary);
     if (compact) {
-        draw_compact_altitude(renderer, surface, sample);
+        draw_compact_altitude(renderer, surface, sample, theme);
         return;
     }
 

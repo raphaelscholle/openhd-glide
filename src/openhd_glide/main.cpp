@@ -9,6 +9,7 @@
 #include "glide_flow/fps_overlay.hpp"
 #include "glide_flow/gles_text_renderer.hpp"
 #include "glide_flow/link_overview.hpp"
+#include "glide_flow/osd_theme.hpp"
 #include "glide_flow/performance_horizon.hpp"
 #include "glide_flow/simulated_attitude.hpp"
 #include "glide_flow/speed_widget.hpp"
@@ -60,9 +61,29 @@ std::string rgb_hex(std::uint32_t rgb)
     return stream.str();
 }
 
+glide::flow::RgbaColor color_from_rgb(std::uint32_t rgb, float alpha)
+{
+    return glide::flow::RgbaColor {
+        .red = static_cast<float>((rgb >> 16U) & 0xffU) / 255.0F,
+        .green = static_cast<float>((rgb >> 8U) & 0xffU) / 255.0F,
+        .blue = static_cast<float>(rgb & 0xffU) / 255.0F,
+        .alpha = alpha,
+    };
+}
+
+glide::flow::OsdTheme load_osd_theme()
+{
+    return glide::flow::OsdTheme {
+        .text = color_from_rgb(glide::preview_control::theme_color("bar_text"), 0.98F),
+        .bar_background = color_from_rgb(glide::preview_control::theme_color("bar_background"), 0.94F),
+        .primary = color_from_rgb(glide::preview_control::theme_color("primary"), 0.92F),
+        .secondary = color_from_rgb(glide::preview_control::theme_color("secondary"), 0.90F),
+    };
+}
+
 void send_theme_state(glide::ipc::Server& ipc_server, int client_id)
 {
-    for (const auto* key : { "bar_text", "bar_background" }) {
+    for (const auto* key : { "bar_text", "bar_background", "primary", "secondary" }) {
         ipc_server.send_line(client_id, std::string("state theme ") + key + " " + rgb_hex(glide::preview_control::theme_color(key)));
     }
 }
@@ -803,7 +824,8 @@ int run_kms_video_preview(const Options& options)
         if (options.flow_overlay) {
             auto link_sample = simulated_link.sample();
             link_sample.show_coordinates = glide::preview_control::coordinates_overlay_enabled();
-            link_overview.draw(flow_renderer, flow_surface, link_sample, glide::flow::OsdTheme {});
+            const auto theme = load_osd_theme();
+            link_overview.draw(flow_renderer, flow_surface, link_sample, theme);
             performance_horizon.draw(
                 flow_renderer,
                 flow_surface,
@@ -812,10 +834,11 @@ int run_kms_video_preview(const Options& options)
                     .direction_degrees = link_sample.wind_direction_deg,
                     .speed_mps = link_sample.wind_speed_mps,
                     .valid = true,
-                });
+                },
+                theme);
             const auto compact_readouts = glide::preview_control::compact_readouts_enabled();
-            speed_widget.draw(flow_renderer, flow_surface, simulated_speed.sample(), compact_readouts);
-            altitude_widget.draw(flow_renderer, flow_surface, simulated_altitude.sample(), compact_readouts);
+            speed_widget.draw(flow_renderer, flow_surface, simulated_speed.sample(), theme, compact_readouts);
+            altitude_widget.draw(flow_renderer, flow_surface, simulated_altitude.sample(), theme, compact_readouts);
             flow_renderer.draw(flow_fps_placement, flow_surface);
         }
 
@@ -935,7 +958,8 @@ int run_kms_video_preview(const Options& options)
                     }
                     auto link_sample = simulated_link.sample();
                     link_sample.show_coordinates = glide::preview_control::coordinates_overlay_enabled();
-                    links.draw(renderer, surface, link_sample, glide::flow::OsdTheme {});
+                    const auto theme = load_osd_theme();
+                    links.draw(renderer, surface, link_sample, theme);
                     horizon.draw(
                         renderer,
                         surface,
@@ -944,10 +968,11 @@ int run_kms_video_preview(const Options& options)
                             .direction_degrees = link_sample.wind_direction_deg,
                             .speed_mps = link_sample.wind_speed_mps,
                             .valid = true,
-                        });
+                        },
+                        theme);
                     const auto compact_readouts = glide::preview_control::compact_readouts_enabled();
-                    speed.draw(renderer, surface, simulated_speed.sample(), compact_readouts);
-                    altitude.draw(renderer, surface, simulated_altitude.sample(), compact_readouts);
+                    speed.draw(renderer, surface, simulated_speed.sample(), theme, compact_readouts);
+                    altitude.draw(renderer, surface, simulated_altitude.sample(), theme, compact_readouts);
                     renderer.draw(fps_placement, surface);
 
                     if (!compositor.publish_rendered_flow_frame()) {

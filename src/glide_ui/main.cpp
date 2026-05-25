@@ -164,6 +164,8 @@ struct UiState {
     std::string osd_layout { "drone" };
     std::uint32_t theme_bar_text { 0xebf5ff };
     std::uint32_t theme_bar_background { 0x0e1318 };
+    std::uint32_t theme_primary { 0x99ffb8 };
+    std::uint32_t theme_secondary { 0x55a8ff };
     bool advanced_visible {};
     bool focus_panel {};
     bool panel_rebuild_pending {};
@@ -184,8 +186,8 @@ struct UiState {
     lv_obj_t* compact_label {};
     lv_obj_t* osd_dropdown {};
     lv_obj_t* osd_label {};
-    std::array<lv_obj_t*, 2> theme_dropdowns {};
-    std::array<lv_obj_t*, 2> theme_labels {};
+    std::array<lv_obj_t*, 4> theme_dropdowns {};
+    std::array<lv_obj_t*, 4> theme_labels {};
     lv_obj_t* scan_bar {};
     lv_obj_t* scan_percent {};
     lv_obj_t* nav_buttons[10] {};
@@ -530,8 +532,8 @@ constexpr std::array<ColorPreset, 9> color_presets {{
     { "Graphite", 0x0e1318 },
 }};
 
-constexpr std::array<const char*, 2> theme_keys {{ "bar_text", "bar_background" }};
-constexpr std::array<const char*, 2> theme_labels {{ "Font color", "Background color" }};
+constexpr std::array<const char*, 4> theme_keys {{ "bar_text", "bar_background", "primary", "secondary" }};
+constexpr std::array<const char*, 4> theme_labels {{ "Font color", "Background color", "Primary color", "Secondary color" }};
 
 std::uint32_t default_theme_color(const char* key)
 {
@@ -542,6 +544,12 @@ std::uint32_t default_theme_color(const char* key)
     if (name == "bar_background") {
         return 0x0e1318;
     }
+    if (name == "primary") {
+        return 0x99ffb8;
+    }
+    if (name == "secondary") {
+        return 0x55a8ff;
+    }
     return 0xffffff;
 }
 
@@ -550,7 +558,13 @@ std::uint32_t& theme_color_ref(UiState& state, std::size_t index)
     if (index == 0U) {
         return state.theme_bar_text;
     }
-    return state.theme_bar_background;
+    if (index == 1U) {
+        return state.theme_bar_background;
+    }
+    if (index == 2U) {
+        return state.theme_primary;
+    }
+    return state.theme_secondary;
 }
 
 std::uint32_t preset_rgb_for_index(std::size_t channel, std::uint16_t preset)

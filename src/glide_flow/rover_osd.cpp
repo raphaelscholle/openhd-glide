@@ -10,15 +10,17 @@ namespace glide::flow {
 namespace {
 
 constexpr float pi = 3.14159265358979323846F;
-constexpr RgbaColor blue { .red = 0.32F, .green = 0.66F, .blue = 1.0F, .alpha = 0.92F };
-constexpr RgbaColor blue_dim { .red = 0.32F, .green = 0.66F, .blue = 1.0F, .alpha = 0.35F };
-constexpr RgbaColor blue_faint { .red = 0.32F, .green = 0.66F, .blue = 1.0F, .alpha = 0.16F };
-
 float layout_scale(SurfaceSize surface)
 {
     return std::max(0.70F, std::min(
         static_cast<float>(surface.width) / 1280.0F,
         static_cast<float>(surface.height) / 720.0F));
+}
+
+RgbaColor with_alpha(RgbaColor color, float alpha)
+{
+    color.alpha = alpha;
+    return color;
 }
 
 float sx(float value, float scale)
@@ -110,8 +112,9 @@ RoverOsdSample SimulatedRoverOsd::sample(std::chrono::steady_clock::time_point n
     };
 }
 
-void RoverOsdRenderer::draw(GlesTextRenderer& renderer, SurfaceSize surface, const RoverOsdSample& sample) const
+void RoverOsdRenderer::draw(GlesTextRenderer& renderer, SurfaceSize surface, const RoverOsdSample& sample, const OsdTheme& theme) const
 {
+    renderer.set_text_color(theme.primary);
     const auto scale = layout_scale(surface);
     const RenderPoint center {
         .x = static_cast<float>(surface.width) * 0.5F,
@@ -126,7 +129,7 @@ void RoverOsdRenderer::draw(GlesTextRenderer& renderer, SurfaceSize surface, con
         const auto t = static_cast<float>(i) / static_cast<float>(segments);
         const auto angle = -visible_degrees * 0.5F + visible_degrees * t;
         const auto current = compass_point(center, radius, angle);
-        renderer.draw_line(previous, current, sx(2.0F, scale), blue_dim, surface);
+        renderer.draw_line(previous, current, sx(2.0F, scale), with_alpha(theme.secondary, 0.35F), surface);
         previous = current;
     }
 
@@ -142,7 +145,7 @@ void RoverOsdRenderer::draw(GlesTextRenderer& renderer, SurfaceSize surface, con
             arc_angle,
             sx(major ? 18.0F : 10.0F, scale),
             sx(major ? 2.0F : 1.2F, scale),
-            major ? blue : blue_faint,
+            major ? theme.primary : with_alpha(theme.secondary, 0.18F),
             surface);
     }
 
