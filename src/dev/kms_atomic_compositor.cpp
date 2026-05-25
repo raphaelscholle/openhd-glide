@@ -301,6 +301,95 @@ bool plane_supports_format(drmModePlane* plane, std::uint32_t format)
     return std::find(plane->formats, plane->formats + plane->count_formats, format) != plane->formats + plane->count_formats;
 }
 
+struct FormatModifierBlobHeader {
+    std::uint32_t version {};
+    std::uint32_t flags {};
+    std::uint32_t count_formats {};
+    std::uint32_t formats_offset {};
+    std::uint32_t count_modifiers {};
+    std::uint32_t modifiers_offset {};
+};
+
+struct FormatModifierRecord {
+    std::uint64_t formats {};
+    std::uint32_t offset {};
+    std::uint32_t pad {};
+    std::uint64_t modifier {};
+};
+
+static_assert(sizeof(FormatModifierBlobHeader) == 24);
+static_assert(sizeof(FormatModifierRecord) == 24);
+
+bool blob_has_range(const drmModePropertyBlobRes* blob, std::uint64_t offset, std::uint64_t count, std::size_t element_size)
+{
+    if (blob == nullptr || blob->data == nullptr || element_size == 0) {
+        return false;
+    }
+    const auto length = static_cast<std::uint64_t>(blob->length);
+    if (offset > length) {
+        return false;
+    }
+    return count <= (length - offset) / static_cast<std::uint64_t>(element_size);
+}
+
+template <typename T>
+bool read_blob_value(const drmModePropertyBlobRes* blob, std::uint64_t offset, T& value)
+{
+    if (!blob_has_range(blob, offset, 1, sizeof(T))) {
+        return false;
+    }
+    std::memcpy(&value, static_cast<const unsigned char*>(blob->data) + offset, sizeof(T));
+    return true;
+}
+
+bool in_formats_blob_supports_modifier(const drmModePropertyBlobRes* blob, std::uint32_t format, std::uint64_t modifier)
+{
+    constexpr std::uint32_t format_blob_current_version = 1;
+
+    FormatModifierBlobHeader header {};
+    if (!read_blob_value(blob, 0, header)) {
+        return false;
+    }
+    if (header.version != format_blob_current_version || header.flags != 0) {
+        return false;
+    }
+    if (!blob_has_range(blob, header.formats_offset, header.count_formats, sizeof(std::uint32_t))
+        || !blob_has_range(blob, header.modifiers_offset, header.count_modifiers, sizeof(FormatModifierRecord))) {
+        return false;
+    }
+
+    for (std::uint32_t format_index = 0; format_index < header.count_formats; ++format_index) {
+        std::uint32_t blob_format {};
+        const auto format_offset = static_cast<std::uint64_t>(header.formats_offset)
+            + static_cast<std::uint64_t>(format_index) * sizeof(blob_format);
+        if (!read_blob_value(blob, format_offset, blob_format)) {
+            return false;
+        }
+        if (blob_format != format) {
+            continue;
+        }
+
+        for (std::uint32_t modifier_index = 0; modifier_index < header.count_modifiers; ++modifier_index) {
+            FormatModifierRecord record {};
+            const auto modifier_offset = static_cast<std::uint64_t>(header.modifiers_offset)
+                + static_cast<std::uint64_t>(modifier_index) * sizeof(record);
+            if (!read_blob_value(blob, modifier_offset, record)) {
+                return false;
+            }
+            if (record.modifier != modifier || format_index < record.offset) {
+                continue;
+            }
+
+            const auto bit = format_index - record.offset;
+            if (bit < 64U && (record.formats & (std::uint64_t { 1 } << bit)) != 0) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 bool plane_supports_format_modifier(int drm_fd, std::uint32_t plane_id, std::uint32_t format, std::uint64_t modifier)
 {
     auto* properties = drmModeObjectGetProperties(drm_fd, plane_id, DRM_MODE_OBJECT_PLANE);
@@ -334,14 +423,7 @@ bool plane_supports_format_modifier(int drm_fd, std::uint32_t plane_id, std::uin
         return true;
     }
 
-    bool supported {};
-    drmModeFormatModifierIterator iterator {};
-    while (drmModeFormatModifierBlobIterNext(blob, &iterator)) {
-        if (iterator.fmt == format && iterator.mod == modifier) {
-            supported = true;
-            break;
-        }
-    }
+    const bool supported = in_formats_blob_supports_modifier(blob, format, modifier);
     drmModeFreePropertyBlob(blob);
     return supported;
 }
