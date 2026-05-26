@@ -83,6 +83,15 @@ jobs:
           if [ -d /etc/apt/sources.list.d ]; then
             sudo sed -i 's/^#deb /deb /' /etc/apt/sources.list.d/*.list 2>/dev/null || true
           fi
+          target_release="$(cat flavor.txt 2>/dev/null || true)"
+          if [ "${target_release}" = "bookworm" ]; then
+            for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do
+              [ -f "${source_file}" ] && sudo sed -i '\|radxa-repo.github.io/bullseye|d' "${source_file}"
+            done
+            for source_file in /etc/apt/sources.list.d/*.sources; do
+              [ -f "${source_file}" ] && grep -q 'radxa-repo.github.io/bullseye' "${source_file}" && sudo rm -f "${source_file}"
+            done
+          fi
 
           apt-get update --fix-missing
           apt-get install -y \
@@ -144,6 +153,32 @@ jobs:
           sudo bash install_dep.sh
           python3 - <<'PY'
           from pathlib import Path
+
+          packages_stage = Path("/opt/OpenHD-ChrootCompiler/stages/02-Packages/00-run-chroot.sh")
+          packages_text = packages_stage.read_text()
+          packages_marker = "remove_legacy_radxa_bullseye_sources"
+          packages_needle = 'echo "_______________________Starting build____________________________"\n'
+          packages_patch = (
+              packages_needle
+              + "\n"
+              + f"{packages_marker}() {{\n"
+              + "  if [[ \"${DISTRO}\" != \"bookworm\" ]]; then\n"
+              + "    return 0\n"
+              + "  fi\n"
+              + "  echo \"[apt-preflight] Removing legacy Radxa Bullseye sources from Bookworm image...\"\n"
+              + "  for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do\n"
+              + "    [[ -f \"${source_file}\" ]] && sudo sed -i '\\|radxa-repo.github.io/bullseye|d' \"${source_file}\"\n"
+              + "  done\n"
+              + "  for source_file in /etc/apt/sources.list.d/*.sources; do\n"
+              + "    [[ -f \"${source_file}\" ]] && grep -q 'radxa-repo.github.io/bullseye' \"${source_file}\" && sudo rm -f \"${source_file}\"\n"
+              + "  done\n"
+              + "}\n"
+              + f"{packages_marker}\n"
+          )
+          if packages_marker not in packages_text:
+              if packages_needle not in packages_text:
+                  raise SystemExit("Could not find package-stage build marker in ChrootCompiler")
+              packages_stage.write_text(packages_text.replace(packages_needle, packages_patch, 1))
 
           build_sh = Path("/opt/OpenHD-ChrootCompiler/build.sh")
           text = build_sh.read_text()
