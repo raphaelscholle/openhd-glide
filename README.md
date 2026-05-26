@@ -24,7 +24,7 @@ https://github.com/OpenHD
 
 # openhd-glide
 
-OpenHD-Glide is the controller for a three-worker rendering stack:
+OpenHD-Glide is a three-worker rendering stack:
 
 - `glide-view`: UDP video rendering worker
 - `glide-flow`: OpenGL ES OSD worker
