@@ -126,12 +126,12 @@ void draw_status_panel(GlesTextRenderer& renderer, const RocketOsdSample& sample
     renderer.draw_line({ x, y + height }, { x + width, y + height }, sx(1.0F, scale), with_alpha(theme.secondary, 0.30F), surface);
     renderer.draw_line({ x, y }, { x, y + height }, sx(1.0F, scale), with_alpha(theme.secondary, 0.30F), surface);
 
-    const std::array labels { "STAGE", "FUEL", "STATUS", "Q" };
+    const std::array labels { "T+", "STAGE", "FUEL", "STATUS" };
     const std::array values {
+        time_text(sample.mission_time).substr(2),
         std::to_string(sample.stage),
         std::to_string(static_cast<int>(std::round(sample.fuel_percent))) + "%",
         std::string(sample.status != nullptr ? sample.status : "NOMINAL"),
-        std::to_string(static_cast<int>(std::round(sample.velocity_mps * sample.g_force * 0.08F))),
     };
     for (std::size_t i = 0; i < labels.size(); ++i) {
         const auto row_y = y + static_cast<float>(i) * row_height;
@@ -139,7 +139,7 @@ void draw_status_panel(GlesTextRenderer& renderer, const RocketOsdSample& sample
             renderer.draw_line({ x, row_y }, { x + width, row_y }, sx(1.0F, scale), with_alpha(theme.secondary, 0.30F), surface);
         }
         draw_text(renderer, labels[i], x + sx(16.0F, scale), row_y + sx(17.0F, scale), sx(10.0F, scale), surface);
-        draw_text(renderer, values[i], x + sx(16.0F, scale), row_y + sx(39.0F, scale), sx(i == 2 ? 13.0F : 18.0F, scale), surface);
+        draw_text(renderer, values[i], x + sx(16.0F, scale), row_y + sx(39.0F, scale), sx(i == 3 ? 13.0F : 18.0F, scale), surface);
     }
 }
 
@@ -360,7 +360,7 @@ RocketOsdSample SimulatedRocketOsd::sample(std::chrono::steady_clock::time_point
         .fuel_percent = std::clamp(62.0F - seconds * 0.025F, 0.0F, 100.0F),
         .stage = 2,
         .mission_time = std::chrono::seconds(83 + static_cast<int>(seconds)),
-        .status = "STAGE SEP",
+        .status = "NOMINAL",
     };
 }
 
