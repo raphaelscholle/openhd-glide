@@ -1,3 +1,26 @@
+@REM ################################################################################
+@REM OpenHD
+@REM
+@REM Licensed under the GNU General Public License (GPL) Version 3.
+@REM
+@REM This software is provided "as-is," without warranty of any kind, express or
+@REM implied, including but not limited to the warranties of merchantability,
+@REM fitness for a particular purpose, and non-infringement. For details, see the
+@REM full license in the LICENSE file provided with this source code.
+@REM
+@REM Non-Military Use Only:
+@REM This software and its associated components are explicitly intended for
+@REM civilian and non-military purposes. Use in any military or defense
+@REM applications is strictly prohibited unless explicitly and individually
+@REM licensed otherwise by the OpenHD Team.
+@REM
+@REM Contributors:
+@REM A full list of contributors can be found at the OpenHD GitHub repository:
+@REM https://github.com/OpenHD
+@REM
+@REM © OpenHD, All Rights Reserved.
+@REM ################################################################################
+
 @echo off
 setlocal
 
