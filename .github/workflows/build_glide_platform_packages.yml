@@ -109,6 +109,13 @@ jobs:
             libegl-mesa0
             libglapi-mesa
           )
+          if apt-cache policy libdrm2 libgbm1 | awk '/Installed:|Candidate:/ && /~bpo/ { found = 1 } END { exit(found ? 0 : 1) }'; then
+            apt-get install -y -t bookworm-backports "${graphics_runtime_packages[@]}"
+            apt-get install -y -t bookworm-backports "${graphics_dev_packages[@]}"
+          else
+            apt-get install -y "${graphics_dev_packages[@]}"
+          fi
+
           apt-get install -y \
             build-essential \
             ca-certificates \
@@ -124,13 +131,6 @@ jobs:
             gstreamer1.0-plugins-bad \
             gstreamer1.0-plugins-ugly \
             gstreamer1.0-libav
-
-          if apt-cache policy libdrm2 libgbm1 | awk '/Installed:|Candidate:/ && /~bpo/ { found = 1 } END { exit(found ? 0 : 1) }'; then
-            apt-get install -y -t bookworm-backports "${graphics_runtime_packages[@]}"
-            apt-get install -y -t bookworm-backports "${graphics_dev_packages[@]}"
-          else
-            apt-get install -y "${graphics_dev_packages[@]}"
-          fi
 
           apt-get install -y librockchip-mpp-dev librga-dev gstreamer1.0-rockchip1 || true
           apt-get install -y cmake || true
