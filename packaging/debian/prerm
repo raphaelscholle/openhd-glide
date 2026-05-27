@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+
+SERVICE="openhd-glide.service"
+
+if [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then
+  if command -v systemctl >/dev/null 2>&1; then
+    if [ -d /run/systemd/system ]; then
+      systemctl stop "$SERVICE" >/dev/null 2>&1 || true
+    fi
+    systemctl disable "$SERVICE" >/dev/null 2>&1 || true
+  fi
+fi
+
+exit 0

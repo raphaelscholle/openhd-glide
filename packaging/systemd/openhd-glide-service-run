@@ -1,0 +1,199 @@
+#!/usr/bin/env bash
+################################################################################
+# OpenHD
+#
+# Licensed under the GNU General Public License (GPL) Version 3.
+#
+# This software is provided "as-is," without warranty of any kind, express or
+# implied, including but not limited to the warranties of merchantability,
+# fitness for a particular purpose, and non-infringement. For details, see the
+# full license in the LICENSE file provided with this source code.
+#
+# Non-Military Use Only:
+# This software and its associated components are explicitly intended for
+# civilian and non-military purposes. Use in any military or defense
+# applications is strictly prohibited unless explicitly and individually
+# licensed otherwise by the OpenHD Team.
+#
+# Contributors:
+# A full list of contributors can be found at the OpenHD GitHub repository:
+# https://github.com/OpenHD
+################################################################################
+
+set -eu
+
+CONFIG_FILE="${OPENHD_GLIDE_CONFIG:-/etc/default/openhd-glide}"
+if [ -r "$CONFIG_FILE" ]; then
+  # shellcheck disable=SC1090
+  . "$CONFIG_FILE"
+fi
+
+lowercase() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+is_enabled() {
+  case "$(lowercase "${1:-}")" in
+    1|true|yes|on|enabled)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+BIN="${GLIDE_BIN:-/usr/bin/openhd-glide}"
+UI_BIN="${GLIDE_UI_BIN:-/usr/bin/glide-ui}"
+RUN_DIR="${GLIDE_RUN_DIR:-/run/openhd-glide}"
+VIDEO_BACKEND="$(lowercase "${GLIDE_VIDEO_BACKEND:-gstreamer}")"
+VIEW_PORT="${GLIDE_VIEW_PORT:-5600}"
+VIEW_CODEC="$(lowercase "${GLIDE_VIEW_CODEC:-h264}")"
+WIDTH="${GLIDE_WIDTH:-1920}"
+HEIGHT="${GLIDE_HEIGHT:-1080}"
+FLOW_FPS="${GLIDE_FLOW_FPS:-120}"
+DISPLAY_HZ="${GLIDE_DISPLAY_HZ:-120}"
+UI_WIDTH="${GLIDE_UI_WIDTH:-760}"
+UI_HEIGHT="${GLIDE_UI_HEIGHT:-$HEIGHT}"
+UI_COLOR="${GLIDE_UI_COLOR:-0xCC0B1722}"
+UI_BUFFER="${GLIDE_UI_BUFFER:-$RUN_DIR/openhd-glide-ui.argb}"
+MAVLINK_PORT="${GLIDE_MAVLINK_PORT:-14550}"
+
+case "$VIEW_CODEC" in
+  h264|avc)
+    VIEW_CODEC="h264"
+    ;;
+  h265|hevc)
+    VIEW_CODEC="h265"
+    ;;
+  *)
+    echo "openhd-glide: unsupported GLIDE_VIEW_CODEC '$VIEW_CODEC'; use h264 or h265" >&2
+    exit 2
+    ;;
+esac
+
+ARGS=(
+  --kms-video-preview
+)
+
+case "$VIDEO_BACKEND" in
+  gstreamer|gst)
+    ARGS+=(--gstreamer-video)
+    ;;
+  rkmpp|rockchip|native-rkmpp)
+    ARGS+=(--native-rkmpp-video)
+    ;;
+  cedar|allwinner|native-cedar)
+    ARGS+=(--native-cedar-video)
+    ;;
+  *)
+    echo "openhd-glide: unsupported GLIDE_VIDEO_BACKEND '$VIDEO_BACKEND'; use gstreamer, rkmpp, or cedar" >&2
+    exit 2
+    ;;
+esac
+
+ARGS+=(
+  --view-udp-port "$VIEW_PORT"
+  --view-udp-codec "$VIEW_CODEC"
+  --preview-width "$WIDTH"
+  --flow-height "$HEIGHT"
+  --flow-fps "$FLOW_FPS"
+  --display-refresh-hz "$DISPLAY_HZ"
+)
+
+if [ -n "${GLIDE_MAVLINK_PORT:-}" ]; then
+  ARGS+=(--mavlink-udp-port "$MAVLINK_PORT")
+fi
+
+if ! is_enabled "${GLIDE_MAVLINK:-1}"; then
+  ARGS+=(--no-mavlink)
+fi
+
+if ! is_enabled "${GLIDE_FLOW:-1}"; then
+  ARGS+=(--no-flow)
+fi
+
+if [ -n "${GLIDE_LD_LIBRARY_PATH:-}" ]; then
+  export LD_LIBRARY_PATH="$GLIDE_LD_LIBRARY_PATH"
+fi
+if [ -n "${GLIDE_LIBGL_DRIVERS_PATH:-}" ]; then
+  export LIBGL_DRIVERS_PATH="$GLIDE_LIBGL_DRIVERS_PATH"
+fi
+if [ -n "${GLIDE_MESA_DRIVER_OVERRIDE:-}" ]; then
+  export MESA_LOADER_DRIVER_OVERRIDE="$GLIDE_MESA_DRIVER_OVERRIDE"
+fi
+
+mkdir -p "$RUN_DIR"
+chmod 0755 "$RUN_DIR"
+
+UI_PID=""
+MAIN_PID=""
+
+cleanup_ui() {
+  if [ -n "$UI_PID" ]; then
+    kill "$UI_PID" 2>/dev/null || true
+    wait "$UI_PID" 2>/dev/null || true
+    UI_PID=""
+  fi
+}
+
+stop_children() {
+  trap - INT TERM
+  if [ -n "$MAIN_PID" ]; then
+    kill "$MAIN_PID" 2>/dev/null || true
+  fi
+  cleanup_ui
+  if [ -n "$MAIN_PID" ]; then
+    wait "$MAIN_PID" 2>/dev/null || true
+  fi
+}
+
+trap 'stop_children; exit 143' INT TERM
+
+if is_enabled "${GLIDE_UI:-1}"; then
+  rm -f "$UI_BUFFER"
+  "$UI_BIN" \
+    --buffer \
+    --width "$UI_WIDTH" \
+    --height "$UI_HEIGHT" \
+    --buffer-path "$UI_BUFFER" &
+  UI_PID=$!
+
+  attempts=0
+  while [ "$attempts" -lt 40 ] && [ ! -e "$UI_BUFFER" ]; do
+    if ! kill -0 "$UI_PID" 2>/dev/null; then
+      wait "$UI_PID"
+      exit $?
+    fi
+    attempts=$((attempts + 1))
+    sleep 0.05
+  done
+
+  ARGS+=(
+    --ui-overlay
+    --ui-width "$UI_WIDTH"
+    --ui-height "$UI_HEIGHT"
+    --ui-buffer-path "$UI_BUFFER"
+    --ui-debug-color "$UI_COLOR"
+  )
+fi
+
+if [ -n "${GLIDE_EXTRA_ARGS:-}" ]; then
+  # Intentionally split on shell whitespace. Use /etc/default/openhd-glide for
+  # simple extra flags such as: GLIDE_EXTRA_ARGS="--atomic-kms --vblank-wait"
+  # shellcheck disable=SC2206
+  EXTRA_ARGS=( $GLIDE_EXTRA_ARGS )
+  ARGS+=("${EXTRA_ARGS[@]}")
+fi
+
+"$BIN" "${ARGS[@]}" &
+MAIN_PID=$!
+
+set +e
+wait "$MAIN_PID"
+STATUS=$?
+set -e
+
+MAIN_PID=""
+cleanup_ui
+exit "$STATUS"

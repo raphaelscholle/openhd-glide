@@ -40,9 +40,12 @@ endif()
 
 option(OPENHD_GLIDE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 option(OPENHD_GLIDE_DEVICE_KMS "Enable the device-oriented DRM/KMS runtime mode" ON)
+option(OPENHD_GLIDE_INSTALL_SYSTEMD "Install the OpenHD-Glide systemd autostart unit on Linux" ON)
 set(OPENHD_GLIDE_PACKAGE_SUFFIX "" CACHE STRING "Optional suffix for the Debian package name")
 set(OPENHD_GLIDE_PACKAGE_VERSION "${PROJECT_VERSION}" CACHE STRING "Debian package version")
 set(OPENHD_GLIDE_PACKAGE_ARCHITECTURE "" CACHE STRING "Debian package architecture")
+set(OPENHD_GLIDE_SYSTEMD_UNIT_DIR "lib/systemd/system" CACHE PATH "Systemd unit install directory")
+set(OPENHD_GLIDE_SERVICE_LIBEXEC_DIR "lib/openhd-glide" CACHE PATH "OpenHD-Glide service helper install directory")
 
 add_library(glide_common
     src/common/ipc.cpp
@@ -381,6 +384,27 @@ install(
     DESTINATION share/openhd-glide/examples
 )
 
+if(UNIX AND NOT APPLE AND OPENHD_GLIDE_INSTALL_SYSTEMD)
+    install(
+        FILES
+            packaging/systemd/openhd-glide.service
+        DESTINATION "${OPENHD_GLIDE_SYSTEMD_UNIT_DIR}"
+    )
+
+    install(
+        PROGRAMS
+            packaging/systemd/openhd-glide-service-run
+        DESTINATION "${OPENHD_GLIDE_SERVICE_LIBEXEC_DIR}"
+    )
+
+    install(
+        FILES
+            packaging/systemd/openhd-glide.default
+        DESTINATION /etc/default
+        RENAME openhd-glide
+    )
+endif()
+
 set(CPACK_PACKAGE_NAME "openhd-glide${OPENHD_GLIDE_PACKAGE_SUFFIX}")
 set(CPACK_PACKAGE_VENDOR "OpenHD")
 set(CPACK_PACKAGE_CONTACT "OpenHD <contact@openhdfpv.org>")
@@ -396,4 +420,30 @@ set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
 set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
 set(CPACK_DEBIAN_PACKAGE_DEPENDS "libc6, libstdc++6, libdrm2, libgbm1, libegl1, libgles2, libfreetype6, zlib1g, libgstreamer1.0-0, libgstreamer-plugins-base1.0-0")
 set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+if(UNIX AND NOT APPLE AND OPENHD_GLIDE_INSTALL_SYSTEMD)
+    set(OPENHD_GLIDE_DEBIAN_CONTROL_DIR "${CMAKE_CURRENT_BINARY_DIR}/debian-control")
+    file(MAKE_DIRECTORY "${OPENHD_GLIDE_DEBIAN_CONTROL_DIR}")
+
+    set(OPENHD_GLIDE_DEBIAN_CONTROL_EXTRA)
+    foreach(control_file postinst prerm postrm conffiles)
+        configure_file(
+            "${CMAKE_CURRENT_SOURCE_DIR}/packaging/debian/${control_file}"
+            "${OPENHD_GLIDE_DEBIAN_CONTROL_DIR}/${control_file}"
+            COPYONLY
+        )
+        list(APPEND OPENHD_GLIDE_DEBIAN_CONTROL_EXTRA "${OPENHD_GLIDE_DEBIAN_CONTROL_DIR}/${control_file}")
+    endforeach()
+
+    foreach(control_script postinst prerm postrm)
+        file(
+            CHMOD "${OPENHD_GLIDE_DEBIAN_CONTROL_DIR}/${control_script}"
+            PERMISSIONS
+                OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                GROUP_READ GROUP_EXECUTE
+                WORLD_READ WORLD_EXECUTE
+        )
+    endforeach()
+
+    set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA ${OPENHD_GLIDE_DEBIAN_CONTROL_EXTRA})
+endif()
 include(CPack)

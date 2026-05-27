@@ -53,6 +53,7 @@ public:
         std::uint32_t ui_width = 0,
         std::uint32_t ui_height = 0);
     bool present(const DmabufVideoFrame& video_frame, bool update_flow_frame);
+    bool present_overlay(bool update_flow_frame);
     bool make_flow_context_current();
     bool release_flow_context();
     bool publish_rendered_flow_frame();
@@ -107,6 +108,13 @@ private:
         DumbBuffer buffer {};
     };
 
+    struct PlaneRect {
+        std::uint32_t x {};
+        std::uint32_t y {};
+        std::uint32_t width {};
+        std::uint32_t height {};
+    };
+
     bool open_card();
     bool choose_connector_and_mode(std::uint32_t requested_width, std::uint32_t requested_height, std::uint32_t requested_refresh_hz);
     bool create_primary_buffer();
@@ -126,7 +134,11 @@ private:
     bool make_frame_key(const DmabufVideoFrame& frame, FrameKey& key);
     ImportedFramebuffer* find_or_import_video_framebuffer(const DmabufVideoFrame& frame);
     void evict_video_framebuffer_if_needed();
-    bool commit(const DmabufVideoFrame& video_frame, std::uint32_t video_framebuffer, std::uint32_t flow_framebuffer, std::uint32_t ui_framebuffer);
+    bool acquire_flow_framebuffer(bool update_flow_frame, std::uint32_t& framebuffer_id, void*& bo, bool& solid_dumb);
+    void release_acquired_flow_framebuffer(std::uint32_t framebuffer_id, void* bo, bool solid_dumb);
+    void adopt_flow_framebuffer(std::uint32_t framebuffer_id, void* bo, bool solid_dumb);
+    PlaneRect scaled_video_destination(const DmabufVideoFrame& video_frame) const;
+    bool commit(const DmabufVideoFrame* video_frame, std::uint32_t video_framebuffer, std::uint32_t flow_framebuffer, std::uint32_t ui_framebuffer);
     void destroy_imported(ImportedFramebuffer& imported);
     void destroy_video_framebuffer_cache();
     void destroy_primary_buffer();

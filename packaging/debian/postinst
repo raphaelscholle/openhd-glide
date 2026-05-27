@@ -1,0 +1,40 @@
+#!/bin/sh
+set -e
+
+SERVICE="openhd-glide.service"
+DEFAULTS="/etc/default/openhd-glide"
+
+is_enabled() {
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on|enabled)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+if [ "$1" = "configure" ]; then
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl enable "$SERVICE" >/dev/null 2>&1 || true
+
+    if [ -d /run/systemd/system ]; then
+      GLIDE_START_ON_INSTALL=0
+      if [ -r "$DEFAULTS" ]; then
+        set +e
+        . "$DEFAULTS"
+        set -e
+      fi
+
+      if is_enabled "${GLIDE_START_ON_INSTALL:-0}"; then
+        systemctl restart "$SERVICE" >/dev/null 2>&1 || true
+      elif systemctl is-active --quiet "$SERVICE"; then
+        systemctl try-restart "$SERVICE" >/dev/null 2>&1 || true
+      fi
+    fi
+  fi
+fi
+
+exit 0

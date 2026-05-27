@@ -48,6 +48,7 @@
 #include <array>
 #include <chrono>
 #include <cctype>
+#include <cmath>
 #include <csignal>
 #include <cstdint>
 #include <iomanip>
@@ -102,6 +103,72 @@ glide::flow::OsdTheme load_osd_theme()
         .primary = color_from_rgb(glide::preview_control::theme_color("primary"), 0.92F),
         .secondary = color_from_rgb(glide::preview_control::theme_color("secondary"), 0.90F),
     };
+}
+
+void draw_connecting_indicator(
+    glide::flow::GlesTextRenderer& renderer,
+    glide::flow::SurfaceSize surface,
+    const glide::flow::OsdTheme& theme,
+    std::chrono::steady_clock::time_point now)
+{
+    if (surface.width == 0 || surface.height == 0) {
+        return;
+    }
+
+    constexpr float pi = 3.14159265358979323846F;
+    const auto scale = std::max(0.80F, std::min(
+        static_cast<float>(surface.width) / 1280.0F,
+        static_cast<float>(surface.height) / 720.0F));
+    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    const auto dot_count = static_cast<int>((elapsed_ms / 450) % 4);
+    std::string text = "CONNECTING";
+    text.append(static_cast<std::size_t>(dot_count), '.');
+
+    const auto text_scale = 22.0F * scale;
+    const auto text_width = renderer.measure_text_width(text, text_scale);
+    const auto panel_width = std::max(330.0F * scale, text_width + 108.0F * scale);
+    const auto panel_height = 92.0F * scale;
+    const auto panel_x = (static_cast<float>(surface.width) - panel_width) * 0.5F;
+    const auto panel_y = (static_cast<float>(surface.height) - panel_height) * 0.5F;
+    const auto center_y = panel_y + (panel_height * 0.5F);
+
+    renderer.draw_filled_quad(
+        { panel_x, panel_y },
+        { panel_x + panel_width, panel_y },
+        { panel_x, panel_y + panel_height },
+        { panel_x + panel_width, panel_y + panel_height },
+        { .red = 0.0F, .green = 0.0F, .blue = 0.0F, .alpha = 0.42F },
+        surface);
+
+    const auto spinner_center = glide::flow::RenderPoint {
+        .x = panel_x + 48.0F * scale,
+        .y = center_y,
+    };
+    const auto spinner_radius = 18.0F * scale;
+    const auto phase = static_cast<int>((elapsed_ms / 85) % 12);
+    for (int i = 0; i < 12; ++i) {
+        const auto age = (i - phase + 12) % 12;
+        const auto alpha = 0.18F + (static_cast<float>(11 - age) / 11.0F) * 0.70F;
+        const auto angle = (static_cast<float>(i) / 12.0F) * 2.0F * pi;
+        const auto inner = spinner_radius * 0.55F;
+        const auto outer = spinner_radius;
+        renderer.draw_line(
+            { spinner_center.x + std::cos(angle) * inner, spinner_center.y + std::sin(angle) * inner },
+            { spinner_center.x + std::cos(angle) * outer, spinner_center.y + std::sin(angle) * outer },
+            3.0F * scale,
+            { .red = theme.primary.red, .green = theme.primary.green, .blue = theme.primary.blue, .alpha = alpha },
+            surface);
+    }
+
+    renderer.set_text_color(theme.text);
+    renderer.draw(
+        glide::flow::TextPlacement {
+            .text = text,
+            .x = panel_x + 82.0F * scale,
+            .y = center_y + (text_scale * 0.36F),
+            .scale = text_scale,
+        },
+        surface);
 }
 
 void send_theme_state(glide::ipc::Server& ipc_server, int client_id)
@@ -789,8 +856,7 @@ int run_kms_video_preview(const Options& options)
                 thread.join();
             }
         }
-    } async_flow_join { async_flow_thread };
-    ScopedThreadJoin ui_buffer_join { ui_buffer_thread };
+    };
 
     glide::flow::GlesTextRenderer flow_renderer;
     glide::flow::FpsOverlay flow_fps_overlay;
@@ -803,6 +869,7 @@ int run_kms_video_preview(const Options& options)
     glide::flow::PerformanceHorizon performance_horizon;
     glide::flow::SimulatedAttitude simulated_attitude;
     std::atomic<double> video_plane_fps { 0.0 };
+    std::atomic<bool> video_signal_present { false };
     auto flow_surface = use_atomic_kms ? compositor.surface_size() : glide::flow::SurfaceSize { options.preview_width, options.flow_height };
     auto flow_fps_placement = flow_fps_overlay.layout(0.0, flow_surface);
     bool flow_runtime_logged {};
@@ -813,6 +880,10 @@ int run_kms_video_preview(const Options& options)
         ? std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(1.0 / options.flow_fps))
         : std::chrono::steady_clock::duration::max();
     auto next_flow_frame = std::chrono::steady_clock::now();
+    auto last_video_frame_time = std::chrono::steady_clock::time_point {};
+    constexpr auto video_signal_timeout = std::chrono::milliseconds(750);
+    ScopedThreadJoin async_flow_join { async_flow_thread };
+    ScopedThreadJoin ui_buffer_join { ui_buffer_thread };
 
     const auto render_flow_overlay = [&]() {
         if (!flow_renderer.available()) {
@@ -848,6 +919,7 @@ int run_kms_video_preview(const Options& options)
             auto link_sample = simulated_link.sample();
             link_sample.show_coordinates = glide::preview_control::coordinates_overlay_enabled();
             const auto theme = load_osd_theme();
+            flow_renderer.set_text_color(theme.primary);
             link_overview.draw(flow_renderer, flow_surface, link_sample, theme);
             performance_horizon.draw(
                 flow_renderer,
@@ -863,6 +935,9 @@ int run_kms_video_preview(const Options& options)
             speed_widget.draw(flow_renderer, flow_surface, simulated_speed.sample(), theme, compact_readouts);
             altitude_widget.draw(flow_renderer, flow_surface, simulated_altitude.sample(), theme, compact_readouts);
             flow_renderer.draw(flow_fps_placement, flow_surface);
+            if (!video_signal_present.load(std::memory_order_relaxed)) {
+                draw_connecting_indicator(flow_renderer, flow_surface, theme, std::chrono::steady_clock::now());
+            }
         }
 
         if (options.ui_overlay && shared_ui.open_if_needed(options.ui_buffer_path, options.ui_width, ui_height)) {
@@ -909,13 +984,55 @@ int run_kms_video_preview(const Options& options)
         }
     };
 
+    const auto present_waiting_overlay_frame = [&](bool update_flow, bool force) {
+        if (!use_atomic_kms || (!options.flow_overlay && !options.ui_overlay)) {
+            return true;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (!force && options.flow_fps > 0.0 && now < next_flow_frame) {
+            return true;
+        }
+        if (update_flow) {
+            render_flow_overlay();
+        }
+        if (!compositor.present_overlay(update_flow)) {
+            glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
+            return false;
+        }
+        update_flow_deadline();
+        return true;
+    };
+
+    const auto maybe_present_waiting_overlay = [&]() {
+        if (!use_atomic_kms || (!options.flow_overlay && !options.ui_overlay)) {
+            return true;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        const bool timed_out =
+            video_signal_present.load(std::memory_order_relaxed)
+            && last_video_frame_time != std::chrono::steady_clock::time_point {}
+            && now - last_video_frame_time >= video_signal_timeout;
+        if (timed_out) {
+            video_signal_present.store(false, std::memory_order_relaxed);
+            video_plane_fps.store(0.0, std::memory_order_relaxed);
+        }
+        if (video_signal_present.load(std::memory_order_relaxed)) {
+            return true;
+        }
+        return present_waiting_overlay_frame(!async_flow, false);
+    };
+
+    if (!async_flow && !present_waiting_overlay_frame(true, true)) {
+        return 1;
+    }
+
     if (async_flow) {
         if (!compositor.release_flow_context()) {
             glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
             return 1;
         }
 
-        async_flow_thread = std::thread([&compositor, &video_plane_fps, flow_frame_interval, flow_fps = options.flow_fps, flow_debug_solid = options.flow_debug_solid]() {
+        async_flow_thread = std::thread([&compositor, &video_plane_fps, &video_signal_present, flow_frame_interval, flow_fps = options.flow_fps, flow_debug_solid = options.flow_debug_solid]() {
             if (!compositor.make_flow_context_current()) {
                 glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
                 stop_requested = 1;
@@ -982,6 +1099,7 @@ int run_kms_video_preview(const Options& options)
                     auto link_sample = simulated_link.sample();
                     link_sample.show_coordinates = glide::preview_control::coordinates_overlay_enabled();
                     const auto theme = load_osd_theme();
+                    renderer.set_text_color(theme.primary);
                     links.draw(renderer, surface, link_sample, theme);
                     horizon.draw(
                         renderer,
@@ -997,6 +1115,9 @@ int run_kms_video_preview(const Options& options)
                     speed.draw(renderer, surface, simulated_speed.sample(), theme, compact_readouts);
                     altitude.draw(renderer, surface, simulated_altitude.sample(), theme, compact_readouts);
                     renderer.draw(fps_placement, surface);
+                    if (!video_signal_present.load(std::memory_order_relaxed)) {
+                        draw_connecting_indicator(renderer, surface, theme, std::chrono::steady_clock::now());
+                    }
 
                     if (!compositor.publish_rendered_flow_frame()) {
                         glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
@@ -1026,6 +1147,13 @@ int run_kms_video_preview(const Options& options)
             glide::LogLevel::info,
             "OpenHD-Glide",
             "Flow overlay rendering is decoupled from video presentation at " + std::to_string(options.flow_fps) + " fps");
+
+        for (int attempt = 0; attempt < 12 && stop_requested == 0; ++attempt) {
+            if (!present_waiting_overlay_frame(false, true)) {
+                return 1;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
     }
 
     if (use_atomic_kms && options.ui_overlay && async_flow && compositor.ui_overlay_plane_active()) {
@@ -1072,6 +1200,8 @@ int run_kms_video_preview(const Options& options)
             glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
             return false;
         }
+        video_signal_present.store(true, std::memory_order_relaxed);
+        last_video_frame_time = std::chrono::steady_clock::now();
         if (compositor.writeback_recording_finished()) {
             stop_requested = 1;
         }
@@ -1104,6 +1234,9 @@ int run_kms_video_preview(const Options& options)
             if (!cedar.poll(frame)) {
                 if (!cedar.last_error().empty()) {
                     glide::log(glide::LogLevel::error, "OpenHD-Glide", cedar.last_error());
+                    return 1;
+                }
+                if (!maybe_present_waiting_overlay()) {
                     return 1;
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -1165,6 +1298,9 @@ int run_kms_video_preview(const Options& options)
             if (!rkmpp.poll(frame)) {
                 if (!rkmpp.last_error().empty()) {
                     glide::log(glide::LogLevel::error, "OpenHD-Glide", rkmpp.last_error());
+                    return 1;
+                }
+                if (!maybe_present_waiting_overlay()) {
                     return 1;
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -1411,6 +1547,10 @@ int run_kms_video_preview(const Options& options)
         sample_wait_ms_max = std::max(sample_wait_ms_max, sample_wait_ms);
         ++sample_wait_count;
         if (sample == nullptr) {
+            if (!maybe_present_waiting_overlay()) {
+                stop_requested = 1;
+                break;
+            }
             continue;
         }
         while (auto* newer_sample = gst_app_sink_try_pull_sample(GST_APP_SINK(sink), 0)) {

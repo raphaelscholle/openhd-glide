@@ -216,6 +216,33 @@ examples/run-kms-stack.sh 5600 h264
 
 Installed helper scripts are placed in `${CMAKE_INSTALL_PREFIX}/share/openhd-glide/examples`.
 
+### Autostart Service
+
+Debian packages install and enable `openhd-glide.service` for boot autostart. The service runs
+`openhd-glide --kms-video-preview`, starts `glide-ui --buffer` for the LVGL UI overlay, and uses
+`/etc/default/openhd-glide` for target-specific settings.
+
+The default service configuration listens for RTP/H.264 on UDP port `5600`, uses the portable
+GStreamer decoder path, and starts a `1920x1080` Flow/UI KMS stack at `120 Hz`. For Rockchip
+RK3566/RK3568 packages built with native MPP support, set:
+
+```sh
+sudo sed -i 's/^GLIDE_VIDEO_BACKEND=.*/GLIDE_VIDEO_BACKEND=rkmpp/' /etc/default/openhd-glide
+```
+
+For Allwinner/Cedar tests, set `GLIDE_VIDEO_BACKEND=cedar` instead. Other common overrides are
+`GLIDE_WIDTH`, `GLIDE_HEIGHT`, `GLIDE_DISPLAY_HZ`, `GLIDE_FLOW_FPS`, `GLIDE_VIEW_PORT`, and
+`GLIDE_VIEW_CODEC`.
+
+The package enables the service but does not force a first start during installation unless
+`GLIDE_START_ON_INSTALL=1` is already set in `/etc/default/openhd-glide`. Start it manually for an
+immediate test:
+
+```sh
+sudo systemctl start openhd-glide
+sudo journalctl -u openhd-glide -f
+```
+
 Send a test pattern from another machine with GStreamer:
 
 ```sh

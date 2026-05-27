@@ -108,6 +108,48 @@ bool set_plane_property_to_range_edge(int drm_fd, std::uint32_t plane_id, const 
     return set;
 }
 
+struct PlaneRect {
+    std::uint32_t x {};
+    std::uint32_t y {};
+    std::uint32_t width {};
+    std::uint32_t height {};
+};
+
+PlaneRect scaled_video_destination(
+    std::uint32_t frame_width,
+    std::uint32_t frame_height,
+    std::uint32_t display_width,
+    std::uint32_t display_height)
+{
+    if (frame_width == 0 || frame_height == 0 || display_width == 0 || display_height == 0) {
+        return PlaneRect { .x = 0, .y = 0, .width = display_width, .height = display_height };
+    }
+
+    const auto scaled_width_from_height =
+        (static_cast<std::uint64_t>(display_height) * static_cast<std::uint64_t>(frame_width))
+        / static_cast<std::uint64_t>(frame_height);
+    if (scaled_width_from_height <= display_width) {
+        const auto width = static_cast<std::uint32_t>(std::max<std::uint64_t>(1, scaled_width_from_height));
+        return PlaneRect {
+            .x = (display_width - width) / 2U,
+            .y = 0,
+            .width = width,
+            .height = display_height,
+        };
+    }
+
+    const auto scaled_height_from_width =
+        (static_cast<std::uint64_t>(display_width) * static_cast<std::uint64_t>(frame_height))
+        / static_cast<std::uint64_t>(frame_width);
+    const auto height = static_cast<std::uint32_t>(std::max<std::uint64_t>(1, scaled_height_from_width));
+    return PlaneRect {
+        .x = 0,
+        .y = (display_height - height) / 2U,
+        .width = display_width,
+        .height = height,
+    };
+}
+
 } // namespace
 #endif
 
@@ -160,16 +202,17 @@ bool KmsDmabufVideoPlane::present(const DmabufVideoFrame& frame)
         return false;
     }
 
+    const auto destination = scaled_video_destination(frame.width, frame.height, display_width_, display_height_);
     if (drmModeSetPlane(
             drm_fd_,
             video_plane_id_,
             crtc_id_,
             imported->framebuffer,
             0,
-            0,
-            0,
-            display_width_,
-            display_height_,
+            destination.x,
+            destination.y,
+            destination.width,
+            destination.height,
             0,
             0,
             frame.width << 16U,

@@ -1,0 +1,21 @@
+[Unit]
+Description=OpenHD Glide KMS rendering stack
+Documentation=https://github.com/OpenHD
+After=systemd-udev-settle.service network.target
+Wants=systemd-udev-settle.service
+ConditionPathExists=/dev/dri
+StartLimitIntervalSec=30
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/openhd-glide/openhd-glide-service-run
+Restart=on-failure
+RestartSec=2
+KillMode=control-group
+RuntimeDirectory=openhd-glide
+RuntimeDirectoryMode=0755
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target
