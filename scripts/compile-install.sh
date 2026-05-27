@@ -30,6 +30,7 @@ BUILD_TYPE="${GLIDE_BUILD_TYPE:-Release}"
 INSTALL_PREFIX="${GLIDE_INSTALL_PREFIX:-/usr/local}"
 JOBS="${GLIDE_JOBS:-$(nproc)}"
 INSTALL_DEPS="${GLIDE_INSTALL_DEPS:-0}"
+APT_BACKPORTS_TARGET="${GLIDE_APT_BACKPORTS_TARGET:-bookworm-backports}"
 
 if [ "${1:-}" = "--deps" ]; then
   INSTALL_DEPS=1
@@ -41,10 +42,6 @@ if [ "$INSTALL_DEPS" = "1" ]; then
     build-essential \
     cmake \
     pkg-config \
-    libdrm-dev \
-    libgbm-dev \
-    libgles2-mesa-dev \
-    libegl1-mesa-dev \
     libfreetype-dev \
     libgstreamer1.0-dev \
     libgstreamer-plugins-base1.0-dev \
@@ -53,6 +50,20 @@ if [ "$INSTALL_DEPS" = "1" ]; then
     gstreamer1.0-plugins-bad \
     gstreamer1.0-plugins-ugly \
     gstreamer1.0-libav
+
+  GRAPHICS_DEV_PACKAGES=(
+    libdrm-dev
+    libgbm-dev
+    libgles2-mesa-dev
+    libegl1-mesa-dev
+  )
+
+  if apt-cache policy libdrm2 libgbm1 | awk '/Installed:|Candidate:/ && /~bpo/ { found = 1 } END { exit(found ? 0 : 1) }'; then
+    echo "Detected backports DRM/GBM packages; installing matching graphics development packages from ${APT_BACKPORTS_TARGET}"
+    sudo apt install -y -t "$APT_BACKPORTS_TARGET" "${GRAPHICS_DEV_PACKAGES[@]}"
+  else
+    sudo apt install -y "${GRAPHICS_DEV_PACKAGES[@]}"
+  fi
 fi
 
 cmake \

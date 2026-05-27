@@ -68,6 +68,18 @@ To install the common build/runtime dependencies first:
 scripts/compile-install.sh --deps
 ```
 
+On Radxa Zero 3W / RK3566 Bookworm images that use `bookworm-backports` for DRM or Mesa runtime
+packages, apt may report exact-version conflicts such as `libdrm-dev` requiring Debian's
+`libdrm2 (= 2.4.114-1+b1)` while `libdrm2 2.4.123-1~bpo12+1` is selected. Install the matching
+graphics development packages from backports:
+
+```sh
+sudo apt install -y -t bookworm-backports libdrm-dev libgbm-dev libgles2-mesa-dev libegl1-mesa-dev
+```
+
+`scripts/compile-install.sh --deps` detects this case and applies the same backports target
+automatically. Set `GLIDE_APT_BACKPORTS_TARGET` if the image uses a differently named backports suite.
+
 ### Rockchip RK3566/RK3568 Dependencies
 
 Radxa/Rockchip Debian images may ship GStreamer runtime packages from the Radxa RK3568 repository
