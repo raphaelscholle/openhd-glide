@@ -100,6 +100,15 @@ jobs:
             libgles2-mesa-dev
             libegl1-mesa-dev
           )
+          graphics_runtime_packages=(
+            libdrm2
+            libdrm-radeon1
+            libdrm-nouveau2
+            libdrm-amdgpu1
+            libgbm1
+            libegl-mesa0
+            libglapi-mesa
+          )
           apt-get install -y \
             build-essential \
             ca-certificates \
@@ -117,6 +126,7 @@ jobs:
             gstreamer1.0-libav
 
           if apt-cache policy libdrm2 libgbm1 | awk '/Installed:|Candidate:/ && /~bpo/ { found = 1 } END { exit(found ? 0 : 1) }'; then
+            apt-get install -y -t bookworm-backports "${graphics_runtime_packages[@]}"
             apt-get install -y -t bookworm-backports "${graphics_dev_packages[@]}"
           else
             apt-get install -y "${graphics_dev_packages[@]}"

@@ -57,9 +57,19 @@ if [ "$INSTALL_DEPS" = "1" ]; then
     libgles2-mesa-dev
     libegl1-mesa-dev
   )
+  GRAPHICS_RUNTIME_PACKAGES=(
+    libdrm2
+    libdrm-radeon1
+    libdrm-nouveau2
+    libdrm-amdgpu1
+    libgbm1
+    libegl-mesa0
+    libglapi-mesa
+  )
 
   if apt-cache policy libdrm2 libgbm1 | awk '/Installed:|Candidate:/ && /~bpo/ { found = 1 } END { exit(found ? 0 : 1) }'; then
     echo "Detected backports DRM/GBM packages; installing matching graphics development packages from ${APT_BACKPORTS_TARGET}"
+    sudo apt install -y -t "$APT_BACKPORTS_TARGET" "${GRAPHICS_RUNTIME_PACKAGES[@]}"
     sudo apt install -y -t "$APT_BACKPORTS_TARGET" "${GRAPHICS_DEV_PACKAGES[@]}"
   else
     sudo apt install -y "${GRAPHICS_DEV_PACKAGES[@]}"
