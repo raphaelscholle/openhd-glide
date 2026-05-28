@@ -74,11 +74,13 @@ packages, apt may report exact-version conflicts such as `libdrm-dev` requiring 
 graphics development packages from backports:
 
 ```sh
-sudo apt install -y -t bookworm-backports libdrm-dev libgbm-dev libgles2-mesa-dev libegl1-mesa-dev
+sudo apt install -y -t bookworm-backports libdrm2 libdrm-radeon1 libdrm-nouveau2 libdrm-amdgpu1 libgbm1 libegl-mesa0 libglapi-mesa libdrm-dev libgbm-dev libgles2-mesa-dev libegl1-mesa-dev
 ```
 
 `scripts/compile-install.sh --deps` detects this case and applies the same backports target
 automatically. Set `GLIDE_APT_BACKPORTS_TARGET` if the image uses a differently named backports suite.
+
+The package workflow applies the same split install inside OpenHD-ChrootCompiler's chroot build script.
 
 ### Rockchip RK3566/RK3568 Dependencies
 

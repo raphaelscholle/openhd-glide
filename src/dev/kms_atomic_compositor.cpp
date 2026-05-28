@@ -471,9 +471,6 @@ void configure_mesa_runtime_for_board()
     if (std::getenv("LIBGL_DRIVERS_PATH") == nullptr) {
         setenv("LIBGL_DRIVERS_PATH", "/usr/lib/aarch64-linux-gnu/dri", 0);
     }
-    if (std::getenv("MESA_LOADER_DRIVER_OVERRIDE") == nullptr) {
-        setenv("MESA_LOADER_DRIVER_OVERRIDE", "sun4i-drm", 0);
-    }
 }
 
 } // namespace
@@ -1266,10 +1263,32 @@ bool KmsAtomicCompositor::choose_video_plane(std::uint32_t drm_format)
         drmModeFreePlane(plane);
     }
 
-    drmModeFreePlaneResources(planes);
     if (video_plane_id_ == 0) {
-        last_error_ = "no KMS overlay plane supports decoded video format";
-        return false;
+        auto* primary_plane = drmModeGetPlane(drm_fd_, primary_plane_id_);
+        if (primary_plane != nullptr && plane_supports_format(primary_plane, drm_format)) {
+            video_plane_id_ = primary_plane_id_;
+            video_plane_format_ = drm_format;
+            video_on_primary_ = true;
+            drmModeFreePlane(primary_plane);
+        } else {
+            if (primary_plane != nullptr) {
+                drmModeFreePlane(primary_plane);
+            }
+            drmModeFreePlaneResources(planes);
+            last_error_ = "no KMS plane supports decoded video format";
+            return false;
+        }
+    }
+    drmModeFreePlaneResources(planes);
+    if (video_on_primary_) {
+        set_range_edge(drm_fd_, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "zpos", false);
+        set_range_edge(drm_fd_, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "ZPOS", false);
+        set_range_edge(drm_fd_, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "alpha", true);
+        glide::log(
+            glide::LogLevel::info,
+            "OpenHD-Glide",
+            "selected primary KMS plane " + std::to_string(primary_plane_id_) + " for decoded " + fourcc_string(drm_format));
+        return true;
     }
     set_range_edge(drm_fd_, video_plane_id_, DRM_MODE_OBJECT_PLANE, "zpos", false);
     set_range_edge(drm_fd_, video_plane_id_, DRM_MODE_OBJECT_PLANE, "ZPOS", false);
@@ -1297,7 +1316,6 @@ bool KmsAtomicCompositor::choose_flow_plane()
         return usable_crtc
             && available
             && plane_supports_format(plane, DRM_FORMAT_ARGB8888)
-            && plane_supports_format_modifier(drm_fd_, plane->plane_id, DRM_FORMAT_ARGB8888, DRM_FORMAT_MOD_LINEAR)
             && type == DRM_PLANE_TYPE_OVERLAY;
     };
 
@@ -1431,9 +1449,6 @@ bool KmsAtomicCompositor::create_gbm_device()
 bool KmsAtomicCompositor::create_flow_surface()
 {
     std::uint32_t use_flags = GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING;
-#ifdef GBM_BO_USE_LINEAR
-    use_flags |= GBM_BO_USE_LINEAR;
-#endif
     gbm_surface_ = gbm_surface_create(
         static_cast<gbm_device*>(gbm_device_),
         surface_.width,

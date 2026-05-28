@@ -56,10 +56,15 @@ case "$CODEC" in
     ;;
 esac
 
-exec sudo env \
-  LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-/usr/lib/aarch64-linux-gnu}" \
-  LIBGL_DRIVERS_PATH="${LIBGL_DRIVERS_PATH:-/usr/lib/aarch64-linux-gnu/dri}" \
-  MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-sun4i-drm}" \
+ENV_ARGS=(
+  "LD_LIBRARY_PATH=${GLIDE_LD_LIBRARY_PATH:-${LD_LIBRARY_PATH:-/usr/lib/aarch64-linux-gnu}}"
+  "LIBGL_DRIVERS_PATH=${GLIDE_LIBGL_DRIVERS_PATH:-${LIBGL_DRIVERS_PATH:-/usr/lib/aarch64-linux-gnu/dri}}"
+)
+if [ -n "${GLIDE_MESA_DRIVER_OVERRIDE:-${MESA_LOADER_DRIVER_OVERRIDE:-}}" ]; then
+  ENV_ARGS+=("MESA_LOADER_DRIVER_OVERRIDE=${GLIDE_MESA_DRIVER_OVERRIDE:-$MESA_LOADER_DRIVER_OVERRIDE}")
+fi
+
+exec sudo env "${ENV_ARGS[@]}" \
   "$BIN" \
   --kms-video-preview \
   --gstreamer-video \

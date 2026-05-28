@@ -118,9 +118,6 @@ void configure_mesa_runtime_for_board()
     if (std::getenv("LIBGL_DRIVERS_PATH") == nullptr) {
         setenv("LIBGL_DRIVERS_PATH", "/usr/lib/aarch64-linux-gnu/dri", 0);
     }
-    if (std::getenv("MESA_LOADER_DRIVER_OVERRIDE") == nullptr) {
-        setenv("MESA_LOADER_DRIVER_OVERRIDE", "sun4i-drm", 0);
-    }
 }
 
 } // namespace
