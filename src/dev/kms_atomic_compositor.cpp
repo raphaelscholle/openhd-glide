@@ -1449,6 +1449,9 @@ bool KmsAtomicCompositor::create_gbm_device()
 bool KmsAtomicCompositor::create_flow_surface()
 {
     std::uint32_t use_flags = GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING;
+#ifdef GBM_BO_USE_LINEAR
+    use_flags |= GBM_BO_USE_LINEAR;
+#endif
     gbm_surface_ = gbm_surface_create(
         static_cast<gbm_device*>(gbm_device_),
         surface_.width,
