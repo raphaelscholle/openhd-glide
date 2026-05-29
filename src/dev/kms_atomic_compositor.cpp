@@ -324,6 +324,11 @@ bool plane_supports_format(drmModePlane* plane, std::uint32_t format)
     return std::find(plane->formats, plane->formats + plane->count_formats, format) != plane->formats + plane->count_formats;
 }
 
+bool plane_can_host_alpha_overlay(std::uint32_t type)
+{
+    return type == DRM_PLANE_TYPE_OVERLAY || type == DRM_PLANE_TYPE_CURSOR;
+}
+
 struct FormatModifierBlobHeader {
     std::uint32_t version {};
     std::uint32_t flags {};
@@ -1316,7 +1321,8 @@ bool KmsAtomicCompositor::choose_flow_plane()
         return usable_crtc
             && available
             && plane_supports_format(plane, DRM_FORMAT_ARGB8888)
-            && type == DRM_PLANE_TYPE_OVERLAY;
+            && plane_supports_format_modifier(drm_fd_, plane->plane_id, DRM_FORMAT_ARGB8888, DRM_FORMAT_MOD_LINEAR)
+            && plane_can_host_alpha_overlay(type);
     };
 
     if (preferred_flow_plane_id_ >= 0) {
@@ -1329,7 +1335,7 @@ bool KmsAtomicCompositor::choose_flow_plane()
                 drmModeFreePlane(plane);
                 drmModeFreePlaneResources(planes);
                 last_error_ = "preferred KMS Flow plane " + std::to_string(preferred_flow_plane_id_)
-                    + " cannot scan out ARGB8888 on the selected CRTC";
+                    + " cannot scan out linear ARGB8888 on the selected CRTC";
                 return false;
             }
         } else {
@@ -1353,7 +1359,7 @@ bool KmsAtomicCompositor::choose_flow_plane()
 
     drmModeFreePlaneResources(planes);
     if (flow_plane_id_ == 0) {
-        last_error_ = "no KMS overlay plane supports ARGB8888 Flow scanout";
+        last_error_ = "no KMS alpha plane supports linear ARGB8888 Flow scanout";
         return false;
     }
     set_range_edge(drm_fd_, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "zpos", true);
@@ -1362,7 +1368,7 @@ bool KmsAtomicCompositor::choose_flow_plane()
     glide::log(
         glide::LogLevel::info,
         "OpenHD-Glide",
-        "selected KMS Flow plane " + std::to_string(flow_plane_id_) + " for ARGB8888 overlay");
+        "selected KMS Flow plane " + std::to_string(flow_plane_id_) + " for linear ARGB8888 overlay");
     return true;
 }
 
@@ -1382,7 +1388,7 @@ bool KmsAtomicCompositor::choose_ui_plane()
             && available
             && plane_supports_format(plane, DRM_FORMAT_ARGB8888)
             && plane_supports_format_modifier(drm_fd_, plane->plane_id, DRM_FORMAT_ARGB8888, DRM_FORMAT_MOD_LINEAR)
-            && type == DRM_PLANE_TYPE_OVERLAY;
+            && plane_can_host_alpha_overlay(type);
     };
 
     if (preferred_ui_plane_id_ >= 0) {
@@ -1395,7 +1401,7 @@ bool KmsAtomicCompositor::choose_ui_plane()
                 drmModeFreePlane(plane);
                 drmModeFreePlaneResources(planes);
                 last_error_ = "preferred KMS UI plane " + std::to_string(preferred_ui_plane_id_)
-                    + " cannot scan out ARGB8888 on the selected CRTC";
+                    + " cannot scan out linear ARGB8888 on the selected CRTC";
                 return false;
             }
         } else {
@@ -1421,7 +1427,7 @@ bool KmsAtomicCompositor::choose_ui_plane()
 
     drmModeFreePlaneResources(planes);
     if (ui_plane_id_ == 0) {
-        last_error_ = "no KMS overlay plane supports ARGB8888 UI scanout";
+        last_error_ = "no KMS alpha plane supports linear ARGB8888 UI scanout";
         return false;
     }
     set_range_edge(drm_fd_, ui_plane_id_, DRM_MODE_OBJECT_PLANE, "zpos", true);
@@ -1430,7 +1436,7 @@ bool KmsAtomicCompositor::choose_ui_plane()
     glide::log(
         glide::LogLevel::info,
         "OpenHD-Glide",
-        "selected KMS UI plane " + std::to_string(ui_plane_id_) + " for ARGB8888 overlay");
+        "selected KMS UI plane " + std::to_string(ui_plane_id_) + " for linear ARGB8888 overlay");
     return true;
 }
 

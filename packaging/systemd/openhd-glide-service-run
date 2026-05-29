@@ -43,8 +43,10 @@ is_enabled() {
   esac
 }
 
-BIN="${GLIDE_BIN:-/usr/bin/openhd-glide}"
-UI_BIN="${GLIDE_UI_BIN:-/usr/bin/glide-ui}"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+INSTALL_PREFIX="$(dirname "$(dirname "$SCRIPT_DIR")")"
+BIN="${GLIDE_BIN:-$INSTALL_PREFIX/bin/openhd-glide}"
+UI_BIN="${GLIDE_UI_BIN:-$INSTALL_PREFIX/bin/glide-ui}"
 RUN_DIR="${GLIDE_RUN_DIR:-/run/openhd-glide}"
 VIDEO_BACKEND="$(lowercase "${GLIDE_VIDEO_BACKEND:-gstreamer}")"
 VIEW_PORT="${GLIDE_VIEW_PORT:-5600}"

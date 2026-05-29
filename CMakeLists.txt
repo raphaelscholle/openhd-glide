@@ -29,6 +29,7 @@ project(openhd-glide
 )
 
 include(FetchContent)
+include(GNUInstallDirs)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -385,9 +386,21 @@ install(
 )
 
 if(UNIX AND NOT APPLE AND OPENHD_GLIDE_INSTALL_SYSTEMD)
+    if(IS_ABSOLUTE "${OPENHD_GLIDE_SERVICE_LIBEXEC_DIR}")
+        set(OPENHD_GLIDE_SERVICE_LIBEXEC_FULL_DIR "${OPENHD_GLIDE_SERVICE_LIBEXEC_DIR}")
+    else()
+        set(OPENHD_GLIDE_SERVICE_LIBEXEC_FULL_DIR "${CMAKE_INSTALL_PREFIX}/${OPENHD_GLIDE_SERVICE_LIBEXEC_DIR}")
+    endif()
+    set(OPENHD_GLIDE_SERVICE_RUN_FULL_PATH "${OPENHD_GLIDE_SERVICE_LIBEXEC_FULL_DIR}/openhd-glide-service-run")
+    configure_file(
+        packaging/systemd/openhd-glide.service.in
+        "${CMAKE_CURRENT_BINARY_DIR}/openhd-glide.service"
+        @ONLY
+    )
+
     install(
         FILES
-            packaging/systemd/openhd-glide.service
+            "${CMAKE_CURRENT_BINARY_DIR}/openhd-glide.service"
         DESTINATION "${OPENHD_GLIDE_SYSTEMD_UNIT_DIR}"
     )
 
