@@ -17,6 +17,9 @@ GLIDE_DISPLAY_HZ=120
 # Flow OSD overlay.
 GLIDE_FLOW=1
 GLIDE_FLOW_FPS=120
+# Keeps the first rendered Flow framebuffer attached and continues rendering
+# offscreen. Useful for measuring KMS overlay framebuffer-swap overhead.
+GLIDE_FLOW_STATIC_SCANOUT=0
 
 # LVGL UI buffer overlay.
 GLIDE_UI=1

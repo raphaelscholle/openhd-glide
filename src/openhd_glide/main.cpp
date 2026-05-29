@@ -235,6 +235,7 @@ struct Options {
     bool native_rkmpp_video {};
     bool async_flow { true };
     bool flow_debug_solid {};
+    bool flow_static_scanout {};
     bool ui_overlay {};
     std::uint32_t ui_debug_color { 0xCC0B1722U };
     std::string ui_buffer_path { "/tmp/openhd-glide-ui.argb" };
@@ -317,6 +318,8 @@ Options parse_options(int argc, char** argv)
             options.async_flow = false;
         } else if (argument == "--flow-debug-solid") {
             options.flow_debug_solid = true;
+        } else if (argument == "--flow-static-scanout") {
+            options.flow_static_scanout = true;
         } else if (argument == "--ui-overlay") {
             options.ui_overlay = true;
         } else if (argument == "--ui-debug-color" && i + 1 < argc) {
@@ -1032,7 +1035,7 @@ int run_kms_video_preview(const Options& options)
             return 1;
         }
 
-        async_flow_thread = std::thread([&compositor, &video_plane_fps, &video_signal_present, flow_frame_interval, flow_fps = options.flow_fps, flow_debug_solid = options.flow_debug_solid]() {
+        async_flow_thread = std::thread([&compositor, &video_plane_fps, &video_signal_present, flow_frame_interval, flow_fps = options.flow_fps, flow_debug_solid = options.flow_debug_solid, flow_static_scanout = options.flow_static_scanout]() {
             if (!compositor.make_flow_context_current()) {
                 glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
                 stop_requested = 1;
@@ -1070,6 +1073,7 @@ int run_kms_video_preview(const Options& options)
                 auto surface = compositor.surface_size();
                 auto fps_placement = fps_overlay.layout(0.0, surface);
                 bool runtime_logged {};
+                bool scanout_published {};
                 auto next_frame = std::chrono::steady_clock::now();
 
                 while (stop_requested == 0) {
@@ -1119,10 +1123,13 @@ int run_kms_video_preview(const Options& options)
                         draw_connecting_indicator(renderer, surface, theme, std::chrono::steady_clock::now());
                     }
 
-                    if (!compositor.publish_rendered_flow_frame()) {
-                        glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
-                        stop_requested = 1;
-                        break;
+                    if (!flow_static_scanout || !scanout_published) {
+                        if (!compositor.publish_rendered_flow_frame()) {
+                            glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
+                            stop_requested = 1;
+                            break;
+                        }
+                        scanout_published = true;
                     }
 
                     if (flow_fps > 0.0) {

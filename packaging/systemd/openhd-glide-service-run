@@ -132,6 +132,10 @@ if ! is_enabled "${GLIDE_FLOW:-1}"; then
   ARGS+=(--no-flow)
 fi
 
+if is_enabled "${GLIDE_FLOW_STATIC_SCANOUT:-0}"; then
+  ARGS+=(--flow-static-scanout)
+fi
+
 if [ -n "${GLIDE_LD_LIBRARY_PATH:-}" ]; then
   export LD_LIBRARY_PATH="$GLIDE_LD_LIBRARY_PATH"
 fi
