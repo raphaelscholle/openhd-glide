@@ -1953,11 +1953,19 @@ bool KmsAtomicCompositor::commit(
     }
 
     const bool has_video = video_frame != nullptr && video_framebuffer != 0;
+    const bool initial_commit = !modeset_committed_;
+    const bool update_primary_plane = initial_commit || (has_video && video_on_primary_);
+    const bool update_video_plane = has_video || (!has_video && video_plane_id_ != 0 && !video_on_primary_);
+    const bool update_flow_plane =
+        flow_framebuffer != 0
+        && flow_plane_id_ != 0
+        && (initial_commit || flow_framebuffer != current_flow_framebuffer_);
+    const bool update_ui_plane = ui_framebuffer != 0 && ui_plane_id_ != 0 && initial_commit;
     const auto video_destination = has_video && !video_on_primary_
         ? scaled_video_destination(*video_frame)
         : PlaneRect { .x = 0, .y = 0, .width = surface_.width, .height = surface_.height };
     bool ok = true;
-    if (!modeset_committed_) {
+    if (initial_commit) {
         ok = ok && add_property(drm_fd_, request, connector_id_, DRM_MODE_OBJECT_CONNECTOR, "CRTC_ID", crtc_id_, last_error_);
         ok = ok && add_property(drm_fd_, request, crtc_id_, DRM_MODE_OBJECT_CRTC, "MODE_ID", mode_blob_id_, last_error_);
         ok = ok && add_property(drm_fd_, request, crtc_id_, DRM_MODE_OBJECT_CRTC, "ACTIVE", 1, last_error_);
@@ -1970,13 +1978,13 @@ bool KmsAtomicCompositor::commit(
         ok = ok && add_optional_range_from_bottom_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "ZPOS", 1, last_error_);
         ok = ok && add_optional_enum_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "pixel blend mode", "None", last_error_);
     }
-    if (flow_framebuffer != 0 && flow_plane_id_ != 0) {
+    if (update_flow_plane) {
         ok = ok && add_optional_range_edge_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "zpos", true, last_error_);
         ok = ok && add_optional_range_edge_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "ZPOS", true, last_error_);
         ok = ok && add_optional_range_edge_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "alpha", true, last_error_);
         ok = ok && add_optional_enum_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "pixel blend mode", "Coverage", last_error_);
     }
-    if (ui_framebuffer != 0 && ui_plane_id_ != 0) {
+    if (update_ui_plane) {
         ok = ok && add_optional_range_edge_property(drm_fd_, request, ui_plane_id_, DRM_MODE_OBJECT_PLANE, "zpos", true, last_error_);
         ok = ok && add_optional_range_edge_property(drm_fd_, request, ui_plane_id_, DRM_MODE_OBJECT_PLANE, "ZPOS", true, last_error_);
         ok = ok && add_optional_range_edge_property(drm_fd_, request, ui_plane_id_, DRM_MODE_OBJECT_PLANE, "alpha", true, last_error_);
@@ -1987,18 +1995,20 @@ bool KmsAtomicCompositor::commit(
     const auto primary_framebuffer = primary_has_video ? video_framebuffer : primary_.framebuffer;
     const auto primary_src_width = primary_has_video ? video_frame->width : surface_.width;
     const auto primary_src_height = primary_has_video ? video_frame->height : surface_.height;
-    ok = ok && add_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "FB_ID", primary_framebuffer, last_error_);
-    ok = ok && add_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_ID", crtc_id_, last_error_);
-    ok = ok && add_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_X", 0, last_error_);
-    ok = ok && add_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_Y", 0, last_error_);
-    ok = ok && add_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_W", primary_src_width << 16U, last_error_);
-    ok = ok && add_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_H", primary_src_height << 16U, last_error_);
-    ok = ok && add_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_X", primary_has_video ? video_destination.x : 0, last_error_);
-    ok = ok && add_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_Y", primary_has_video ? video_destination.y : 0, last_error_);
-    ok = ok && add_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_W", primary_has_video ? video_destination.width : surface_.width, last_error_);
-    ok = ok && add_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_H", primary_has_video ? video_destination.height : surface_.height, last_error_);
+    if (update_primary_plane) {
+        ok = ok && add_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "FB_ID", primary_framebuffer, last_error_);
+        ok = ok && add_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_ID", crtc_id_, last_error_);
+        ok = ok && add_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_X", 0, last_error_);
+        ok = ok && add_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_Y", 0, last_error_);
+        ok = ok && add_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_W", primary_src_width << 16U, last_error_);
+        ok = ok && add_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_H", primary_src_height << 16U, last_error_);
+        ok = ok && add_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_X", primary_has_video ? video_destination.x : 0, last_error_);
+        ok = ok && add_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_Y", primary_has_video ? video_destination.y : 0, last_error_);
+        ok = ok && add_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_W", primary_has_video ? video_destination.width : surface_.width, last_error_);
+        ok = ok && add_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_H", primary_has_video ? video_destination.height : surface_.height, last_error_);
+    }
 
-    if (has_video && !video_on_primary_) {
+    if (has_video && !video_on_primary_ && update_video_plane) {
         ok = ok && add_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "FB_ID", video_framebuffer, last_error_);
         ok = ok && add_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_ID", crtc_id_, last_error_);
         ok = ok && add_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_X", 0, last_error_);
@@ -2014,7 +2024,7 @@ bool KmsAtomicCompositor::commit(
         ok = ok && add_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_ID", 0, last_error_);
     }
 
-    if (flow_framebuffer != 0 && flow_plane_id_ != 0) {
+    if (update_flow_plane) {
         ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "FB_ID", flow_framebuffer, last_error_);
         ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_ID", crtc_id_, last_error_);
         ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_X", 0, last_error_);
@@ -2027,7 +2037,7 @@ bool KmsAtomicCompositor::commit(
         ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_H", surface_.height, last_error_);
     }
 
-    if (ui_framebuffer != 0 && ui_plane_id_ != 0) {
+    if (update_ui_plane) {
         ok = ok && add_property(drm_fd_, request, ui_plane_id_, DRM_MODE_OBJECT_PLANE, "FB_ID", ui_framebuffer, last_error_);
         ok = ok && add_property(drm_fd_, request, ui_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_ID", crtc_id_, last_error_);
         ok = ok && add_property(drm_fd_, request, ui_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_X", 0, last_error_);

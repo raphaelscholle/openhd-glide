@@ -1,8 +1,9 @@
 # OpenHD-Glide systemd service configuration.
 # Edit this file on target devices before rebooting into automatic tests.
 
-# Decoder path: gstreamer, rkmpp, or cedar.
-GLIDE_VIDEO_BACKEND=gstreamer
+# Decoder path: auto, gstreamer, rkmpp, or cedar. Auto prefers native hardware
+# decoder paths when the installed binary was built with them.
+GLIDE_VIDEO_BACKEND=auto
 
 # Incoming RTP video.
 GLIDE_VIEW_PORT=5600

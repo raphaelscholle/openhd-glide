@@ -48,7 +48,7 @@ INSTALL_PREFIX="$(dirname "$(dirname "$SCRIPT_DIR")")"
 BIN="${GLIDE_BIN:-$INSTALL_PREFIX/bin/openhd-glide}"
 UI_BIN="${GLIDE_UI_BIN:-$INSTALL_PREFIX/bin/glide-ui}"
 RUN_DIR="${GLIDE_RUN_DIR:-/run/openhd-glide}"
-VIDEO_BACKEND="$(lowercase "${GLIDE_VIDEO_BACKEND:-gstreamer}")"
+VIDEO_BACKEND="$(lowercase "${GLIDE_VIDEO_BACKEND:-auto}")"
 VIEW_PORT="${GLIDE_VIEW_PORT:-5600}"
 VIEW_CODEC="$(lowercase "${GLIDE_VIEW_CODEC:-h264}")"
 WIDTH="${GLIDE_WIDTH:-1920}"
@@ -77,6 +77,23 @@ esac
 ARGS=(
   --kms-video-preview
 )
+
+binary_links_library() {
+  [ -x "$BIN" ] || return 1
+  command -v ldd >/dev/null 2>&1 || return 1
+  ldd "$BIN" 2>/dev/null | grep -q "$1"
+}
+
+if [ "$VIDEO_BACKEND" = "auto" ]; then
+  if binary_links_library "librockchip_mpp"; then
+    VIDEO_BACKEND="rkmpp"
+  elif binary_links_library "libvdecoder"; then
+    VIDEO_BACKEND="cedar"
+  else
+    VIDEO_BACKEND="gstreamer"
+  fi
+  echo "openhd-glide: auto-selected GLIDE_VIDEO_BACKEND=$VIDEO_BACKEND"
+fi
 
 case "$VIDEO_BACKEND" in
   gstreamer|gst)
