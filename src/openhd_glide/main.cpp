@@ -1042,7 +1042,21 @@ int run_kms_video_preview(const Options& options)
             return 1;
         }
 
-        async_flow_thread = std::thread([&compositor, &video_plane_fps, &video_signal_present, flow_frame_interval, flow_fps = options.flow_fps, flow_debug_solid = options.flow_debug_solid, flow_static_scanout = options.flow_static_scanout, flow_primary_readback = options.flow_primary_readback]() {
+        async_flow_thread = std::thread([&compositor,
+                                             &shared_ui,
+                                             &video_plane_fps,
+                                             &video_signal_present,
+                                             flow_frame_interval,
+                                             flow_fps = options.flow_fps,
+                                             flow_overlay = options.flow_overlay,
+                                             flow_debug_solid = options.flow_debug_solid,
+                                             flow_static_scanout = options.flow_static_scanout,
+                                             flow_primary_readback = options.flow_primary_readback,
+                                             ui_overlay = options.ui_overlay,
+                                             ui_buffer_path = options.ui_buffer_path,
+                                             ui_width = options.ui_width,
+                                             ui_height,
+                                             ui_buffer_interval]() {
             if (!compositor.make_flow_context_current()) {
                 glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
                 stop_requested = 1;
@@ -1081,6 +1095,8 @@ int run_kms_video_preview(const Options& options)
                 auto fps_placement = fps_overlay.layout(0.0, surface);
                 bool runtime_logged {};
                 bool scanout_published {};
+                bool ui_buffer_logged_ready {};
+                auto next_ui_buffer_upload = std::chrono::steady_clock::time_point {};
                 auto next_frame = std::chrono::steady_clock::now();
 
                 while (stop_requested == 0) {
@@ -1107,27 +1123,44 @@ int run_kms_video_preview(const Options& options)
                             { .red = 1.0F, .green = 0.0F, .blue = 0.75F, .alpha = 0.55F },
                             surface);
                     }
-                    auto link_sample = simulated_link.sample();
-                    link_sample.show_coordinates = glide::preview_control::coordinates_overlay_enabled();
-                    const auto theme = load_osd_theme();
-                    renderer.set_text_color(theme.primary);
-                    links.draw(renderer, surface, link_sample, theme);
-                    horizon.draw(
-                        renderer,
-                        surface,
-                        simulated_attitude.sample(),
-                        glide::flow::WindSample {
-                            .direction_degrees = link_sample.wind_direction_deg,
-                            .speed_mps = link_sample.wind_speed_mps,
-                            .valid = true,
-                        },
-                        theme);
-                    const auto compact_readouts = glide::preview_control::compact_readouts_enabled();
-                    speed.draw(renderer, surface, simulated_speed.sample(), theme, compact_readouts);
-                    altitude.draw(renderer, surface, simulated_altitude.sample(), theme, compact_readouts);
-                    renderer.draw(fps_placement, surface);
-                    if (!video_signal_present.load(std::memory_order_relaxed)) {
-                        draw_connecting_indicator(renderer, surface, theme, std::chrono::steady_clock::now());
+                    if (flow_overlay) {
+                        auto link_sample = simulated_link.sample();
+                        link_sample.show_coordinates = glide::preview_control::coordinates_overlay_enabled();
+                        const auto theme = load_osd_theme();
+                        renderer.set_text_color(theme.primary);
+                        links.draw(renderer, surface, link_sample, theme);
+                        horizon.draw(
+                            renderer,
+                            surface,
+                            simulated_attitude.sample(),
+                            glide::flow::WindSample {
+                                .direction_degrees = link_sample.wind_direction_deg,
+                                .speed_mps = link_sample.wind_speed_mps,
+                                .valid = true,
+                            },
+                            theme);
+                        const auto compact_readouts = glide::preview_control::compact_readouts_enabled();
+                        speed.draw(renderer, surface, simulated_speed.sample(), theme, compact_readouts);
+                        altitude.draw(renderer, surface, simulated_altitude.sample(), theme, compact_readouts);
+                        renderer.draw(fps_placement, surface);
+                        if (!video_signal_present.load(std::memory_order_relaxed)) {
+                            draw_connecting_indicator(renderer, surface, theme, std::chrono::steady_clock::now());
+                        }
+                    }
+
+                    if (ui_overlay && shared_ui.open_if_needed(ui_buffer_path, ui_width, ui_height)) {
+                        if (!ui_buffer_logged_ready) {
+                            glide::log(glide::LogLevel::info, "OpenHD-Glide", "UI buffer backend connected to " + ui_buffer_path);
+                            ui_buffer_logged_ready = true;
+                        }
+                        const auto now = std::chrono::steady_clock::now();
+                        if (now >= next_ui_buffer_upload) {
+                            renderer.update_argb_texture(shared_ui.map, ui_width, ui_height, ui_width * 4U);
+                            next_ui_buffer_upload = now + ui_buffer_interval;
+                        }
+                        renderer.draw_cached_argb_texture({ 0.0F, 0.0F }, surface);
+                    } else if (ui_overlay) {
+                        ui_buffer_logged_ready = false;
                     }
 
                     if (!flow_static_scanout || !scanout_published) {
