@@ -25,6 +25,11 @@
 set -eu
 
 DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+SUDO_ARGS=()
+if ! [ -t 0 ]; then
+  SUDO_ARGS=(-S)
+fi
+. "${DIR}/examples/kms-example-common.sh"
 if [ -z "${GLIDE_BIN:-}" ]; then
   if [ -x "${DIR}/build-kms/openhd-glide" ]; then
     BIN="${DIR}/build-kms/openhd-glide"
@@ -55,7 +60,10 @@ case "$CODEC" in
     ;;
 esac
 
-exec sudo "$BIN" \
+glide_prepare_kms_example_service
+trap 'glide_restore_kms_example_service' EXIT INT TERM
+set +e
+sudo "${SUDO_ARGS[@]}" "$BIN" \
   --kms-video-preview \
   --gstreamer-video \
   --no-flow \
@@ -64,3 +72,8 @@ exec sudo "$BIN" \
   --preview-width "$WIDTH" \
   --flow-height "$HEIGHT" \
   --display-refresh-hz "$DISPLAY_HZ"
+STATUS=$?
+set -e
+glide_restore_kms_example_service
+trap - EXIT INT TERM
+exit "$STATUS"

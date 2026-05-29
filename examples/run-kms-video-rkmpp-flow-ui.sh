@@ -25,6 +25,11 @@
 set -eu
 
 DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+SUDO_ARGS=()
+if ! [ -t 0 ]; then
+  SUDO_ARGS=(-S)
+fi
+. "${DIR}/examples/kms-example-common.sh"
 if [ -z "${GLIDE_BIN:-}" ]; then
   if [ -x "${DIR}/openhd-glide" ]; then
     BIN="${DIR}/openhd-glide"
@@ -62,10 +67,6 @@ UI_WIDTH="${GLIDE_UI_WIDTH:-760}"
 UI_HEIGHT="${GLIDE_UI_HEIGHT:-$HEIGHT}"
 UI_COLOR="${GLIDE_UI_COLOR:-0xCC0B1722}"
 UI_BUFFER="${GLIDE_UI_BUFFER:-/tmp/openhd-glide-ui.argb}"
-SUDO_ARGS=()
-if ! [ -t 0 ]; then
-  SUDO_ARGS=(-S)
-fi
 CODEC="$(printf "%s" "$CODEC" | tr '[:upper:]' '[:lower:]')"
 case "$CODEC" in
   h264|avc)
@@ -92,6 +93,7 @@ UI_PID=$!
 cleanup() {
   kill "$UI_PID" 2>/dev/null || true
   wait "$UI_PID" 2>/dev/null || true
+  glide_restore_kms_example_service
 }
 trap cleanup EXIT INT TERM
 
@@ -103,6 +105,7 @@ if [ -n "${GLIDE_MESA_DRIVER_OVERRIDE:-}" ]; then
   ENV_ARGS+=("MESA_LOADER_DRIVER_OVERRIDE=$GLIDE_MESA_DRIVER_OVERRIDE")
 fi
 
+glide_prepare_kms_example_service
 sudo "${SUDO_ARGS[@]}" env "${ENV_ARGS[@]}" \
   "$BIN" \
   --kms-video-preview \

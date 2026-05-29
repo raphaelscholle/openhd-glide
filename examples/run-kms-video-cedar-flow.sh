@@ -25,6 +25,11 @@
 set -eu
 
 DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+SUDO_ARGS=()
+if ! [ -t 0 ]; then
+  SUDO_ARGS=(-S)
+fi
+. "${DIR}/examples/kms-example-common.sh"
 if [ -z "${GLIDE_BIN:-}" ]; then
   if [ -x "${DIR}/build-kms/openhd-glide" ]; then
     BIN="${DIR}/build-kms/openhd-glide"
@@ -50,7 +55,10 @@ if [ -n "${GLIDE_MESA_DRIVER_OVERRIDE:-${MESA_LOADER_DRIVER_OVERRIDE:-}}" ]; the
   ENV_ARGS+=("MESA_LOADER_DRIVER_OVERRIDE=${GLIDE_MESA_DRIVER_OVERRIDE:-$MESA_LOADER_DRIVER_OVERRIDE}")
 fi
 
-exec sudo env "${ENV_ARGS[@]}" \
+glide_prepare_kms_example_service
+trap 'glide_restore_kms_example_service' EXIT INT TERM
+set +e
+sudo "${SUDO_ARGS[@]}" env "${ENV_ARGS[@]}" \
   "$BIN" \
   --kms-video-preview \
   --native-cedar-video \
@@ -59,3 +67,8 @@ exec sudo env "${ENV_ARGS[@]}" \
   --flow-height "$HEIGHT" \
   --flow-fps "$FLOW_FPS" \
   --display-refresh-hz "$DISPLAY_HZ"
+STATUS=$?
+set -e
+glide_restore_kms_example_service
+trap - EXIT INT TERM
+exit "$STATUS"

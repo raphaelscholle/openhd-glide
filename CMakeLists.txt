@@ -368,6 +368,7 @@ install(
     PROGRAMS
         examples/run-glide-view-decode-only.sh
         examples/run-kms-stack.sh
+        examples/kms-example-common.sh
         examples/run-kms-video-cedar-flow.sh
         examples/run-kms-video-cedar-video-only.sh
         examples/run-kms-video-gstreamer-flow.sh
