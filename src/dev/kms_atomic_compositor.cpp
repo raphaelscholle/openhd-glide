@@ -329,6 +329,26 @@ bool plane_can_host_alpha_overlay(std::uint32_t type)
     return type == DRM_PLANE_TYPE_OVERLAY || type == DRM_PLANE_TYPE_CURSOR;
 }
 
+bool plane_supports_video_scanout_format(drmModePlane* plane)
+{
+    return plane_supports_format(plane, DRM_FORMAT_NV12)
+        || plane_supports_format(plane, DRM_FORMAT_NV21)
+        || plane_supports_format(plane, DRM_FORMAT_NV16)
+        || plane_supports_format(plane, DRM_FORMAT_YUYV)
+        || plane_supports_format(plane, DRM_FORMAT_YVYU)
+        || plane_supports_format(plane, DRM_FORMAT_VYUY);
+}
+
+constexpr std::uint64_t arm_afbc_16x16_modifier = 0x0800000000000001ULL;
+constexpr std::uint64_t arm_afbc_16x16_sparse_modifier = 0x0800000000000041ULL;
+constexpr std::uint64_t arm_afbc_16x16_ytr_modifier = 0x0800000000000011ULL;
+constexpr std::uint64_t arm_afbc_16x16_ytr_sparse_modifier = 0x0800000000000051ULL;
+constexpr std::uint64_t arm_afbc_16x16_cbr_modifier = 0x0800000000000081ULL;
+constexpr std::uint64_t arm_afbc_16x16_sparse_cbr_modifier = 0x08000000000000c1ULL;
+constexpr std::uint64_t arm_afbc_16x16_ytr_cbr_modifier = 0x0800000000000091ULL;
+constexpr std::uint64_t arm_afbc_16x16_ytr_sparse_cbr_modifier = 0x08000000000000d1ULL;
+constexpr std::uint64_t arm_afbc_16x16_ytr_split_sparse_modifier = 0x0800000000000071ULL;
+
 struct FormatModifierBlobHeader {
     std::uint32_t version {};
     std::uint32_t flags {};
@@ -1228,11 +1248,10 @@ bool KmsAtomicCompositor::choose_video_plane(std::uint32_t drm_format)
     }
 
     auto try_plane = [&](drmModePlane* plane) {
-        const auto type = plane_type(drm_fd_, plane->plane_id);
         const bool usable_crtc = (plane->possible_crtcs & (1 << crtc_index_)) != 0;
         const bool reserved_for_flow = preferred_flow_plane_id_ >= 0 && plane->plane_id == static_cast<std::uint32_t>(preferred_flow_plane_id_);
         const bool available = plane->plane_id != primary_plane_id_ && plane->plane_id != flow_plane_id_ && !reserved_for_flow;
-        if (usable_crtc && available && plane_supports_format(plane, drm_format) && type == DRM_PLANE_TYPE_OVERLAY) {
+        if (usable_crtc && available && plane_supports_format(plane, drm_format)) {
             video_plane_id_ = plane->plane_id;
             video_plane_format_ = drm_format;
             return true;
@@ -1321,7 +1340,6 @@ bool KmsAtomicCompositor::choose_flow_plane()
         return usable_crtc
             && available
             && plane_supports_format(plane, DRM_FORMAT_ARGB8888)
-            && plane_supports_format_modifier(drm_fd_, plane->plane_id, DRM_FORMAT_ARGB8888, DRM_FORMAT_MOD_LINEAR)
             && plane_can_host_alpha_overlay(type);
     };
 
@@ -1335,7 +1353,7 @@ bool KmsAtomicCompositor::choose_flow_plane()
                 drmModeFreePlane(plane);
                 drmModeFreePlaneResources(planes);
                 last_error_ = "preferred KMS Flow plane " + std::to_string(preferred_flow_plane_id_)
-                    + " cannot scan out linear ARGB8888 on the selected CRTC";
+                    + " cannot scan out ARGB8888 on the selected CRTC";
                 return false;
             }
         } else {
@@ -1353,13 +1371,17 @@ bool KmsAtomicCompositor::choose_flow_plane()
 
         if (try_plane(plane)) {
             flow_plane_id_ = plane->plane_id;
+            if (!plane_supports_video_scanout_format(plane)) {
+                drmModeFreePlane(plane);
+                break;
+            }
         }
         drmModeFreePlane(plane);
     }
 
     drmModeFreePlaneResources(planes);
     if (flow_plane_id_ == 0) {
-        last_error_ = "no KMS alpha plane supports linear ARGB8888 Flow scanout";
+        last_error_ = "no KMS alpha plane supports ARGB8888 Flow scanout";
         return false;
     }
     set_range_edge(drm_fd_, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "zpos", true);
@@ -1368,7 +1390,7 @@ bool KmsAtomicCompositor::choose_flow_plane()
     glide::log(
         glide::LogLevel::info,
         "OpenHD-Glide",
-        "selected KMS Flow plane " + std::to_string(flow_plane_id_) + " for linear ARGB8888 overlay");
+        "selected KMS Flow plane " + std::to_string(flow_plane_id_) + " for ARGB8888 overlay");
     return true;
 }
 
@@ -1388,6 +1410,7 @@ bool KmsAtomicCompositor::choose_ui_plane()
             && available
             && plane_supports_format(plane, DRM_FORMAT_ARGB8888)
             && plane_supports_format_modifier(drm_fd_, plane->plane_id, DRM_FORMAT_ARGB8888, DRM_FORMAT_MOD_LINEAR)
+            && !plane_supports_video_scanout_format(plane)
             && plane_can_host_alpha_overlay(type);
     };
 
@@ -1455,15 +1478,33 @@ bool KmsAtomicCompositor::create_gbm_device()
 bool KmsAtomicCompositor::create_flow_surface()
 {
     std::uint32_t use_flags = GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING;
-#ifdef GBM_BO_USE_LINEAR
-    use_flags |= GBM_BO_USE_LINEAR;
-#endif
-    gbm_surface_ = gbm_surface_create(
+    const std::array<std::uint64_t, 9> rockchip_overlay_modifiers {
+        arm_afbc_16x16_modifier,
+        arm_afbc_16x16_sparse_modifier,
+        arm_afbc_16x16_ytr_modifier,
+        arm_afbc_16x16_ytr_sparse_modifier,
+        arm_afbc_16x16_cbr_modifier,
+        arm_afbc_16x16_sparse_cbr_modifier,
+        arm_afbc_16x16_ytr_cbr_modifier,
+        arm_afbc_16x16_ytr_sparse_cbr_modifier,
+        arm_afbc_16x16_ytr_split_sparse_modifier,
+    };
+    gbm_surface_ = gbm_surface_create_with_modifiers2(
         static_cast<gbm_device*>(gbm_device_),
         surface_.width,
         surface_.height,
         GBM_FORMAT_ARGB8888,
+        rockchip_overlay_modifiers.data(),
+        rockchip_overlay_modifiers.size(),
         use_flags);
+    if (gbm_surface_ == nullptr) {
+        gbm_surface_ = gbm_surface_create(
+            static_cast<gbm_device*>(gbm_device_),
+            surface_.width,
+            surface_.height,
+            GBM_FORMAT_ARGB8888,
+            use_flags);
+    }
     if (gbm_surface_ == nullptr) {
         last_error_ = "failed to create Flow GBM overlay surface";
         return false;
