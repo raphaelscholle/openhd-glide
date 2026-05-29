@@ -1,0 +1,10 @@
+# OpenHD-Glide local video stream example configuration.
+# The service loops this file into openhd-glide.service over RTP/UDP.
+
+GLIDE_STREAM_FILE=/home/openhd/battlefield_1080p_120fps_8mbps.mp4
+GLIDE_STREAM_TARGET=127.0.0.1
+GLIDE_STREAM_PORT=5600
+GLIDE_STREAM_CODEC=h264
+
+# realtime follows the file timestamps. fast sends as quickly as possible.
+GLIDE_STREAM_MODE=realtime

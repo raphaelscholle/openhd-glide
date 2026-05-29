@@ -377,6 +377,8 @@ install(
         examples/run-kms-video-gstreamer-video-only.sh
         examples/run-kms-video-rkmpp-video-only.sh
         examples/run-kms-video-rkmpp-flow-ui.sh
+        examples/autorun-local-video-to-glide.sh
+        examples/stream-blurbusters-1080p120-to-glide-view.sh
         examples/stream-h264-file-to-glide-view.sh
         examples/stream-videotestsrc-to-glide-view.sh
         examples/run-wsl-flow-preview.sh
@@ -393,15 +395,22 @@ if(UNIX AND NOT APPLE AND OPENHD_GLIDE_INSTALL_SYSTEMD)
         set(OPENHD_GLIDE_SERVICE_LIBEXEC_FULL_DIR "${CMAKE_INSTALL_PREFIX}/${OPENHD_GLIDE_SERVICE_LIBEXEC_DIR}")
     endif()
     set(OPENHD_GLIDE_SERVICE_RUN_FULL_PATH "${OPENHD_GLIDE_SERVICE_LIBEXEC_FULL_DIR}/openhd-glide-service-run")
+    set(OPENHD_GLIDE_STREAM_EXAMPLE_FULL_PATH "${CMAKE_INSTALL_PREFIX}/share/openhd-glide/examples/autorun-local-video-to-glide.sh")
     configure_file(
         packaging/systemd/openhd-glide.service.in
         "${CMAKE_CURRENT_BINARY_DIR}/openhd-glide.service"
+        @ONLY
+    )
+    configure_file(
+        packaging/systemd/openhd-glide-stream.service.in
+        "${CMAKE_CURRENT_BINARY_DIR}/openhd-glide-stream.service"
         @ONLY
     )
 
     install(
         FILES
             "${CMAKE_CURRENT_BINARY_DIR}/openhd-glide.service"
+            "${CMAKE_CURRENT_BINARY_DIR}/openhd-glide-stream.service"
         DESTINATION "${OPENHD_GLIDE_SYSTEMD_UNIT_DIR}"
     )
 
@@ -416,6 +425,12 @@ if(UNIX AND NOT APPLE AND OPENHD_GLIDE_INSTALL_SYSTEMD)
             packaging/systemd/openhd-glide.default
         DESTINATION /etc/default
         RENAME openhd-glide
+    )
+    install(
+        FILES
+            packaging/systemd/openhd-glide-stream.default
+        DESTINATION /etc/default
+        RENAME openhd-glide-stream
     )
 endif()
 

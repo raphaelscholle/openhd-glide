@@ -1,0 +1,16 @@
+[Unit]
+Description=OpenHD Glide local MP4 RTP stream example
+Documentation=https://github.com/OpenHD
+After=network.target openhd-glide.service
+Wants=openhd-glide.service
+ConditionPathExists=/dev/dri
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/openhd-glide-stream
+ExecStart=@OPENHD_GLIDE_STREAM_EXAMPLE_FULL_PATH@
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
