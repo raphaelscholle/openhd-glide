@@ -27,6 +27,7 @@
 #if OPENHD_GLIDE_HAS_KMS_GBM
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
+#include <GLES2/gl2.h>
 #include <drm.h>
 #include <drm_fourcc.h>
 #include <fcntl.h>
@@ -509,7 +510,8 @@ bool KmsAtomicCompositor::create(
     int preferred_flow_plane_id,
     int preferred_ui_plane_id,
     std::uint32_t ui_width,
-    std::uint32_t ui_height)
+    std::uint32_t ui_height,
+    bool primary_flow_readback)
 {
 #if OPENHD_GLIDE_HAS_KMS_GBM
     preferred_video_plane_id_ = preferred_video_plane_id;
@@ -517,6 +519,13 @@ bool KmsAtomicCompositor::create(
     preferred_ui_plane_id_ = preferred_ui_plane_id;
     ui_surface_.width = ui_width;
     ui_surface_.height = ui_height;
+    primary_flow_readback_ = primary_flow_readback;
+    if (primary_flow_readback_) {
+        glide::log(
+            glide::LogLevel::info,
+            "OpenHD-Glide",
+            "Flow primary-plane readback mode enabled; keeping Flow FB_ID stable");
+    }
     return open_card()
         && choose_connector_and_mode(requested_width, requested_height, requested_refresh_hz)
         && create_primary_buffer()
@@ -532,6 +541,7 @@ bool KmsAtomicCompositor::create(
     (void)preferred_ui_plane_id;
     (void)ui_width;
     (void)ui_height;
+    (void)primary_flow_readback;
     last_error_ = "atomic KMS compositor support was not found at build time";
     return false;
 #endif
@@ -549,7 +559,7 @@ bool KmsAtomicCompositor::present(const DmabufVideoFrame& video_frame, bool upda
             return false;
         }
     }
-    if (flow_plane_id_ == 0 && !choose_flow_plane()) {
+    if (!primary_flow_readback_ && flow_plane_id_ == 0 && !choose_flow_plane()) {
         return false;
     }
     if (ui_surface_.width != 0 && ui_surface_.height != 0 && ui_plane_id_ == 0 && !choose_ui_plane()) {
@@ -568,7 +578,7 @@ bool KmsAtomicCompositor::present(const DmabufVideoFrame& video_frame, bool upda
     std::uint32_t flow_framebuffer {};
     bool flow_is_solid_dumb {};
     void* flow_bo {};
-    if (!acquire_flow_framebuffer(update_flow_frame, flow_framebuffer, flow_bo, flow_is_solid_dumb)) {
+    if (!primary_flow_readback_ && !acquire_flow_framebuffer(update_flow_frame, flow_framebuffer, flow_bo, flow_is_solid_dumb)) {
         return false;
     }
 
@@ -589,7 +599,7 @@ bool KmsAtomicCompositor::present(const DmabufVideoFrame& video_frame, bool upda
 bool KmsAtomicCompositor::present_overlay(bool update_flow_frame)
 {
 #if OPENHD_GLIDE_HAS_KMS_GBM
-    if (flow_plane_id_ == 0 && !choose_flow_plane()) {
+    if (!primary_flow_readback_ && flow_plane_id_ == 0 && !choose_flow_plane()) {
         return false;
     }
     if (ui_surface_.width != 0 && ui_surface_.height != 0 && ui_plane_id_ == 0 && !choose_ui_plane()) {
@@ -603,7 +613,7 @@ bool KmsAtomicCompositor::present_overlay(bool update_flow_frame)
     std::uint32_t flow_framebuffer {};
     bool flow_is_solid_dumb {};
     void* flow_bo {};
-    if (!acquire_flow_framebuffer(update_flow_frame, flow_framebuffer, flow_bo, flow_is_solid_dumb)) {
+    if (!primary_flow_readback_ && !acquire_flow_framebuffer(update_flow_frame, flow_framebuffer, flow_bo, flow_is_solid_dumb)) {
         return false;
     }
 
@@ -732,6 +742,19 @@ bool KmsAtomicCompositor::publish_rendered_flow_frame()
     pending_flow_bo_ = bo;
     pending_flow_is_solid_dumb_ = false;
     return true;
+#else
+    return false;
+#endif
+}
+
+bool KmsAtomicCompositor::publish_rendered_flow_frame_to_primary()
+{
+#if OPENHD_GLIDE_HAS_KMS_GBM
+    if (!primary_flow_readback_) {
+        last_error_ = "primary Flow readback mode is not enabled";
+        return false;
+    }
+    return read_flow_frame_into_primary();
 #else
     return false;
 #endif
@@ -1081,7 +1104,8 @@ bool KmsAtomicCompositor::create_primary_buffer()
     std::uint32_t handles[4] { primary_.handle, 0, 0, 0 };
     std::uint32_t strides[4] { primary_.pitch, 0, 0, 0 };
     std::uint32_t offsets[4] {};
-    if (drmModeAddFB2(drm_fd_, surface_.width, surface_.height, DRM_FORMAT_XRGB8888, handles, strides, offsets, &primary_.framebuffer, 0) != 0) {
+    const auto primary_format = primary_flow_readback_ ? DRM_FORMAT_ARGB8888 : DRM_FORMAT_XRGB8888;
+    if (drmModeAddFB2(drm_fd_, surface_.width, surface_.height, primary_format, handles, strides, offsets, &primary_.framebuffer, 0) != 0) {
         last_error_ = "failed to create primary DRM framebuffer" + errno_suffix();
         destroy_primary_buffer();
         return false;
@@ -1114,7 +1138,7 @@ bool KmsAtomicCompositor::create_primary_buffer()
             continue;
         }
         const bool usable_crtc = (plane->possible_crtcs & (1 << crtc_index_)) != 0;
-        if (usable_crtc && plane_supports_format(plane, DRM_FORMAT_XRGB8888) && plane_type(drm_fd_, plane->plane_id) == DRM_PLANE_TYPE_PRIMARY) {
+        if (usable_crtc && plane_supports_format(plane, primary_format) && plane_type(drm_fd_, plane->plane_id) == DRM_PLANE_TYPE_PRIMARY) {
             primary_plane_id_ = plane->plane_id;
             drmModeFreePlane(plane);
             break;
@@ -1123,7 +1147,7 @@ bool KmsAtomicCompositor::create_primary_buffer()
     }
     drmModeFreePlaneResources(planes);
     if (primary_plane_id_ == 0) {
-        last_error_ = "no primary KMS plane supports XRGB8888";
+        last_error_ = std::string("no primary KMS plane supports ") + fourcc_string(primary_format);
         return false;
     }
     return true;
@@ -1668,6 +1692,52 @@ bool KmsAtomicCompositor::create_solid_ui_buffer()
     return true;
 }
 
+bool KmsAtomicCompositor::read_flow_frame_into_primary()
+{
+    if (primary_.map == nullptr || primary_.framebuffer == 0) {
+        last_error_ = "primary Flow readback buffer is not mapped";
+        return false;
+    }
+
+    const auto width = surface_.width;
+    const auto height = surface_.height;
+    if (width == 0 || height == 0) {
+        return true;
+    }
+
+    const auto rgba_bytes = static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 4U;
+    flow_readback_buffer_.resize(rgba_bytes);
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    glReadPixels(0, 0, static_cast<GLsizei>(width), static_cast<GLsizei>(height), GL_RGBA, GL_UNSIGNED_BYTE, flow_readback_buffer_.data());
+    const auto error = glGetError();
+    if (error != GL_NO_ERROR) {
+        std::ostringstream stream;
+        stream << "failed to read Flow GLES framebuffer GL error=0x" << std::hex << error;
+        last_error_ = stream.str();
+        return false;
+    }
+
+    const auto* source = flow_readback_buffer_.data();
+    auto* destination = static_cast<unsigned char*>(primary_.map);
+    for (std::uint32_t y = 0; y < height; ++y) {
+        const auto source_y = height - 1U - y;
+        const auto* source_row = source + static_cast<std::size_t>(source_y) * static_cast<std::size_t>(width) * 4U;
+        auto* destination_row = destination + static_cast<std::size_t>(y) * primary_.pitch;
+        for (std::uint32_t x = 0; x < width; ++x) {
+            const auto* pixel = source_row + static_cast<std::size_t>(x) * 4U;
+            auto* output = destination_row + static_cast<std::size_t>(x) * 4U;
+            output[0] = pixel[2];
+            output[1] = pixel[1];
+            output[2] = pixel[0];
+            output[3] = pixel[3];
+        }
+    }
+
+    msync(primary_.map, static_cast<std::size_t>(primary_.size), MS_ASYNC);
+    drmModeDirtyFB(drm_fd_, primary_.framebuffer, nullptr, 0);
+    return true;
+}
+
 bool KmsAtomicCompositor::add_gbm_framebuffer(void* bo, std::uint32_t& framebuffer_id)
 {
     auto* buffer = static_cast<gbm_bo*>(bo);
@@ -1969,9 +2039,17 @@ bool KmsAtomicCompositor::commit(
         ok = ok && add_property(drm_fd_, request, connector_id_, DRM_MODE_OBJECT_CONNECTOR, "CRTC_ID", crtc_id_, last_error_);
         ok = ok && add_property(drm_fd_, request, crtc_id_, DRM_MODE_OBJECT_CRTC, "MODE_ID", mode_blob_id_, last_error_);
         ok = ok && add_property(drm_fd_, request, crtc_id_, DRM_MODE_OBJECT_CRTC, "ACTIVE", 1, last_error_);
-        ok = ok && add_optional_range_edge_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "zpos", false, last_error_);
-        ok = ok && add_optional_range_edge_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "ZPOS", false, last_error_);
-        ok = ok && add_optional_enum_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "pixel blend mode", "None", last_error_);
+        ok = ok && add_optional_range_edge_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "zpos", primary_flow_readback_, last_error_);
+        ok = ok && add_optional_range_edge_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "ZPOS", primary_flow_readback_, last_error_);
+        ok = ok && add_optional_range_edge_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "alpha", true, last_error_);
+        ok = ok && add_optional_enum_property(
+            drm_fd_,
+            request,
+            primary_plane_id_,
+            DRM_MODE_OBJECT_PLANE,
+            "pixel blend mode",
+            primary_flow_readback_ ? "Coverage" : "None",
+            last_error_);
     }
     if (has_video && !video_on_primary_ && video_plane_id_ != 0) {
         ok = ok && add_optional_range_from_bottom_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "zpos", 1, last_error_);

@@ -236,6 +236,7 @@ struct Options {
     bool async_flow { true };
     bool flow_debug_solid {};
     bool flow_static_scanout {};
+    bool flow_primary_readback {};
     bool ui_overlay {};
     std::uint32_t ui_debug_color { 0xCC0B1722U };
     std::string ui_buffer_path { "/tmp/openhd-glide-ui.argb" };
@@ -320,6 +321,8 @@ Options parse_options(int argc, char** argv)
             options.flow_debug_solid = true;
         } else if (argument == "--flow-static-scanout") {
             options.flow_static_scanout = true;
+        } else if (argument == "--flow-primary-readback") {
+            options.flow_primary_readback = true;
         } else if (argument == "--ui-overlay") {
             options.ui_overlay = true;
         } else if (argument == "--ui-debug-color" && i + 1 < argc) {
@@ -335,6 +338,9 @@ Options parse_options(int argc, char** argv)
         } else if (argument == "--no-mavlink") {
             options.mavlink_udp = false;
         }
+    }
+    if (options.flow_primary_readback) {
+        options.flow_static_scanout = false;
     }
     return options;
 }
@@ -814,7 +820,8 @@ int run_kms_video_preview(const Options& options)
                 options.flow_plane_id,
                 options.ui_plane_id,
                 options.ui_overlay ? options.ui_width : 0,
-                options.ui_overlay ? ui_height : 0)) {
+                options.ui_overlay ? ui_height : 0,
+                options.flow_primary_readback)) {
             glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
             return 1;
         }
@@ -1035,7 +1042,7 @@ int run_kms_video_preview(const Options& options)
             return 1;
         }
 
-        async_flow_thread = std::thread([&compositor, &video_plane_fps, &video_signal_present, flow_frame_interval, flow_fps = options.flow_fps, flow_debug_solid = options.flow_debug_solid, flow_static_scanout = options.flow_static_scanout]() {
+        async_flow_thread = std::thread([&compositor, &video_plane_fps, &video_signal_present, flow_frame_interval, flow_fps = options.flow_fps, flow_debug_solid = options.flow_debug_solid, flow_static_scanout = options.flow_static_scanout, flow_primary_readback = options.flow_primary_readback]() {
             if (!compositor.make_flow_context_current()) {
                 glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
                 stop_requested = 1;
@@ -1124,7 +1131,10 @@ int run_kms_video_preview(const Options& options)
                     }
 
                     if (!flow_static_scanout || !scanout_published) {
-                        if (!compositor.publish_rendered_flow_frame()) {
+                        const bool published = flow_primary_readback
+                            ? compositor.publish_rendered_flow_frame_to_primary()
+                            : compositor.publish_rendered_flow_frame();
+                        if (!published) {
                             glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
                             stop_requested = 1;
                             break;

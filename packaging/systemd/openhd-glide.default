@@ -20,6 +20,9 @@ GLIDE_FLOW_FPS=120
 # Keeps the first rendered Flow framebuffer attached and continues rendering
 # offscreen. Useful for measuring KMS overlay framebuffer-swap overhead.
 GLIDE_FLOW_STATIC_SCANOUT=0
+# Renders Flow with GLES, reads it into a persistent primary-plane ARGB
+# framebuffer, and avoids swapping the Flow plane FB_ID. Experimental.
+GLIDE_FLOW_PRIMARY_READBACK=0
 
 # LVGL UI buffer overlay.
 GLIDE_UI=1

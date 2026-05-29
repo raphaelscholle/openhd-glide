@@ -51,12 +51,14 @@ public:
         int preferred_flow_plane_id = -1,
         int preferred_ui_plane_id = -1,
         std::uint32_t ui_width = 0,
-        std::uint32_t ui_height = 0);
+        std::uint32_t ui_height = 0,
+        bool primary_flow_readback = false);
     bool present(const DmabufVideoFrame& video_frame, bool update_flow_frame);
     bool present_overlay(bool update_flow_frame);
     bool make_flow_context_current();
     bool release_flow_context();
     bool publish_rendered_flow_frame();
+    bool publish_rendered_flow_frame_to_primary();
     bool publish_solid_flow_frame(std::uint32_t argb);
     bool publish_solid_ui_frame(std::uint32_t argb);
     bool publish_ui_frame_from_argb(const void* pixels, std::uint32_t width, std::uint32_t height, std::uint32_t stride_bytes);
@@ -128,6 +130,7 @@ private:
     bool create_egl();
     bool create_solid_flow_buffer();
     bool create_solid_ui_buffer();
+    bool read_flow_frame_into_primary();
     bool add_gbm_framebuffer(void* bo, std::uint32_t& framebuffer_id);
     bool lock_flow_framebuffer(std::uint32_t& framebuffer_id, void*& bo);
     bool import_video_frame(const DmabufVideoFrame& frame, ImportedFramebuffer& imported);
@@ -178,12 +181,14 @@ private:
     void* current_flow_bo_ {};
     std::uint32_t current_flow_framebuffer_ {};
     bool current_flow_is_solid_dumb_ {};
+    bool primary_flow_readback_ {};
     void* pending_flow_bo_ {};
     std::uint32_t pending_flow_framebuffer_ {};
     bool pending_flow_is_solid_dumb_ {};
     DumbBuffer solid_flow_ {};
     DumbBuffer solid_ui_ {};
     std::mutex flow_framebuffer_mutex_;
+    std::vector<unsigned char> flow_readback_buffer_;
     std::vector<CachedFramebuffer> video_framebuffer_cache_;
     std::uint64_t frame_serial_ {};
     std::string card_path_;
