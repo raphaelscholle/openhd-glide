@@ -18,7 +18,10 @@ GLIDE_DISPLAY_HZ=120
 GLIDE_FLOW=1
 # RK3566 VOP2 atomic Flow framebuffer publishes are expensive. Keep this
 # conservative by default so 120 Hz video stays above 100 Hz.
-GLIDE_FLOW_FPS=8
+GLIDE_FLOW_FPS=15
+# Render the GLES Flow overlay at a lower resolution and let the KMS plane scale
+# it to the display. 1.0 is native resolution; 0.5 reduces overlay bandwidth.
+GLIDE_FLOW_RENDER_SCALE=0.5
 # Keeps the first rendered Flow framebuffer attached and continues rendering
 # offscreen. Useful for measuring KMS overlay framebuffer-swap overhead.
 GLIDE_FLOW_STATIC_SCANOUT=0

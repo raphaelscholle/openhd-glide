@@ -509,6 +509,8 @@ bool KmsAtomicCompositor::create(
     int preferred_video_plane_id,
     int preferred_flow_plane_id,
     int preferred_ui_plane_id,
+    std::uint32_t flow_render_width,
+    std::uint32_t flow_render_height,
     std::uint32_t ui_width,
     std::uint32_t ui_height,
     bool primary_flow_readback)
@@ -528,6 +530,22 @@ bool KmsAtomicCompositor::create(
     }
     return open_card()
         && choose_connector_and_mode(requested_width, requested_height, requested_refresh_hz)
+        && [&] {
+            flow_surface_ = surface_;
+            if (!primary_flow_readback_ && flow_render_width != 0 && flow_render_height != 0) {
+                flow_surface_.width = std::clamp(flow_render_width, 64U, surface_.width);
+                flow_surface_.height = std::clamp(flow_render_height, 64U, surface_.height);
+                if (flow_surface_.width != surface_.width || flow_surface_.height != surface_.height) {
+                    glide::log(
+                        glide::LogLevel::info,
+                        "OpenHD-Glide",
+                        "Flow render surface scaled to " + std::to_string(flow_surface_.width) + "x"
+                            + std::to_string(flow_surface_.height) + " and KMS-scaled to "
+                            + std::to_string(surface_.width) + "x" + std::to_string(surface_.height));
+                }
+            }
+            return true;
+        }()
         && create_primary_buffer()
         && create_gbm_device()
         && create_flow_surface()
@@ -539,6 +557,8 @@ bool KmsAtomicCompositor::create(
     (void)preferred_video_plane_id;
     (void)preferred_flow_plane_id;
     (void)preferred_ui_plane_id;
+    (void)flow_render_width;
+    (void)flow_render_height;
     (void)ui_width;
     (void)ui_height;
     (void)primary_flow_readback;
@@ -730,14 +750,11 @@ bool KmsAtomicCompositor::publish_rendered_flow_frame()
     }
 
     std::lock_guard<std::mutex> lock(flow_framebuffer_mutex_);
-    if (pending_flow_framebuffer_ != 0) {
-        drmModeRmFB(drm_fd_, pending_flow_framebuffer_);
-        pending_flow_framebuffer_ = 0;
-    }
     if (pending_flow_bo_ != nullptr) {
         gbm_surface_release_buffer(static_cast<gbm_surface*>(gbm_surface_), static_cast<gbm_bo*>(pending_flow_bo_));
         pending_flow_bo_ = nullptr;
     }
+    pending_flow_framebuffer_ = 0;
     pending_flow_framebuffer_ = framebuffer;
     pending_flow_bo_ = bo;
     pending_flow_is_solid_dumb_ = false;
@@ -771,18 +788,15 @@ bool KmsAtomicCompositor::publish_solid_flow_frame(std::uint32_t argb)
         return false;
     }
 
-    for (std::uint32_t y = 0; y < surface_.height; ++y) {
+    for (std::uint32_t y = 0; y < flow_surface_.height; ++y) {
         auto* row = reinterpret_cast<std::uint32_t*>(
             static_cast<unsigned char*>(solid_flow_.map) + static_cast<std::size_t>(y) * solid_flow_.pitch);
-        std::fill(row, row + surface_.width, argb);
+        std::fill(row, row + flow_surface_.width, argb);
     }
     msync(solid_flow_.map, solid_flow_.size, MS_SYNC);
     drmModeDirtyFB(drm_fd_, solid_flow_.framebuffer, nullptr, 0);
 
     std::lock_guard<std::mutex> lock(flow_framebuffer_mutex_);
-    if (pending_flow_framebuffer_ != 0 && !pending_flow_is_solid_dumb_) {
-        drmModeRmFB(drm_fd_, pending_flow_framebuffer_);
-    }
     if (pending_flow_bo_ != nullptr) {
         gbm_surface_release_buffer(static_cast<gbm_surface*>(gbm_surface_), static_cast<gbm_bo*>(pending_flow_bo_));
     }
@@ -878,7 +892,7 @@ bool KmsAtomicCompositor::ui_overlay_plane_active() const
 
 flow::SurfaceSize KmsAtomicCompositor::surface_size() const
 {
-    return surface_;
+    return flow_surface_.width != 0 && flow_surface_.height != 0 ? flow_surface_ : surface_;
 }
 
 const std::string& KmsAtomicCompositor::last_error() const
@@ -1515,8 +1529,8 @@ bool KmsAtomicCompositor::create_flow_surface()
     };
     gbm_surface_ = gbm_surface_create_with_modifiers2(
         static_cast<gbm_device*>(gbm_device_),
-        surface_.width,
-        surface_.height,
+        flow_surface_.width,
+        flow_surface_.height,
         GBM_FORMAT_ARGB8888,
         rockchip_overlay_modifiers.data(),
         rockchip_overlay_modifiers.size(),
@@ -1524,8 +1538,8 @@ bool KmsAtomicCompositor::create_flow_surface()
     if (gbm_surface_ == nullptr) {
         gbm_surface_ = gbm_surface_create(
             static_cast<gbm_device*>(gbm_device_),
-            surface_.width,
-            surface_.height,
+            flow_surface_.width,
+            flow_surface_.height,
             GBM_FORMAT_ARGB8888,
             use_flags);
     }
@@ -1615,8 +1629,8 @@ bool KmsAtomicCompositor::create_egl()
 bool KmsAtomicCompositor::create_solid_flow_buffer()
 {
     drm_mode_create_dumb create {};
-    create.width = surface_.width;
-    create.height = surface_.height;
+    create.width = flow_surface_.width;
+    create.height = flow_surface_.height;
     create.bpp = 32;
     if (drmIoctl(drm_fd_, DRM_IOCTL_MODE_CREATE_DUMB, &create) != 0) {
         last_error_ = "failed to create solid Flow debug buffer" + errno_suffix();
@@ -1629,7 +1643,7 @@ bool KmsAtomicCompositor::create_solid_flow_buffer()
     std::uint32_t handles[4] { solid_flow_.handle, 0, 0, 0 };
     std::uint32_t strides[4] { solid_flow_.pitch, 0, 0, 0 };
     std::uint32_t offsets[4] {};
-    if (drmModeAddFB2(drm_fd_, surface_.width, surface_.height, DRM_FORMAT_ARGB8888, handles, strides, offsets, &solid_flow_.framebuffer, 0) != 0) {
+    if (drmModeAddFB2(drm_fd_, flow_surface_.width, flow_surface_.height, DRM_FORMAT_ARGB8888, handles, strides, offsets, &solid_flow_.framebuffer, 0) != 0) {
         last_error_ = "failed to create solid Flow debug framebuffer" + errno_suffix();
         destroy_solid_flow_buffer();
         return false;
@@ -1738,41 +1752,107 @@ bool KmsAtomicCompositor::read_flow_frame_into_primary()
     return true;
 }
 
-bool KmsAtomicCompositor::add_gbm_framebuffer(void* bo, std::uint32_t& framebuffer_id)
+bool KmsAtomicCompositor::make_flow_framebuffer_key(void* bo, FlowFramebufferKey& key)
 {
     auto* buffer = static_cast<gbm_bo*>(bo);
-    const std::uint32_t width = gbm_bo_get_width(buffer);
-    const std::uint32_t height = gbm_bo_get_height(buffer);
-    const std::uint32_t format = gbm_bo_get_format(buffer);
-    std::uint32_t handles[4] {};
-    std::uint32_t strides[4] {};
-    std::uint32_t offsets[4] {};
-    std::uint64_t modifiers[4] {};
-
-    const auto plane_count = std::min(gbm_bo_get_plane_count(buffer), 4);
-    const std::uint64_t modifier = gbm_bo_get_modifier(buffer);
-    if (plane_count > 0) {
-        for (int plane = 0; plane < plane_count; ++plane) {
-            handles[plane] = gbm_bo_get_handle_for_plane(buffer, plane).u32;
-            strides[plane] = gbm_bo_get_stride_for_plane(buffer, plane);
-            offsets[plane] = gbm_bo_get_offset(buffer, plane);
-            modifiers[plane] = modifier;
-        }
-    } else {
-        handles[0] = gbm_bo_get_handle(buffer).u32;
-        strides[0] = gbm_bo_get_stride(buffer);
-        modifiers[0] = modifier;
+    if (buffer == nullptr) {
+        last_error_ = "Flow GBM buffer is unavailable";
+        return false;
     }
 
-    if (modifier != DRM_FORMAT_MOD_INVALID && modifier != DRM_FORMAT_MOD_LINEAR) {
-        if (drmModeAddFB2WithModifiers(drm_fd_, width, height, format, handles, strides, offsets, modifiers, &framebuffer_id, DRM_MODE_FB_MODIFIERS) != 0) {
-            last_error_ = "failed to add Flow GBM framebuffer with modifiers" + errno_suffix();
-            return false;
+    key = {};
+    key.width = gbm_bo_get_width(buffer);
+    key.height = gbm_bo_get_height(buffer);
+    key.format = gbm_bo_get_format(buffer);
+    key.modifier = gbm_bo_get_modifier(buffer);
+    key.plane_count = static_cast<std::uint32_t>(std::min(gbm_bo_get_plane_count(buffer), 4));
+    if (key.plane_count > 0) {
+        for (std::uint32_t plane = 0; plane < key.plane_count; ++plane) {
+            key.handles[plane] = gbm_bo_get_handle_for_plane(buffer, static_cast<int>(plane)).u32;
+            key.strides[plane] = gbm_bo_get_stride_for_plane(buffer, static_cast<int>(plane));
+            key.offsets[plane] = gbm_bo_get_offset(buffer, static_cast<int>(plane));
         }
         return true;
     }
 
-    if (drmModeAddFB2(drm_fd_, width, height, format, handles, strides, offsets, &framebuffer_id, 0) != 0) {
+    key.plane_count = 1;
+    key.handles[0] = gbm_bo_get_handle(buffer).u32;
+    key.strides[0] = gbm_bo_get_stride(buffer);
+    key.offsets[0] = 0;
+    return true;
+}
+
+bool KmsAtomicCompositor::find_or_add_flow_framebuffer(void* bo, std::uint32_t& framebuffer_id)
+{
+    FlowFramebufferKey key;
+    if (!make_flow_framebuffer_key(bo, key)) {
+        return false;
+    }
+
+    for (const auto& cached : flow_framebuffer_cache_) {
+        if (cached.key.width == key.width
+            && cached.key.height == key.height
+            && cached.key.format == key.format
+            && cached.key.plane_count == key.plane_count
+            && cached.key.modifier == key.modifier
+            && cached.key.handles == key.handles
+            && cached.key.strides == key.strides
+            && cached.key.offsets == key.offsets) {
+            framebuffer_id = cached.framebuffer;
+            return true;
+        }
+    }
+
+    if (!add_gbm_framebuffer(bo, framebuffer_id)) {
+        return false;
+    }
+    flow_framebuffer_cache_.push_back(CachedFlowFramebuffer { .key = key, .framebuffer = framebuffer_id });
+    return true;
+}
+
+bool KmsAtomicCompositor::add_gbm_framebuffer(void* bo, std::uint32_t& framebuffer_id)
+{
+    FlowFramebufferKey key;
+    if (!make_flow_framebuffer_key(bo, key)) {
+        return false;
+    }
+
+    std::uint64_t modifiers[4] {};
+    for (std::uint32_t plane = 0; plane < key.plane_count && plane < 4U; ++plane) {
+        modifiers[plane] = key.modifier;
+    }
+    if (key.modifier != DRM_FORMAT_MOD_INVALID && key.modifier != DRM_FORMAT_MOD_LINEAR) {
+        if (drmModeAddFB2WithModifiers(
+                drm_fd_,
+                key.width,
+                key.height,
+                key.format,
+                key.handles.data(),
+                key.strides.data(),
+                key.offsets.data(),
+                modifiers,
+                &framebuffer_id,
+                DRM_MODE_FB_MODIFIERS)
+            == 0) {
+            return true;
+        }
+        if (errno != EINVAL) {
+            last_error_ = "failed to add Flow GBM framebuffer with modifiers" + errno_suffix();
+            return false;
+        }
+    }
+
+    if (drmModeAddFB2(
+            drm_fd_,
+            key.width,
+            key.height,
+            key.format,
+            key.handles.data(),
+            key.strides.data(),
+            key.offsets.data(),
+            &framebuffer_id,
+            0)
+        != 0) {
         last_error_ = "failed to add Flow GBM framebuffer" + errno_suffix();
         return false;
     }
@@ -1797,7 +1877,7 @@ bool KmsAtomicCompositor::lock_flow_framebuffer(std::uint32_t& framebuffer_id, v
         last_error_ = "failed to lock Flow GBM front buffer";
         return false;
     }
-    if (!add_gbm_framebuffer(bo, framebuffer_id)) {
+    if (!find_or_add_flow_framebuffer(bo, framebuffer_id)) {
         gbm_surface_release_buffer(static_cast<gbm_surface*>(gbm_surface_), static_cast<gbm_bo*>(bo));
         bo = nullptr;
         return false;
@@ -1950,10 +2030,9 @@ bool KmsAtomicCompositor::acquire_flow_framebuffer(bool update_flow_frame, std::
 
 void KmsAtomicCompositor::release_acquired_flow_framebuffer(std::uint32_t framebuffer_id, void* bo, bool solid_dumb)
 {
+    (void)framebuffer_id;
+    (void)solid_dumb;
     if (bo != nullptr) {
-        if (framebuffer_id != 0 && drm_fd_ >= 0 && !solid_dumb) {
-            drmModeRmFB(drm_fd_, framebuffer_id);
-        }
         if (gbm_surface_ != nullptr) {
             gbm_surface_release_buffer(static_cast<gbm_surface*>(gbm_surface_), static_cast<gbm_bo*>(bo));
         }
@@ -1966,9 +2045,6 @@ void KmsAtomicCompositor::adopt_flow_framebuffer(std::uint32_t framebuffer_id, v
         return;
     }
 
-    if (framebuffer_id != current_flow_framebuffer_ && current_flow_framebuffer_ != 0 && !current_flow_is_solid_dumb_) {
-        drmModeRmFB(drm_fd_, current_flow_framebuffer_);
-    }
     if (framebuffer_id != current_flow_framebuffer_ && current_flow_bo_ != nullptr) {
         gbm_surface_release_buffer(static_cast<gbm_surface*>(gbm_surface_), static_cast<gbm_bo*>(current_flow_bo_));
     }
@@ -2107,8 +2183,8 @@ bool KmsAtomicCompositor::commit(
         ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_ID", crtc_id_, last_error_);
         ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_X", 0, last_error_);
         ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_Y", 0, last_error_);
-        ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_W", surface_.width << 16U, last_error_);
-        ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_H", surface_.height << 16U, last_error_);
+        ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_W", flow_surface_.width << 16U, last_error_);
+        ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_H", flow_surface_.height << 16U, last_error_);
         ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_X", 0, last_error_);
         ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_Y", 0, last_error_);
         ok = ok && add_property(drm_fd_, request, flow_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_W", surface_.width, last_error_);
@@ -2237,6 +2313,17 @@ void KmsAtomicCompositor::destroy_video_framebuffer_cache()
     video_framebuffer_cache_.clear();
 }
 
+void KmsAtomicCompositor::destroy_flow_framebuffer_cache()
+{
+    for (auto& cached : flow_framebuffer_cache_) {
+        if (drm_fd_ >= 0 && cached.framebuffer != 0) {
+            drmModeRmFB(drm_fd_, cached.framebuffer);
+            cached.framebuffer = 0;
+        }
+    }
+    flow_framebuffer_cache_.clear();
+}
+
 void KmsAtomicCompositor::destroy_primary_buffer()
 {
     if (primary_.map != nullptr) {
@@ -2345,17 +2432,11 @@ void KmsAtomicCompositor::cleanup()
         drmModeFreeCrtc(static_cast<drmModeCrtc*>(original_crtc_));
         original_crtc_ = nullptr;
     }
-    if (pending_flow_framebuffer_ != 0 && drm_fd_ >= 0 && !pending_flow_is_solid_dumb_) {
-        drmModeRmFB(drm_fd_, pending_flow_framebuffer_);
-    }
     pending_flow_framebuffer_ = 0;
     pending_flow_is_solid_dumb_ = false;
     if (pending_flow_bo_ != nullptr && gbm_surface_ != nullptr) {
         gbm_surface_release_buffer(static_cast<gbm_surface*>(gbm_surface_), static_cast<gbm_bo*>(pending_flow_bo_));
         pending_flow_bo_ = nullptr;
-    }
-    if (current_flow_framebuffer_ != 0 && drm_fd_ >= 0 && !current_flow_is_solid_dumb_) {
-        drmModeRmFB(drm_fd_, current_flow_framebuffer_);
     }
     current_flow_framebuffer_ = 0;
     current_flow_is_solid_dumb_ = false;
@@ -2378,6 +2459,8 @@ void KmsAtomicCompositor::cleanup()
     egl_display_ = nullptr;
     egl_context_ = nullptr;
     egl_surface_ = nullptr;
+
+    destroy_flow_framebuffer_cache();
 
     if (gbm_surface_ != nullptr) {
         gbm_surface_destroy(static_cast<gbm_surface*>(gbm_surface_));

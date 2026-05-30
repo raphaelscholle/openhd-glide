@@ -255,6 +255,7 @@ struct Options {
     bool flow_debug_solid {};
     bool flow_static_scanout {};
     bool flow_primary_readback {};
+    double flow_render_scale { 1.0 };
     bool ui_overlay {};
     std::uint32_t ui_debug_color { 0xCC0B1722U };
     std::string ui_buffer_path { "/tmp/openhd-glide-ui.argb" };
@@ -341,6 +342,8 @@ Options parse_options(int argc, char** argv)
             options.flow_static_scanout = true;
         } else if (argument == "--flow-primary-readback") {
             options.flow_primary_readback = true;
+        } else if (argument == "--flow-render-scale" && i + 1 < argc) {
+            options.flow_render_scale = std::clamp(std::stod(argv[++i]), 0.25, 1.0);
         } else if (argument == "--ui-overlay") {
             options.ui_overlay = true;
         } else if (argument == "--ui-debug-color" && i + 1 < argc) {
@@ -359,6 +362,7 @@ Options parse_options(int argc, char** argv)
     }
     if (options.flow_primary_readback) {
         options.flow_static_scanout = false;
+        options.flow_render_scale = 1.0;
     }
     return options;
 }
@@ -829,6 +833,8 @@ int run_kms_video_preview(const Options& options)
     glide::dev::KmsDmabufVideoPlane legacy_output;
     SharedUiBuffer shared_ui;
     auto ui_height = options.ui_height != 0 ? options.ui_height : options.flow_height;
+    const auto flow_render_width = static_cast<std::uint32_t>(std::lround(static_cast<double>(options.preview_width) * options.flow_render_scale));
+    const auto flow_render_height = static_cast<std::uint32_t>(std::lround(static_cast<double>(options.flow_height) * options.flow_render_scale));
     if (use_atomic_kms) {
         if (!compositor.create(
                 options.preview_width,
@@ -837,6 +843,8 @@ int run_kms_video_preview(const Options& options)
                 options.view_plane_id,
                 options.flow_plane_id,
                 options.ui_plane_id,
+                flow_render_width,
+                flow_render_height,
                 options.ui_overlay ? options.ui_width : 0,
                 options.ui_overlay ? ui_height : 0,
                 options.flow_primary_readback)) {

@@ -50,6 +50,8 @@ public:
         int preferred_video_plane_id = -1,
         int preferred_flow_plane_id = -1,
         int preferred_ui_plane_id = -1,
+        std::uint32_t flow_render_width = 0,
+        std::uint32_t flow_render_height = 0,
         std::uint32_t ui_width = 0,
         std::uint32_t ui_height = 0,
         bool primary_flow_readback = false);
@@ -89,6 +91,22 @@ private:
         FrameKey key {};
         ImportedFramebuffer imported {};
         std::uint64_t last_used {};
+    };
+
+    struct FlowFramebufferKey {
+        std::uint32_t width {};
+        std::uint32_t height {};
+        std::uint32_t format {};
+        std::uint32_t plane_count {};
+        std::uint64_t modifier {};
+        std::array<std::uint32_t, 4> handles {};
+        std::array<std::uint32_t, 4> strides {};
+        std::array<std::uint32_t, 4> offsets {};
+    };
+
+    struct CachedFlowFramebuffer {
+        FlowFramebufferKey key {};
+        std::uint32_t framebuffer {};
     };
 
     struct DumbBuffer {
@@ -131,6 +149,8 @@ private:
     bool create_solid_flow_buffer();
     bool create_solid_ui_buffer();
     bool read_flow_frame_into_primary();
+    bool make_flow_framebuffer_key(void* bo, FlowFramebufferKey& key);
+    bool find_or_add_flow_framebuffer(void* bo, std::uint32_t& framebuffer_id);
     bool add_gbm_framebuffer(void* bo, std::uint32_t& framebuffer_id);
     bool lock_flow_framebuffer(std::uint32_t& framebuffer_id, void*& bo);
     bool import_video_frame(const DmabufVideoFrame& frame, ImportedFramebuffer& imported);
@@ -144,6 +164,7 @@ private:
     bool commit(const DmabufVideoFrame* video_frame, std::uint32_t video_framebuffer, std::uint32_t flow_framebuffer, std::uint32_t ui_framebuffer);
     void destroy_imported(ImportedFramebuffer& imported);
     void destroy_video_framebuffer_cache();
+    void destroy_flow_framebuffer_cache();
     void destroy_primary_buffer();
     void destroy_writeback_buffer();
     void close_writeback_recorder();
@@ -167,6 +188,7 @@ private:
     std::uint32_t mode_blob_id_ {};
     bool modeset_committed_ {};
     flow::SurfaceSize surface_ {};
+    flow::SurfaceSize flow_surface_ {};
     flow::SurfaceSize ui_surface_ {};
     void* original_crtc_ {};
     void* mode_ {};
@@ -188,6 +210,7 @@ private:
     DumbBuffer solid_flow_ {};
     DumbBuffer solid_ui_ {};
     std::mutex flow_framebuffer_mutex_;
+    std::vector<CachedFlowFramebuffer> flow_framebuffer_cache_;
     std::vector<unsigned char> flow_readback_buffer_;
     std::vector<CachedFramebuffer> video_framebuffer_cache_;
     std::uint64_t frame_serial_ {};
