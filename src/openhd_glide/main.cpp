@@ -105,6 +105,24 @@ glide::flow::OsdTheme load_osd_theme()
     };
 }
 
+bool argb_buffer_has_visible_alpha(const void* pixels, std::uint32_t width, std::uint32_t height, std::uint32_t stride_bytes)
+{
+    if (pixels == nullptr || width == 0 || height == 0 || stride_bytes < width * 4U) {
+        return false;
+    }
+
+    const auto* bytes = static_cast<const unsigned char*>(pixels);
+    for (std::uint32_t y = 0; y < height; ++y) {
+        const auto* row = bytes + static_cast<std::size_t>(y) * stride_bytes;
+        for (std::uint32_t x = 0; x < width; ++x) {
+            if (row[static_cast<std::size_t>(x) * 4U + 3U] != 0) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 void draw_connecting_indicator(
     glide::flow::GlesTextRenderer& renderer,
     glide::flow::SurfaceSize surface,
@@ -1096,7 +1114,10 @@ int run_kms_video_preview(const Options& options)
                 bool runtime_logged {};
                 bool scanout_published {};
                 bool ui_buffer_logged_ready {};
+                bool ui_buffer_visible {};
                 auto next_ui_buffer_upload = std::chrono::steady_clock::time_point {};
+                std::uint64_t flow_frames_since_log {};
+                auto last_flow_log = std::chrono::steady_clock::now();
                 auto next_frame = std::chrono::steady_clock::now();
 
                 while (stop_requested == 0) {
@@ -1155,12 +1176,18 @@ int run_kms_video_preview(const Options& options)
                         }
                         const auto now = std::chrono::steady_clock::now();
                         if (now >= next_ui_buffer_upload) {
-                            renderer.update_argb_texture(shared_ui.map, ui_width, ui_height, ui_width * 4U);
+                            ui_buffer_visible = argb_buffer_has_visible_alpha(shared_ui.map, ui_width, ui_height, ui_width * 4U);
+                            if (ui_buffer_visible) {
+                                renderer.update_argb_texture(shared_ui.map, ui_width, ui_height, ui_width * 4U);
+                            }
                             next_ui_buffer_upload = now + ui_buffer_interval;
                         }
-                        renderer.draw_cached_argb_texture({ 0.0F, 0.0F }, surface);
+                        if (ui_buffer_visible) {
+                            renderer.draw_cached_argb_texture({ 0.0F, 0.0F }, surface);
+                        }
                     } else if (ui_overlay) {
                         ui_buffer_logged_ready = false;
+                        ui_buffer_visible = false;
                     }
 
                     if (!flow_static_scanout || !scanout_published) {
@@ -1173,6 +1200,20 @@ int run_kms_video_preview(const Options& options)
                             break;
                         }
                         scanout_published = true;
+                    }
+
+                    ++flow_frames_since_log;
+                    const auto log_now = std::chrono::steady_clock::now();
+                    if (log_now - last_flow_log >= std::chrono::seconds(1)) {
+                        const auto elapsed = std::chrono::duration<double>(log_now - last_flow_log).count();
+                        std::ostringstream status;
+                        status.setf(std::ios::fixed);
+                        status.precision(1);
+                        status << "Flow render/publish fps=" << (static_cast<double>(flow_frames_since_log) / elapsed)
+                               << " ui_visible=" << (ui_buffer_visible ? "yes" : "no");
+                        glide::log(glide::LogLevel::info, "OpenHD-Glide", status.str());
+                        flow_frames_since_log = 0;
+                        last_flow_log = log_now;
                     }
 
                     if (flow_fps > 0.0) {
