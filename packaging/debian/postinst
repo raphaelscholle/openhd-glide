@@ -17,6 +17,14 @@ is_enabled() {
 
 if [ "$1" = "configure" ]; then
   if command -v systemctl >/dev/null 2>&1; then
+    if [ -d /run/systemd/system ]; then
+      for obsolete_service in openhd-glide-autostart.service openhd-glide-stream.service openhd-video.service; do
+        if systemctl list-unit-files "$obsolete_service" >/dev/null 2>&1; then
+          systemctl disable --now "$obsolete_service" >/dev/null 2>&1 || true
+        fi
+      done
+    fi
+
     systemctl daemon-reload >/dev/null 2>&1 || true
     systemctl enable "$SERVICE" >/dev/null 2>&1 || true
 

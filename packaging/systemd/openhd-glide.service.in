@@ -1,8 +1,8 @@
 [Unit]
 Description=OpenHD Glide KMS rendering stack
 Documentation=https://github.com/OpenHD
-After=systemd-udev-settle.service network.target
-Wants=systemd-udev-settle.service
+After=systemd-udev-settle.service network-online.target openhd.service openhd-sys-utils.service
+Wants=systemd-udev-settle.service network-online.target openhd.service openhd-sys-utils.service
 ConditionPathExists=/dev/dri
 StartLimitIntervalSec=30
 StartLimitBurst=5
