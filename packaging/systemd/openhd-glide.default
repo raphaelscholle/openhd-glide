@@ -16,7 +16,9 @@ GLIDE_DISPLAY_HZ=120
 
 # Flow OSD overlay.
 GLIDE_FLOW=1
-GLIDE_FLOW_FPS=120
+# RK3566 VOP2 atomic Flow framebuffer publishes are expensive. Keep this
+# conservative by default so 120 Hz video stays above 100 Hz.
+GLIDE_FLOW_FPS=8
 # Keeps the first rendered Flow framebuffer attached and continues rendering
 # offscreen. Useful for measuring KMS overlay framebuffer-swap overhead.
 GLIDE_FLOW_STATIC_SCANOUT=0
