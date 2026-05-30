@@ -44,6 +44,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <memory>
 #include <sstream>
@@ -192,7 +194,8 @@ struct UiState {
     bool advanced_visible {};
     bool focus_panel {};
     bool panel_rebuild_pending {};
-    OverlayMode overlay_mode { OverlayMode::menu };
+    OverlayMode overlay_mode { OverlayMode::hidden };
+    bool animate_menu_in {};
     int selected_row {};
     int row_count {};
     std::chrono::steady_clock::time_point next_control_file_poll {};
@@ -227,6 +230,19 @@ struct BufferDisplay {
     void* map {};
     std::vector<std::uint32_t> draw_buffer;
 };
+
+BufferDisplay* active_buffer_display {};
+
+void clear_active_buffer_display()
+{
+    if (active_buffer_display == nullptr || active_buffer_display->map == nullptr) {
+        return;
+    }
+    std::memset(active_buffer_display->map, 0, active_buffer_display->size);
+#if defined(__linux__)
+    msync(active_buffer_display->map, active_buffer_display->size, MS_ASYNC);
+#endif
+}
 
 void close_buffer_display(BufferDisplay& display)
 {
@@ -783,10 +799,12 @@ void cycle_overlay_from_menu_key(UiState& state)
 {
     if (state.overlay_mode == OverlayMode::hidden) {
         state.overlay_mode = OverlayMode::menu;
+        state.animate_menu_in = true;
     } else if (state.overlay_mode == OverlayMode::menu) {
-        state.overlay_mode = OverlayMode::minimap;
-    } else {
         state.overlay_mode = OverlayMode::hidden;
+    } else {
+        state.overlay_mode = OverlayMode::menu;
+        state.animate_menu_in = true;
     }
     state.focus_panel = false;
     rebuild_ui(state);
@@ -829,6 +847,13 @@ void apply_terminal_key(UiState& state, const std::string& line)
         state.minimap->render();
         return;
     }
+    if (state.overlay_mode == OverlayMode::hidden && key == "enter") {
+        state.overlay_mode = OverlayMode::menu;
+        state.animate_menu_in = true;
+        state.focus_panel = false;
+        rebuild_ui(state);
+        return;
+    }
     if (state.overlay_mode != OverlayMode::menu) {
         return;
     }
@@ -852,6 +877,9 @@ void apply_terminal_key(UiState& state, const std::string& line)
     } else if (key == "left" || key == "back") {
         if (state.focus_panel) {
             state.focus_panel = false;
+            rebuild_ui(state);
+        } else {
+            state.overlay_mode = OverlayMode::hidden;
             rebuild_ui(state);
         }
     } else if (key == "right") {
@@ -1370,6 +1398,23 @@ void nav_clicked(lv_event_t* event)
     set_active_panel(*state, static_cast<SidebarPanel>(index));
 }
 
+void animate_slide_from_left(lv_obj_t* object, int hidden_x)
+{
+    const auto target_x = lv_obj_get_x(object);
+    lv_obj_set_x(object, hidden_x);
+
+    lv_anim_t animation;
+    lv_anim_init(&animation);
+    lv_anim_set_var(&animation, object);
+    lv_anim_set_exec_cb(&animation, [](void* target, int32_t value) {
+        lv_obj_set_x(static_cast<lv_obj_t*>(target), value);
+    });
+    lv_anim_set_values(&animation, hidden_x, target_x);
+    lv_anim_set_time(&animation, 180);
+    lv_anim_set_path_cb(&animation, lv_anim_path_ease_out);
+    lv_anim_start(&animation);
+}
+
 void build_sidebar(UiState& state, std::uint32_t width, std::uint32_t height)
 {
     auto* screen = lv_screen_active();
@@ -1464,6 +1509,11 @@ void build_sidebar(UiState& state, std::uint32_t width, std::uint32_t height)
     if (compact) {
         state.panel_title = nullptr;
         state.panel_body = nullptr;
+        if (state.animate_menu_in) {
+            lv_obj_update_layout(screen);
+            animate_slide_from_left(rail, -menu_width - 24);
+            state.animate_menu_in = false;
+        }
         return;
     }
 
@@ -1510,6 +1560,13 @@ void build_sidebar(UiState& state, std::uint32_t width, std::uint32_t height)
         build_status_panel(state);
     } else if (active == SidebarPanel::colors) {
         build_colors_panel(state);
+    }
+
+    if (state.animate_menu_in) {
+        lv_obj_update_layout(screen);
+        animate_slide_from_left(rail, -menu_width - 24);
+        animate_slide_from_left(panel, -detail_width - menu_width - 48);
+        state.animate_menu_in = false;
     }
 }
 
@@ -1561,6 +1618,8 @@ void build_overlay(UiState& state, std::uint32_t width, std::uint32_t height)
     set_panel_style(screen, 0x000000, LV_OPA_TRANSP);
     if (state.overlay_mode == OverlayMode::minimap) {
         build_minimap_card(state, width, height);
+    } else {
+        clear_active_buffer_display();
     }
 }
 
@@ -1589,6 +1648,37 @@ void update_minimap(UiState& state, std::chrono::steady_clock::time_point now)
     state.minimap_last_render = now;
 }
 
+void poll_local_key_file(UiState& state)
+{
+    const auto path = std::filesystem::temp_directory_path() / "openhd-glide-ui.key";
+    std::ifstream file(path);
+    if (!file) {
+        return;
+    }
+
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(file, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (!line.empty()) {
+            lines.push_back(line);
+        }
+    }
+    file.close();
+    std::ofstream clear(path, std::ios::trunc);
+    clear.close();
+
+    for (const auto& key_line : lines) {
+        if (key_line.rfind("ui key ", 0) == 0) {
+            apply_terminal_key(state, key_line);
+        } else {
+            apply_terminal_key(state, "ui key " + key_line);
+        }
+    }
+}
+
 void poll_ipc(UiState& state, std::chrono::steady_clock::time_point now)
 {
     if (!state.ipc.connected()) {
@@ -1613,6 +1703,7 @@ void poll_ipc(UiState& state, std::chrono::steady_clock::time_point now)
             theme_color_ref(state, i) = glide::preview_control::theme_color(theme_keys[i]);
         }
         sync_theme_controls(state);
+        poll_local_key_file(state);
         return;
     }
 
@@ -1705,6 +1796,7 @@ int main(int argc, char** argv)
         if (!create_buffer_display(buffer_display, options)) {
             return 1;
         }
+        active_buffer_display = &buffer_display;
         auto* display = lv_display_create(static_cast<int32_t>(options.width), static_cast<int32_t>(options.height));
         lv_display_set_color_format(display, LV_COLOR_FORMAT_ARGB8888);
         lv_display_set_user_data(display, &buffer_display);
@@ -1749,7 +1841,7 @@ int main(int argc, char** argv)
     build_overlay(state, options.width, options.height);
 
     auto last_tick = std::chrono::steady_clock::now();
-    constexpr auto ui_frame_interval = std::chrono::milliseconds(33);
+    constexpr auto ui_frame_interval = std::chrono::milliseconds(16);
     while (stop_requested == 0) {
         const auto now = std::chrono::steady_clock::now();
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_tick);
@@ -1769,6 +1861,7 @@ int main(int argc, char** argv)
         lv_sdl_quit();
     }
 #endif
+    active_buffer_display = nullptr;
     close_buffer_display(buffer_display);
     return 0;
 }

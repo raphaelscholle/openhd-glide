@@ -884,7 +884,7 @@ int run_kms_video_preview(const Options& options)
     auto flow_fps_placement = flow_fps_overlay.layout(0.0, flow_surface);
     bool flow_runtime_logged {};
     bool ui_buffer_logged_ready {};
-    constexpr auto ui_buffer_interval = std::chrono::milliseconds(33);
+    constexpr auto ui_buffer_interval = std::chrono::milliseconds(16);
     auto next_ui_buffer_upload = std::chrono::steady_clock::time_point {};
     const auto flow_frame_interval = options.flow_fps > 0.0
         ? std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(1.0 / options.flow_fps))
@@ -1208,7 +1208,7 @@ int run_kms_video_preview(const Options& options)
 
     if (use_atomic_kms && options.ui_overlay && async_flow && compositor.ui_overlay_plane_active()) {
         ui_buffer_thread = std::thread([&compositor, &shared_ui, ui_buffer_path = options.ui_buffer_path, ui_width = options.ui_width, ui_height]() {
-            constexpr auto ui_interval = std::chrono::milliseconds(33);
+            constexpr auto ui_interval = std::chrono::milliseconds(16);
             bool logged_ready {};
             while (stop_requested == 0) {
                 if (shared_ui.open_if_needed(ui_buffer_path, ui_width, ui_height)) {

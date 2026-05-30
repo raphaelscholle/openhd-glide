@@ -24,6 +24,8 @@
 #include "common/ipc.hpp"
 #include "common/logging.hpp"
 
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 
@@ -54,6 +56,14 @@ int main(int argc, char** argv)
 
     glide::ipc::Client ipc;
     if (!ipc.connect_to(socket_path)) {
+        if (line.rfind("ui key ", 0) == 0) {
+            const auto path = std::filesystem::temp_directory_path() / "openhd-glide-ui.key";
+            std::ofstream file(path, std::ios::app);
+            if (file) {
+                file << line << '\n';
+                return 0;
+            }
+        }
         glide::log(glide::LogLevel::error, "GlideSend", "failed to connect to IPC socket " + socket_path);
         return 1;
     }
