@@ -320,6 +320,21 @@ std::uint32_t plane_type(int drm_fd, std::uint32_t plane_id)
     return static_cast<std::uint32_t>(value);
 }
 
+std::uint64_t plane_name_value(int drm_fd, std::uint32_t plane_id)
+{
+    std::uint64_t value {};
+    get_property_value(drm_fd, plane_id, DRM_MODE_OBJECT_PLANE, "NAME", value);
+    return value;
+}
+
+bool plane_is_vop2_secondary_area(int drm_fd, std::uint32_t plane_id)
+{
+    const auto name = plane_name_value(drm_fd, plane_id);
+    return name == 0x2 || name == 0x4 || name == 0x8
+        || name == 0x2000 || name == 0x4000 || name == 0x8000
+        || name == 0x20000;
+}
+
 bool plane_supports_format(drmModePlane* plane, std::uint32_t format)
 {
     return std::find(plane->formats, plane->formats + plane->count_formats, format) != plane->formats + plane->count_formats;
@@ -1321,7 +1336,9 @@ bool KmsAtomicCompositor::choose_video_plane(std::uint32_t drm_format)
         if (plane == nullptr) {
             continue;
         }
-        try_plane(plane);
+        if (!plane_is_vop2_secondary_area(drm_fd_, plane->plane_id)) {
+            try_plane(plane);
+        }
         drmModeFreePlane(plane);
     }
 
@@ -1407,7 +1424,7 @@ bool KmsAtomicCompositor::choose_flow_plane()
             continue;
         }
 
-        if (try_plane(plane)) {
+        if (!plane_is_vop2_secondary_area(drm_fd_, plane->plane_id) && try_plane(plane)) {
             flow_plane_id_ = plane->plane_id;
             if (!plane_supports_video_scanout_format(plane)) {
                 drmModeFreePlane(plane);
@@ -1478,7 +1495,7 @@ bool KmsAtomicCompositor::choose_ui_plane()
             continue;
         }
 
-        if (try_plane(plane)) {
+        if (!plane_is_vop2_secondary_area(drm_fd_, plane->plane_id) && try_plane(plane)) {
             ui_plane_id_ = plane->plane_id;
             drmModeFreePlane(plane);
             break;
