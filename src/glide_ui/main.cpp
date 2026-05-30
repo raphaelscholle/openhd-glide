@@ -182,6 +182,7 @@ enum class OverlayMode {
 
 struct UiState {
     glide::ipc::Client ipc;
+    std::string ipc_socket { glide::ipc::default_socket_path };
     glide::mavlink::Snapshot mavlink;
     bool fps_enabled { true };
     bool coordinates_enabled { true };
@@ -220,6 +221,7 @@ struct UiState {
     std::unique_ptr<glide::ui::MinimapWidget> minimap;
     std::chrono::steady_clock::time_point minimap_started {};
     std::chrono::steady_clock::time_point minimap_last_render {};
+    std::chrono::steady_clock::time_point next_ipc_reconnect {};
 };
 
 struct BufferDisplay {
@@ -795,19 +797,40 @@ void rebuild_ui(UiState& state)
     state.panel_rebuild_pending = false;
 }
 
+void show_menu(UiState& state)
+{
+    if (state.overlay_mode == OverlayMode::menu) {
+        return;
+    }
+    state.overlay_mode = OverlayMode::menu;
+    state.animate_menu_in = true;
+    state.focus_panel = false;
+    rebuild_ui(state);
+}
+
+void hide_overlay(UiState& state)
+{
+    if (state.overlay_mode == OverlayMode::hidden) {
+        clear_active_buffer_display();
+        return;
+    }
+    state.overlay_mode = OverlayMode::hidden;
+    state.focus_panel = false;
+    rebuild_ui(state);
+}
+
 void cycle_overlay_from_menu_key(UiState& state)
 {
     if (state.overlay_mode == OverlayMode::hidden) {
-        state.overlay_mode = OverlayMode::menu;
-        state.animate_menu_in = true;
+        show_menu(state);
+        return;
     } else if (state.overlay_mode == OverlayMode::menu) {
-        state.overlay_mode = OverlayMode::hidden;
+        hide_overlay(state);
+        return;
     } else {
-        state.overlay_mode = OverlayMode::menu;
-        state.animate_menu_in = true;
+        show_menu(state);
+        return;
     }
-    state.focus_panel = false;
-    rebuild_ui(state);
 }
 
 void cycle_overlay_from_map_key(UiState& state)
@@ -825,6 +848,18 @@ void cycle_overlay_from_map_key(UiState& state)
 
 void apply_terminal_key(UiState& state, const std::string& line)
 {
+    if (line == "ui show" || line == "ui menu") {
+        show_menu(state);
+        return;
+    }
+    if (line == "ui hide" || line == "ui close") {
+        hide_overlay(state);
+        return;
+    }
+    if (line == "ui toggle") {
+        cycle_overlay_from_menu_key(state);
+        return;
+    }
     if (line.rfind("ui key ", 0) != 0) {
         return;
     }
@@ -848,10 +883,7 @@ void apply_terminal_key(UiState& state, const std::string& line)
         return;
     }
     if (state.overlay_mode == OverlayMode::hidden && key == "enter") {
-        state.overlay_mode = OverlayMode::menu;
-        state.animate_menu_in = true;
-        state.focus_panel = false;
-        rebuild_ui(state);
+        show_menu(state);
         return;
     }
     if (state.overlay_mode != OverlayMode::menu) {
@@ -879,8 +911,7 @@ void apply_terminal_key(UiState& state, const std::string& line)
             state.focus_panel = false;
             rebuild_ui(state);
         } else {
-            state.overlay_mode = OverlayMode::hidden;
-            rebuild_ui(state);
+            hide_overlay(state);
         }
     } else if (key == "right") {
         state.focus_panel = true;
@@ -1398,6 +1429,34 @@ void nav_clicked(lv_event_t* event)
     set_active_panel(*state, static_cast<SidebarPanel>(index));
 }
 
+void send_initial_ipc_requests(UiState& state, const char* backend_name)
+{
+    state.ipc.send_line("hello glide-ui");
+    state.ipc.send_line(std::string("status glide-ui ready ") + backend_name);
+    state.ipc.send_line("get fps");
+    state.ipc.send_line("get coords");
+    state.ipc.send_line("get compact");
+    state.ipc.send_line("get osd");
+    state.ipc.send_line("get theme");
+}
+
+bool connect_ipc_if_needed(UiState& state, std::chrono::steady_clock::time_point now, const char* backend_name)
+{
+    if (state.ipc.connected()) {
+        return true;
+    }
+    if (now < state.next_ipc_reconnect) {
+        return false;
+    }
+    state.next_ipc_reconnect = now + std::chrono::milliseconds(500);
+    if (!state.ipc.connect_to(state.ipc_socket)) {
+        return false;
+    }
+    send_initial_ipc_requests(state, backend_name);
+    glide::log(glide::LogLevel::info, "GlideUI", "IPC controller connected");
+    return true;
+}
+
 void animate_slide_from_left(lv_obj_t* object, int hidden_x)
 {
     const auto target_x = lv_obj_get_x(object);
@@ -1681,7 +1740,7 @@ void poll_local_key_file(UiState& state)
 
 void poll_ipc(UiState& state, std::chrono::steady_clock::time_point now)
 {
-    if (!state.ipc.connected()) {
+    if (!connect_ipc_if_needed(state, now, "lvgl-buffer")) {
         if (now < state.next_control_file_poll) {
             return;
         }
@@ -1811,6 +1870,7 @@ int main(int argc, char** argv)
     }
 
     UiState state;
+    state.ipc_socket = options.ipc_socket;
     state.fps_enabled = glide::preview_control::fps_overlay_enabled();
     state.coordinates_enabled = glide::preview_control::coordinates_overlay_enabled();
     state.compact_readouts = glide::preview_control::compact_readouts_enabled();
@@ -1826,16 +1886,10 @@ int main(int argc, char** argv)
         lv_group_focus_obj(screen);
     }
 
-    if (state.ipc.connect_to(options.ipc_socket)) {
-        state.ipc.send_line("hello glide-ui");
-        state.ipc.send_line("status glide-ui ready lvgl-sdl");
-        state.ipc.send_line("get fps");
-        state.ipc.send_line("get coords");
-        state.ipc.send_line("get compact");
-        state.ipc.send_line("get osd");
-        state.ipc.send_line("get theme");
+    if (state.ipc.connect_to(state.ipc_socket)) {
+        send_initial_ipc_requests(state, options.buffer ? "lvgl-buffer" : "lvgl-sdl");
     } else {
-        glide::log(glide::LogLevel::warning, "GlideUI", "IPC controller unavailable; using preview fallback state");
+        glide::log(glide::LogLevel::warning, "GlideUI", "IPC controller unavailable; retrying in background");
     }
 
     build_overlay(state, options.width, options.height);
@@ -1851,6 +1905,10 @@ int main(int argc, char** argv)
         }
 
         poll_ipc(state, now);
+        if (options.buffer && state.overlay_mode == OverlayMode::hidden) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            continue;
+        }
         update_minimap(state, now);
         lv_timer_handler();
         std::this_thread::sleep_for(ui_frame_interval);

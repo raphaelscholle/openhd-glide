@@ -265,6 +265,70 @@ struct Options {
     bool mavlink_udp { true };
 };
 
+struct RuntimeControlState {
+    bool fps_enabled { true };
+    bool coordinates_enabled { true };
+    bool compact_readouts { false };
+    std::string osd_layout { glide::preview_control::osd_layout() };
+};
+
+void start_mavlink_bridge(glide::mavlink::UdpBridge& bridge, const Options& options);
+
+void send_initial_control_state(glide::ipc::Server& ipc_server, int client_id, const RuntimeControlState& state)
+{
+    ipc_server.send_line(client_id, std::string("state fps ") + (state.fps_enabled ? "1" : "0"));
+    ipc_server.send_line(client_id, std::string("state coords ") + (state.coordinates_enabled ? "1" : "0"));
+    ipc_server.send_line(client_id, std::string("state compact ") + (state.compact_readouts ? "1" : "0"));
+    ipc_server.send_line(client_id, "state osd " + state.osd_layout);
+    send_theme_state(ipc_server, client_id);
+}
+
+void poll_runtime_controls(glide::ipc::Server& ipc_server, glide::mavlink::UdpBridge& mavlink_bridge, RuntimeControlState& state)
+{
+    for (const auto& line : mavlink_bridge.poll()) {
+        ipc_server.broadcast_line(line);
+    }
+    for (const auto& event : ipc_server.poll()) {
+        if (event.line.rfind("hello ", 0) == 0) {
+            send_initial_control_state(ipc_server, event.client_id, state);
+        } else if (event.line == "get fps") {
+            ipc_server.send_line(event.client_id, std::string("state fps ") + (state.fps_enabled ? "1" : "0"));
+        } else if (event.line == "get coords") {
+            ipc_server.send_line(event.client_id, std::string("state coords ") + (state.coordinates_enabled ? "1" : "0"));
+        } else if (event.line == "get compact") {
+            ipc_server.send_line(event.client_id, std::string("state compact ") + (state.compact_readouts ? "1" : "0"));
+        } else if (event.line == "get osd") {
+            ipc_server.send_line(event.client_id, "state osd " + state.osd_layout);
+        } else if (event.line == "get theme") {
+            send_theme_state(ipc_server, event.client_id);
+        } else if (event.line == "set fps 0" || event.line == "set fps 1") {
+            state.fps_enabled = event.line.back() == '1';
+            glide::preview_control::set_fps_overlay_enabled(state.fps_enabled);
+            ipc_server.broadcast_line(std::string("state fps ") + (state.fps_enabled ? "1" : "0"));
+        } else if (event.line == "set coords 0" || event.line == "set coords 1") {
+            state.coordinates_enabled = event.line.back() == '1';
+            glide::preview_control::set_coordinates_overlay_enabled(state.coordinates_enabled);
+            ipc_server.broadcast_line(std::string("state coords ") + (state.coordinates_enabled ? "1" : "0"));
+        } else if (event.line == "set compact 0" || event.line == "set compact 1") {
+            state.compact_readouts = event.line.back() == '1';
+            glide::preview_control::set_compact_readouts_enabled(state.compact_readouts);
+            ipc_server.broadcast_line(std::string("state compact ") + (state.compact_readouts ? "1" : "0"));
+        } else if (event.line == "set osd drone" || event.line == "set osd rocket" || event.line == "set osd rover" || event.line == "set osd ship") {
+            state.osd_layout = event.line.substr(8);
+            glide::preview_control::set_osd_layout(state.osd_layout);
+            ipc_server.broadcast_line("state osd " + state.osd_layout);
+        } else if (handle_theme_line(event.line, ipc_server)) {
+        } else if (event.line.rfind("mav ", 0) == 0) {
+            mavlink_bridge.handle_action_line(event.line);
+            ipc_server.broadcast_line(event.line);
+        } else if (event.line.rfind("ui ", 0) == 0) {
+            ipc_server.broadcast_line(event.line);
+        } else if (event.line == "ping") {
+            ipc_server.send_line(event.client_id, "pong");
+        }
+    }
+}
+
 Options parse_options(int argc, char** argv)
 {
     Options options;
@@ -920,6 +984,19 @@ int run_kms_video_preview(const Options& options)
     constexpr auto video_signal_timeout = std::chrono::milliseconds(750);
     ScopedThreadJoin async_flow_join { async_flow_thread };
     ScopedThreadJoin ui_buffer_join { ui_buffer_thread };
+    RuntimeControlState control_state;
+    glide::ipc::Server ipc_server;
+    const bool ipc_enabled = ipc_server.listen_on(options.ipc_socket);
+    if (!ipc_enabled) {
+        glide::log(glide::LogLevel::warning, "OpenHD-Glide", "IPC controller disabled: " + ipc_server.last_error());
+    }
+    glide::mavlink::UdpBridge mavlink_bridge;
+    start_mavlink_bridge(mavlink_bridge, options);
+    const auto poll_control = [&]() {
+        if (ipc_enabled) {
+            poll_runtime_controls(ipc_server, mavlink_bridge, control_state);
+        }
+    };
 
     const auto render_flow_overlay = [&]() {
         if (!flow_renderer.available()) {
@@ -1329,6 +1406,7 @@ int run_kms_video_preview(const Options& options)
         std::uint64_t frames_since_log {};
         auto last_log = std::chrono::steady_clock::now();
         while (stop_requested == 0) {
+            poll_control();
             glide::dev::DmabufVideoFrame frame;
             if (!cedar.poll(frame)) {
                 if (!cedar.last_error().empty()) {
@@ -1393,6 +1471,7 @@ int run_kms_video_preview(const Options& options)
         std::uint64_t frames_since_log {};
         auto last_log = std::chrono::steady_clock::now();
         while (stop_requested == 0) {
+            poll_control();
             glide::dev::DmabufVideoFrame frame;
             if (!rkmpp.poll(frame)) {
                 if (!rkmpp.last_error().empty()) {
@@ -1615,6 +1694,7 @@ int run_kms_video_preview(const Options& options)
     bool logged_caps {};
     std::uint32_t consecutive_frame_errors {};
     while (stop_requested == 0) {
+        poll_control();
         while (auto* message = gst_bus_pop_filtered(bus, static_cast<GstMessageType>(GST_MESSAGE_ERROR | GST_MESSAGE_EOS))) {
             if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_ERROR) {
                 GError* gst_error {};

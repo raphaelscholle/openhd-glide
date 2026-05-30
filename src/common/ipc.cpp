@@ -30,6 +30,7 @@
 #if defined(__linux__)
 #include <fcntl.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
 #endif
@@ -180,6 +181,7 @@ bool Server::listen_on(std::string path)
         close();
         return false;
     }
+    chmod(path_.c_str(), 0666);
     if (listen(listen_fd_, 8) != 0) {
         last_error_ = std::strerror(errno);
         close();
