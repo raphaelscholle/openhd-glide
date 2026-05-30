@@ -297,10 +297,11 @@ void buffer_flush(lv_display_t* display, const lv_area_t* area, unsigned char* p
         for (int32_t y = y1; y <= y2; ++y) {
             const auto source_y = static_cast<std::size_t>(y - area->y1);
             const auto source_x = static_cast<std::size_t>(x1 - area->x1);
-            std::memcpy(
-                destination + static_cast<std::size_t>(y) * target->width + static_cast<std::size_t>(x1),
-                source + source_y * area_width + source_x,
-                copy_width * sizeof(std::uint32_t));
+            auto* destination_row = destination + static_cast<std::size_t>(y) * target->width + static_cast<std::size_t>(x1);
+            const auto* source_row = source + source_y * area_width + source_x;
+            for (std::size_t x = 0; x < copy_width; ++x) {
+                destination_row[x] = source_row[x] | 0xFF000000U;
+            }
         }
         msync(target->map, target->size, MS_ASYNC);
     }
@@ -1704,6 +1705,7 @@ int main(int argc, char** argv)
             return 1;
         }
         auto* display = lv_display_create(static_cast<int32_t>(options.width), static_cast<int32_t>(options.height));
+        lv_display_set_color_format(display, LV_COLOR_FORMAT_ARGB8888);
         lv_display_set_user_data(display, &buffer_display);
         lv_display_set_flush_cb(display, buffer_flush);
         lv_display_set_buffers(
