@@ -300,7 +300,8 @@ void buffer_flush(lv_display_t* display, const lv_area_t* area, unsigned char* p
             auto* destination_row = destination + static_cast<std::size_t>(y) * target->width + static_cast<std::size_t>(x1);
             const auto* source_row = source + source_y * area_width + source_x;
             for (std::size_t x = 0; x < copy_width; ++x) {
-                destination_row[x] = source_row[x] | 0xFF000000U;
+                const auto pixel = source_row[x];
+                destination_row[x] = (pixel != 0U && (pixel & 0xFF000000U) == 0U) ? (pixel | 0xFF000000U) : pixel;
             }
         }
         msync(target->map, target->size, MS_ASYNC);
