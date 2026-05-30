@@ -61,6 +61,10 @@ UI_HEIGHT="${GLIDE_UI_HEIGHT:-$HEIGHT}"
 UI_COLOR="${GLIDE_UI_COLOR:-0xCC0B1722}"
 UI_BUFFER="${GLIDE_UI_BUFFER:-$RUN_DIR/openhd-glide-ui.argb}"
 MAVLINK_PORT="${GLIDE_MAVLINK_PORT:-14550}"
+CPU_GOVERNOR="${GLIDE_CPU_GOVERNOR:-performance}"
+MAIN_NICE="${GLIDE_MAIN_NICE:--10}"
+MAIN_CHRT_PRIORITY="${GLIDE_MAIN_CHRT_PRIORITY:-}"
+UI_NICE="${GLIDE_UI_NICE:-5}"
 
 case "$VIEW_CODEC" in
   h264|avc)
@@ -142,7 +146,7 @@ if is_enabled "${GLIDE_FLOW_PRIMARY_READBACK:-0}"; then
   ARGS+=(--flow-primary-readback)
 fi
 
-if is_enabled "${GLIDE_VBLANK_WAIT:-0}"; then
+if is_enabled "${GLIDE_VBLANK_WAIT:-1}"; then
   ARGS+=(--vblank-wait)
 else
   ARGS+=(--no-vblank-wait)
@@ -160,6 +164,13 @@ fi
 
 mkdir -p "$RUN_DIR"
 chmod 0755 "$RUN_DIR"
+
+if [ -n "$CPU_GOVERNOR" ]; then
+  for governor in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+    [ -w "$governor" ] || continue
+    printf '%s\n' "$CPU_GOVERNOR" > "$governor" || true
+  done
+fi
 
 UI_PID=""
 MAIN_PID=""
@@ -187,7 +198,11 @@ trap 'stop_children; exit 143' INT TERM
 
 if is_enabled "${GLIDE_UI:-1}"; then
   rm -f "$UI_BUFFER"
-  "$UI_BIN" \
+  UI_CMD=("$UI_BIN")
+  if [ -n "$UI_NICE" ] && command -v nice >/dev/null 2>&1; then
+    UI_CMD=(nice -n "$UI_NICE" "${UI_CMD[@]}")
+  fi
+  "${UI_CMD[@]}" \
     --buffer \
     --width "$UI_WIDTH" \
     --height "$UI_HEIGHT" \
@@ -221,7 +236,15 @@ if [ -n "${GLIDE_EXTRA_ARGS:-}" ]; then
   ARGS+=("${EXTRA_ARGS[@]}")
 fi
 
-"$BIN" "${ARGS[@]}" &
+MAIN_CMD=("$BIN" "${ARGS[@]}")
+if [ -n "$MAIN_NICE" ] && command -v nice >/dev/null 2>&1; then
+  MAIN_CMD=(nice -n "$MAIN_NICE" "${MAIN_CMD[@]}")
+fi
+if [ -n "$MAIN_CHRT_PRIORITY" ] && command -v chrt >/dev/null 2>&1; then
+  MAIN_CMD=(chrt -r "$MAIN_CHRT_PRIORITY" "${MAIN_CMD[@]}")
+fi
+
+"${MAIN_CMD[@]}" &
 MAIN_PID=$!
 
 set +e

@@ -174,7 +174,7 @@ bool apply_ipc_line(Snapshot& snapshot, const std::string& line)
             snapshot.ground_hotspot = value;
         } else if (upper_param == "FREQ" || upper_param == "FREQUENCY" || upper_param == "FREQUENCY_MHZ" || upper_param == "WB_FREQUENCY") {
             snapshot.frequency_mhz = parse_int_or(snapshot.frequency_mhz, value);
-        } else if (upper_param == "CHANNEL_WIDTH" || upper_param == "CHANNEL_WIDTH_MHZ" || upper_param == "WB_CHANNEL_WIDTH" || upper_param == "BANDWIDTH") {
+        } else if (upper_param == "CHANNEL_WIDTH" || upper_param == "CHANNEL_WIDTH_MHZ" || upper_param == "WB_CHANNEL_WIDTH" || upper_param == "WB_CHANNEL_W" || upper_param == "BANDWIDTH") {
             snapshot.channel_width_mhz = parse_int_or(snapshot.channel_width_mhz, value);
         } else if (upper_param == "MCS" || upper_param == "MCS_INDEX" || upper_param == "WB_MCS_INDEX") {
             snapshot.mcs_index = parse_int_or(snapshot.mcs_index, value);

@@ -296,12 +296,12 @@ if(CEDAR_VDECODER_LIBRARY AND CEDAR_MEMADAPTER_LIBRARY AND CEDAR_VE_LIBRARY AND 
 else()
     target_compile_definitions(openhd-glide PRIVATE OPENHD_GLIDE_HAS_CEDAR=0)
 endif()
-if(ROCKCHIP_MPP_LIBRARY AND GSTREAMER_FOUND)
+if(ROCKCHIP_MPP_LIBRARY)
     target_compile_definitions(openhd-glide PRIVATE OPENHD_GLIDE_HAS_RKMPP=1)
     target_link_libraries(openhd-glide PRIVATE ${ROCKCHIP_MPP_LIBRARY})
 else()
     if(OPENHD_GLIDE_REQUIRE_RKMPP)
-        message(FATAL_ERROR "OPENHD_GLIDE_REQUIRE_RKMPP=ON but librockchip_mpp or GStreamer support was not found")
+        message(FATAL_ERROR "OPENHD_GLIDE_REQUIRE_RKMPP=ON but librockchip_mpp was not found")
     endif()
     target_compile_definitions(openhd-glide PRIVATE OPENHD_GLIDE_HAS_RKMPP=0)
 endif()
@@ -378,6 +378,12 @@ install(
     PROGRAMS
         scripts/generate_fake_minimap_tiles.py
     DESTINATION share/openhd-glide/scripts
+)
+
+install(
+    FILES
+        packaging/assets/x20_header.h264
+    DESTINATION share/openhd-glide
 )
 
 install(

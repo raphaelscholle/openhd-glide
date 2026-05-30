@@ -127,7 +127,8 @@ void draw_connecting_indicator(
     glide::flow::GlesTextRenderer& renderer,
     glide::flow::SurfaceSize surface,
     const glide::flow::OsdTheme& theme,
-    std::chrono::steady_clock::time_point now)
+    std::chrono::steady_clock::time_point now,
+    const std::string& label = "CONNECTING")
 {
     if (surface.width == 0 || surface.height == 0) {
         return;
@@ -139,7 +140,7 @@ void draw_connecting_indicator(
         static_cast<float>(surface.height) / 720.0F));
     const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
     const auto dot_count = static_cast<int>((elapsed_ms / 450) % 4);
-    std::string text = "CONNECTING";
+    std::string text = label;
     text.append(static_cast<std::size_t>(dot_count), '.');
 
     const auto text_scale = 22.0F * scale;
@@ -283,9 +284,13 @@ void send_initial_control_state(glide::ipc::Server& ipc_server, int client_id, c
     send_theme_state(ipc_server, client_id);
 }
 
-void poll_runtime_controls(glide::ipc::Server& ipc_server, glide::mavlink::UdpBridge& mavlink_bridge, RuntimeControlState& state)
+bool poll_runtime_controls(glide::ipc::Server& ipc_server, glide::mavlink::UdpBridge& mavlink_bridge, RuntimeControlState& state)
 {
+    bool received_mavlink {};
     for (const auto& line : mavlink_bridge.poll()) {
+        if (line.rfind("mav ", 0) == 0) {
+            received_mavlink = true;
+        }
         ipc_server.broadcast_line(line);
     }
     for (const auto& event : ipc_server.poll()) {
@@ -327,6 +332,7 @@ void poll_runtime_controls(glide::ipc::Server& ipc_server, glide::mavlink::UdpBr
             ipc_server.send_line(event.client_id, "pong");
         }
     }
+    return received_mavlink;
 }
 
 Options parse_options(int argc, char** argv)
@@ -919,7 +925,7 @@ int run_kms_video_preview(const Options& options)
         glide::log(
             glide::LogLevel::info,
             "OpenHD-Glide",
-            options.vblank_wait ? "atomic KMS commits are paced to DRM vblank" : "atomic KMS vblank pacing is disabled");
+            options.vblank_wait ? "atomic KMS video commits are paced by page-flip events" : "atomic KMS page-flip pacing is disabled");
         if (options.ui_overlay) {
             if (!compositor.publish_solid_ui_frame(options.ui_debug_color)) {
                 glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
@@ -975,6 +981,7 @@ int run_kms_video_preview(const Options& options)
     glide::flow::SimulatedAttitude simulated_attitude;
     std::atomic<double> video_plane_fps { 0.0 };
     std::atomic<bool> video_signal_present { false };
+    std::atomic<bool> telemetry_signal_present { false };
     auto flow_surface = use_atomic_kms ? compositor.surface_size() : glide::flow::SurfaceSize { options.preview_width, options.flow_height };
     auto flow_fps_placement = flow_fps_overlay.layout(0.0, flow_surface);
     bool flow_runtime_logged {};
@@ -987,6 +994,8 @@ int run_kms_video_preview(const Options& options)
     auto next_flow_frame = std::chrono::steady_clock::now();
     auto last_video_frame_time = std::chrono::steady_clock::time_point {};
     constexpr auto video_signal_timeout = std::chrono::milliseconds(750);
+    auto last_telemetry_time = std::chrono::steady_clock::time_point {};
+    constexpr auto telemetry_signal_timeout = std::chrono::milliseconds(1500);
     ScopedThreadJoin async_flow_join { async_flow_thread };
     ScopedThreadJoin ui_buffer_join { ui_buffer_thread };
     RuntimeControlState control_state;
@@ -999,7 +1008,14 @@ int run_kms_video_preview(const Options& options)
     start_mavlink_bridge(mavlink_bridge, options);
     const auto poll_control = [&]() {
         if (ipc_enabled) {
-            poll_runtime_controls(ipc_server, mavlink_bridge, control_state);
+            const auto now = std::chrono::steady_clock::now();
+            if (poll_runtime_controls(ipc_server, mavlink_bridge, control_state)) {
+                last_telemetry_time = now;
+                telemetry_signal_present.store(true, std::memory_order_relaxed);
+            } else if (last_telemetry_time != std::chrono::steady_clock::time_point {}
+                && now - last_telemetry_time >= telemetry_signal_timeout) {
+                telemetry_signal_present.store(false, std::memory_order_relaxed);
+            }
         }
     };
 
@@ -1034,27 +1050,33 @@ int run_kms_video_preview(const Options& options)
                 flow_surface);
         }
         if (options.flow_overlay) {
-            auto link_sample = simulated_link.sample();
-            link_sample.show_coordinates = glide::preview_control::coordinates_overlay_enabled();
             const auto theme = load_osd_theme();
-            flow_renderer.set_text_color(theme.primary);
-            link_overview.draw(flow_renderer, flow_surface, link_sample, theme);
-            performance_horizon.draw(
-                flow_renderer,
-                flow_surface,
-                simulated_attitude.sample(),
-                glide::flow::WindSample {
-                    .direction_degrees = link_sample.wind_direction_deg,
-                    .speed_mps = link_sample.wind_speed_mps,
-                    .valid = true,
-                },
-                theme);
-            const auto compact_readouts = glide::preview_control::compact_readouts_enabled();
-            speed_widget.draw(flow_renderer, flow_surface, simulated_speed.sample(), theme, compact_readouts);
-            altitude_widget.draw(flow_renderer, flow_surface, simulated_altitude.sample(), theme, compact_readouts);
-            flow_renderer.draw(flow_fps_placement, flow_surface);
-            if (!video_signal_present.load(std::memory_order_relaxed)) {
+            const bool has_telemetry = telemetry_signal_present.load(std::memory_order_relaxed);
+            const bool has_video = video_signal_present.load(std::memory_order_relaxed);
+            if (!has_telemetry) {
                 draw_connecting_indicator(flow_renderer, flow_surface, theme, std::chrono::steady_clock::now());
+            } else {
+                auto link_sample = simulated_link.sample();
+                link_sample.show_coordinates = glide::preview_control::coordinates_overlay_enabled();
+                flow_renderer.set_text_color(theme.primary);
+                link_overview.draw(flow_renderer, flow_surface, link_sample, theme);
+                performance_horizon.draw(
+                    flow_renderer,
+                    flow_surface,
+                    simulated_attitude.sample(),
+                    glide::flow::WindSample {
+                        .direction_degrees = link_sample.wind_direction_deg,
+                        .speed_mps = link_sample.wind_speed_mps,
+                        .valid = true,
+                    },
+                    theme);
+                const auto compact_readouts = glide::preview_control::compact_readouts_enabled();
+                speed_widget.draw(flow_renderer, flow_surface, simulated_speed.sample(), theme, compact_readouts);
+                altitude_widget.draw(flow_renderer, flow_surface, simulated_altitude.sample(), theme, compact_readouts);
+                flow_renderer.draw(flow_fps_placement, flow_surface);
+                if (!has_video) {
+                    draw_connecting_indicator(flow_renderer, flow_surface, theme, std::chrono::steady_clock::now(), "WAITING FOR VIDEO");
+                }
             }
         }
 
@@ -1160,6 +1182,7 @@ int run_kms_video_preview(const Options& options)
                                              &shared_ui,
                                              &video_plane_fps,
                                              &video_signal_present,
+                                             &telemetry_signal_present,
                                              flow_frame_interval,
                                              flow_fps = options.flow_fps,
                                              flow_overlay = options.flow_overlay,
@@ -1243,27 +1266,33 @@ int run_kms_video_preview(const Options& options)
                             surface);
                     }
                     if (flow_overlay) {
-                        auto link_sample = simulated_link.sample();
-                        link_sample.show_coordinates = glide::preview_control::coordinates_overlay_enabled();
                         const auto theme = load_osd_theme();
-                        renderer.set_text_color(theme.primary);
-                        links.draw(renderer, surface, link_sample, theme);
-                        horizon.draw(
-                            renderer,
-                            surface,
-                            simulated_attitude.sample(),
-                            glide::flow::WindSample {
-                                .direction_degrees = link_sample.wind_direction_deg,
-                                .speed_mps = link_sample.wind_speed_mps,
-                                .valid = true,
-                            },
-                            theme);
-                        const auto compact_readouts = glide::preview_control::compact_readouts_enabled();
-                        speed.draw(renderer, surface, simulated_speed.sample(), theme, compact_readouts);
-                        altitude.draw(renderer, surface, simulated_altitude.sample(), theme, compact_readouts);
-                        renderer.draw(fps_placement, surface);
-                        if (!video_signal_present.load(std::memory_order_relaxed)) {
+                        const bool has_telemetry = telemetry_signal_present.load(std::memory_order_relaxed);
+                        const bool has_video = video_signal_present.load(std::memory_order_relaxed);
+                        if (!has_telemetry) {
                             draw_connecting_indicator(renderer, surface, theme, std::chrono::steady_clock::now());
+                        } else {
+                            auto link_sample = simulated_link.sample();
+                            link_sample.show_coordinates = glide::preview_control::coordinates_overlay_enabled();
+                            renderer.set_text_color(theme.primary);
+                            links.draw(renderer, surface, link_sample, theme);
+                            horizon.draw(
+                                renderer,
+                                surface,
+                                simulated_attitude.sample(),
+                                glide::flow::WindSample {
+                                    .direction_degrees = link_sample.wind_direction_deg,
+                                    .speed_mps = link_sample.wind_speed_mps,
+                                    .valid = true,
+                                },
+                                theme);
+                            const auto compact_readouts = glide::preview_control::compact_readouts_enabled();
+                            speed.draw(renderer, surface, simulated_speed.sample(), theme, compact_readouts);
+                            altitude.draw(renderer, surface, simulated_altitude.sample(), theme, compact_readouts);
+                            renderer.draw(fps_placement, surface);
+                            if (!has_video) {
+                                draw_connecting_indicator(renderer, surface, theme, std::chrono::steady_clock::now(), "WAITING FOR VIDEO");
+                            }
                         }
                     }
 
@@ -1484,51 +1513,98 @@ int run_kms_video_preview(const Options& options)
         glide::log(
             glide::LogLevel::info,
             "OpenHD-Glide",
-            use_atomic_kms ? "atomic KMS video+Flow compositor running" : "fast legacy KMS video plane running");
+            use_atomic_kms ? "atomic KMS video+Flow compositor running on dedicated presenter thread" : "fast legacy KMS video plane running on dedicated presenter thread");
 
-        std::uint64_t frames {};
-        std::uint64_t frames_since_log {};
-        auto last_log = std::chrono::steady_clock::now();
+        std::atomic<int> presenter_result { -1 };
+        std::thread presenter_thread([&]() {
+            std::uint64_t frames {};
+            std::uint64_t frames_since_log {};
+            auto last_log = std::chrono::steady_clock::now();
+            auto last_present = std::chrono::steady_clock::time_point {};
+            double present_interval_total_ms {};
+            double present_interval_min_ms { 1000000.0 };
+            double present_interval_max_ms {};
+            std::uint64_t present_intervals_since_log {};
+            int result {};
+
+            glide::log(glide::LogLevel::info, "OpenHD-Glide", "RKMPP presenter thread owns decoder dequeue and KMS page-flip cadence");
+            while (stop_requested == 0) {
+                glide::dev::DmabufVideoFrame frame;
+                if (!rkmpp.poll(frame)) {
+                    if (!rkmpp.last_error().empty()) {
+                        glide::log(glide::LogLevel::error, "OpenHD-Glide", rkmpp.last_error());
+                        result = 1;
+                        stop_requested = 1;
+                        break;
+                    }
+                    if (!maybe_present_waiting_overlay()) {
+                        result = 1;
+                        stop_requested = 1;
+                        break;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    continue;
+                }
+
+                if (!present_video_frame(frame, frames)) {
+                    result = 1;
+                    stop_requested = 1;
+                    break;
+                }
+                rkmpp.mark_presented();
+                ++frames;
+                ++frames_since_log;
+
+                const auto now = std::chrono::steady_clock::now();
+                if (last_present.time_since_epoch().count() != 0) {
+                    const auto interval_ms = std::chrono::duration<double, std::milli>(now - last_present).count();
+                    present_interval_total_ms += interval_ms;
+                    present_interval_min_ms = std::min(present_interval_min_ms, interval_ms);
+                    present_interval_max_ms = std::max(present_interval_max_ms, interval_ms);
+                    ++present_intervals_since_log;
+                }
+                last_present = now;
+                if (now - last_log >= std::chrono::seconds(1)) {
+                    const auto elapsed = std::chrono::duration<double>(now - last_log).count();
+                    std::ostringstream status;
+                    status.setf(std::ios::fixed);
+                    status.precision(1);
+                    const auto current_fps = static_cast<double>(frames_since_log) / elapsed;
+                    const auto present_interval_avg_ms = present_intervals_since_log != 0
+                        ? present_interval_total_ms / static_cast<double>(present_intervals_since_log)
+                        : 0.0;
+                    video_plane_fps.store(current_fps);
+                    status << "native Rockchip MPP " << (use_atomic_kms ? "atomic video+Flow" : "legacy video")
+                           << " fps=" << current_fps
+                           << " present_interval_ms(avg/min/max)=" << present_interval_avg_ms << '/'
+                           << (present_intervals_since_log != 0 ? present_interval_min_ms : 0.0) << '/'
+                           << present_interval_max_ms
+                           << " total_frames=" << frames
+                           << ' ' << rkmpp.stats();
+                    glide::log(glide::LogLevel::info, "OpenHD-Glide", status.str());
+                    frames_since_log = 0;
+                    present_interval_total_ms = 0.0;
+                    present_interval_min_ms = 1000000.0;
+                    present_interval_max_ms = 0.0;
+                    present_intervals_since_log = 0;
+                    last_log = now;
+                }
+            }
+            presenter_result.store(result, std::memory_order_release);
+        });
+
         while (stop_requested == 0) {
             poll_control();
-            glide::dev::DmabufVideoFrame frame;
-            if (!rkmpp.poll(frame)) {
-                if (!rkmpp.last_error().empty()) {
-                    glide::log(glide::LogLevel::error, "OpenHD-Glide", rkmpp.last_error());
-                    return 1;
-                }
-                if (!maybe_present_waiting_overlay()) {
-                    return 1;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                continue;
+            if (presenter_result.load(std::memory_order_acquire) >= 0) {
+                break;
             }
-
-            if (!present_video_frame(frame, frames)) {
-                return 1;
-            }
-            rkmpp.mark_presented();
-            ++frames;
-            ++frames_since_log;
-
-            const auto now = std::chrono::steady_clock::now();
-            if (now - last_log >= std::chrono::seconds(1)) {
-                const auto elapsed = std::chrono::duration<double>(now - last_log).count();
-                std::ostringstream status;
-                status.setf(std::ios::fixed);
-                status.precision(1);
-                const auto current_fps = static_cast<double>(frames_since_log) / elapsed;
-                video_plane_fps.store(current_fps);
-                status << "native Rockchip MPP " << (use_atomic_kms ? "atomic video+Flow" : "legacy video")
-                       << " fps=" << current_fps
-                       << " total_frames=" << frames
-                       << ' ' << rkmpp.stats();
-                glide::log(glide::LogLevel::info, "OpenHD-Glide", status.str());
-                frames_since_log = 0;
-                last_log = now;
-            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
-        return 0;
+        stop_requested = 1;
+        if (presenter_thread.joinable()) {
+            presenter_thread.join();
+        }
+        return presenter_result.load(std::memory_order_acquire) == 1 ? 1 : 0;
     }
 #else
     if (options.native_rkmpp_video) {

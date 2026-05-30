@@ -162,8 +162,14 @@ private:
     void release_acquired_flow_framebuffer(std::uint32_t framebuffer_id, void* bo, bool solid_dumb);
     void adopt_flow_framebuffer(std::uint32_t framebuffer_id, void* bo, bool solid_dumb);
     PlaneRect scaled_video_destination(const DmabufVideoFrame& video_frame) const;
-    bool commit(const DmabufVideoFrame* video_frame, std::uint32_t video_framebuffer, std::uint32_t flow_framebuffer, std::uint32_t ui_framebuffer);
+    bool commit(
+        const DmabufVideoFrame* video_frame,
+        std::uint32_t video_framebuffer,
+        std::uint32_t flow_framebuffer,
+        std::uint32_t ui_framebuffer,
+        bool nonblocking_allowed = false);
     void wait_for_vblank();
+    bool wait_for_pending_page_flip();
     void destroy_imported(ImportedFramebuffer& imported);
     void destroy_video_framebuffer_cache();
     void destroy_flow_framebuffer_cache();
@@ -208,6 +214,8 @@ private:
     bool primary_flow_readback_ {};
     bool vblank_wait_enabled_ {};
     bool vblank_wait_failed_ {};
+    bool page_flip_pending_ {};
+    bool page_flip_event_received_ {};
     void* pending_flow_bo_ {};
     std::uint32_t pending_flow_framebuffer_ {};
     bool pending_flow_is_solid_dumb_ {};

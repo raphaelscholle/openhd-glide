@@ -43,6 +43,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -73,6 +74,13 @@ namespace {
 std::string errno_suffix()
 {
     return std::string(": ") + std::strerror(errno);
+}
+
+void page_flip_handler(int, unsigned int, unsigned int, unsigned int, void* data)
+{
+    if (data != nullptr) {
+        *static_cast<bool*>(data) = true;
+    }
 }
 
 std::string egl_error_message(const char* prefix)
@@ -618,7 +626,8 @@ bool KmsAtomicCompositor::present(const DmabufVideoFrame& video_frame, bool upda
         return false;
     }
 
-    if (!commit(&video_frame, video->framebuffer, flow_framebuffer, solid_ui_.framebuffer)) {
+    const bool video_only_update = !update_flow_frame && flow_bo == nullptr;
+    if (!commit(&video_frame, video->framebuffer, flow_framebuffer, solid_ui_.framebuffer, video_only_update)) {
         release_acquired_flow_framebuffer(flow_framebuffer, flow_bo, flow_is_solid_dumb);
         return false;
     }
@@ -2142,8 +2151,13 @@ bool KmsAtomicCompositor::commit(
     const DmabufVideoFrame* video_frame,
     std::uint32_t video_framebuffer,
     std::uint32_t flow_framebuffer,
-    std::uint32_t ui_framebuffer)
+    std::uint32_t ui_framebuffer,
+    bool nonblocking_allowed)
 {
+    if (!wait_for_pending_page_flip()) {
+        return false;
+    }
+
     auto* request = drmModeAtomicAlloc();
     if (request == nullptr) {
         last_error_ = "failed to allocate DRM atomic request";
@@ -2285,17 +2299,24 @@ bool KmsAtomicCompositor::commit(
         return false;
     }
 
-    if (modeset_committed_) {
-        wait_for_vblank();
+    const bool use_nonblocking_commit = modeset_committed_ && vblank_wait_enabled_ && nonblocking_allowed && !capture_writeback;
+    std::uint32_t flags = modeset_committed_ ? 0 : DRM_MODE_ATOMIC_ALLOW_MODESET;
+    void* user_data {};
+    if (use_nonblocking_commit) {
+        flags |= DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_PAGE_FLIP_EVENT;
+        page_flip_event_received_ = false;
+        user_data = &page_flip_event_received_;
     }
-    const std::uint32_t flags = modeset_committed_ ? 0 : DRM_MODE_ATOMIC_ALLOW_MODESET;
-    if (drmModeAtomicCommit(drm_fd_, request, flags, nullptr) != 0) {
+    if (drmModeAtomicCommit(drm_fd_, request, flags, user_data) != 0) {
         last_error_ = "failed to commit atomic KMS video+Flow/UI frame" + errno_suffix();
         drmModeAtomicFree(request);
         return false;
     }
 
     modeset_committed_ = true;
+    if (use_nonblocking_commit) {
+        page_flip_pending_ = !page_flip_event_received_;
+    }
     drmModeAtomicFree(request);
 
     if (capture_writeback) {
@@ -2358,6 +2379,52 @@ void KmsAtomicCompositor::wait_for_vblank()
         vblank_wait_failed_ = true;
         glide::log(glide::LogLevel::warning, "OpenHD-Glide", "DRM atomic vblank wait failed; continuing with immediate commits" + errno_suffix());
     }
+}
+
+bool KmsAtomicCompositor::wait_for_pending_page_flip()
+{
+    if (!page_flip_pending_) {
+        return true;
+    }
+
+    drmEventContext event_context {};
+    event_context.version = DRM_EVENT_CONTEXT_VERSION;
+    event_context.page_flip_handler = page_flip_handler;
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+    while (page_flip_pending_ && std::chrono::steady_clock::now() < deadline) {
+        pollfd drm_poll {
+            .fd = drm_fd_,
+            .events = POLLIN,
+            .revents = 0,
+        };
+        const auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count();
+        const auto timeout_ms = static_cast<int>(std::max<long long>(1, remaining_ms));
+        const auto poll_result = poll(&drm_poll, 1, timeout_ms);
+        if (poll_result < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            last_error_ = "failed while waiting for atomic KMS page-flip event" + errno_suffix();
+            return false;
+        }
+        if (poll_result == 0) {
+            continue;
+        }
+        if ((drm_poll.revents & POLLIN) != 0 && drmHandleEvent(drm_fd_, &event_context) != 0) {
+            last_error_ = "failed to handle atomic KMS page-flip event" + errno_suffix();
+            return false;
+        }
+        if (page_flip_event_received_) {
+            page_flip_pending_ = false;
+        }
+    }
+
+    if (page_flip_pending_) {
+        last_error_ = "timed out waiting for atomic KMS page-flip event";
+        return false;
+    }
+    return true;
 }
 
 void KmsAtomicCompositor::destroy_imported(ImportedFramebuffer& imported)
@@ -2490,6 +2557,7 @@ void KmsAtomicCompositor::destroy_solid_ui_buffer()
 
 void KmsAtomicCompositor::cleanup()
 {
+    wait_for_pending_page_flip();
     if (drm_fd_ >= 0 && original_crtc_ != nullptr) {
         auto* crtc = static_cast<drmModeCrtc*>(original_crtc_);
         drmModeSetCrtc(

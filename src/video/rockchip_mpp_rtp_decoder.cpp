@@ -26,12 +26,21 @@
 #if OPENHD_GLIDE_HAS_RKMPP
 #include <rockchip/rk_mpi.h>
 
+#include <arpa/inet.h>
 #include <drm_fourcc.h>
-#include <gst/app/gstappsink.h>
-#include <gst/gst.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
+#include <algorithm>
+#include <array>
+#include <cerrno>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <sstream>
 #include <thread>
 #endif
@@ -54,6 +63,16 @@ MppFrame as_frame(void* frame)
 {
     return static_cast<MppFrame>(frame);
 }
+
+constexpr std::uint8_t start_code[] { 0x00, 0x00, 0x00, 0x01 };
+constexpr std::uint8_t x20_sps[] { 0x67, 0x4d, 0x00, 0x29, 0x96, 0x54, 0x02, 0x80, 0x2d, 0x88 };
+constexpr std::uint8_t x20_pps[] { 0x68, 0xee, 0x31, 0x12 };
+
+void append_start_code(std::vector<std::uint8_t>& output)
+{
+    output.insert(output.end(), std::begin(start_code), std::end(start_code));
+}
+
 } // namespace
 #endif
 
@@ -79,7 +98,7 @@ bool RockchipMppRtpDecoder::start(std::uint16_t udp_port, const std::string& cod
         cleanup();
         return false;
     }
-    if (!init_gstreamer(udp_port, codec)) {
+    if (!init_socket(udp_port)) {
         cleanup();
         return false;
     }
@@ -104,7 +123,7 @@ bool RockchipMppRtpDecoder::poll(glide::dev::DmabufVideoFrame& frame)
         if (ready_frames_.empty()) {
             return false;
         }
-        while (ready_frames_.size() > 1) {
+        while (ready_frames_.size() > 2) {
             auto dropped = ready_frames_.front();
             ready_frames_.pop_front();
             release_frame(dropped);
@@ -150,8 +169,14 @@ std::string RockchipMppRtpDecoder::stats() const
         << " decoded_frames=" << decoded_frames_
         << " queued_frames=" << ready_frames_.size()
         << " dropped_decoded_frames=" << dropped_decoded_frames_
+        << " rtp_packets=" << rtp_packets_
+        << " rtp_sequence_gaps=" << rtp_sequence_gaps_
+        << " rtp_sequence_resyncs=" << rtp_sequence_resyncs_
+        << " late_or_duplicate_packets=" << late_or_duplicate_packets_
+        << " incomplete_fragments=" << incomplete_fragments_
+        << " x20_header_injections=" << x20_header_injections_
         << " submit_stalls=" << submit_stalls_
-        << " gst_pull_timeouts=" << gst_pull_timeouts_.load(std::memory_order_relaxed);
+        << " input=native-udp-rtp";
     return out.str();
 #else
     return {};
@@ -166,10 +191,10 @@ const std::string& RockchipMppRtpDecoder::last_error() const
 #if OPENHD_GLIDE_HAS_RKMPP
 bool RockchipMppRtpDecoder::init_mpp(const std::string& codec)
 {
-    const bool h265 = codec == "h265" || codec == "hevc";
-    const auto coding = h265 ? MPP_VIDEO_CodingHEVC : MPP_VIDEO_CodingAVC;
+    h265_ = codec == "h265" || codec == "hevc";
+    const auto coding = h265_ ? MPP_VIDEO_CodingHEVC : MPP_VIDEO_CodingAVC;
     if (mpp_check_support_format(MPP_CTX_DEC, coding) != MPP_OK) {
-        last_error_ = h265 ? "Rockchip MPP does not support HEVC decode" : "Rockchip MPP does not support AVC decode";
+        last_error_ = h265_ ? "Rockchip MPP does not support HEVC decode" : "Rockchip MPP does not support AVC decode";
         return false;
     }
     MppCtx ctx {};
@@ -186,7 +211,7 @@ bool RockchipMppRtpDecoder::init_mpp(const std::string& codec)
         return false;
     }
     configure_mpp();
-    int output_block = MPP_POLL_BLOCK;
+    int output_block = MPP_POLL_NON_BLOCK;
     as_mpi(mpi_)->control(as_ctx(ctx_), MPP_SET_OUTPUT_BLOCK, &output_block);
     return true;
 }
@@ -216,68 +241,308 @@ bool RockchipMppRtpDecoder::configure_mpp()
     return true;
 }
 
-bool RockchipMppRtpDecoder::init_gstreamer(std::uint16_t udp_port, const std::string& codec)
+bool RockchipMppRtpDecoder::init_socket(std::uint16_t udp_port)
 {
-    gst_init(nullptr, nullptr);
-    const bool h265 = codec == "h265" || codec == "hevc";
-    std::ostringstream text;
-    text << "udpsrc port=" << udp_port
-         << " buffer-size=33554432 caps=\"application/x-rtp,media=(string)video,clock-rate=(int)90000,encoding-name=(string)"
-         << (h265 ? "H265" : "H264")
-         << ",payload=(int)96\" ! "
-         << (h265 ? "rtph265depay ! h265parse config-interval=-1 ! video/x-h265,stream-format=byte-stream,alignment=nal ! "
-                  : "rtph264depay ! h264parse config-interval=-1 ! video/x-h264,stream-format=byte-stream,alignment=nal ! ")
-         << "appsink name=encoded-sink sync=false async=false drop=true max-buffers=32 emit-signals=false";
+    socket_fd_ = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (socket_fd_ < 0) {
+        last_error_ = std::string("failed to create RKMPP UDP socket: ") + std::strerror(errno);
+        return false;
+    }
 
-    GError* error {};
-    auto* pipeline = gst_parse_launch(text.str().c_str(), &error);
-    if (pipeline == nullptr || error != nullptr) {
-        last_error_ = std::string("failed to create Rockchip MPP RTP parser pipeline: ")
-            + (error != nullptr ? error->message : "unknown error");
-        if (error != nullptr) {
-            g_error_free(error);
+    const int receive_buffer = 32 * 1024 * 1024;
+    setsockopt(socket_fd_, SOL_SOCKET, SO_RCVBUF, &receive_buffer, sizeof(receive_buffer));
+
+    sockaddr_in address {};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_ANY);
+    address.sin_port = htons(udp_port);
+    if (bind(socket_fd_, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
+        last_error_ = std::string("failed to bind RKMPP UDP RTP socket: ") + std::strerror(errno);
+        return false;
+    }
+    const auto flags = fcntl(socket_fd_, F_GETFL, 0);
+    if (flags >= 0) {
+        fcntl(socket_fd_, F_SETFL, flags | O_NONBLOCK);
+    }
+    return true;
+}
+
+bool RockchipMppRtpDecoder::handle_rtp_packet(const std::uint8_t* packet, std::size_t size)
+{
+    if (size < 12 || (packet[0] >> 6U) != 2) {
+        return true;
+    }
+
+    const bool has_padding = (packet[0] & 0x20U) != 0;
+    const bool has_extension = (packet[0] & 0x10U) != 0;
+    const auto csrc_count = packet[0] & 0x0FU;
+    const bool marker = (packet[1] & 0x80U) != 0;
+    const auto sequence = static_cast<std::uint16_t>((static_cast<std::uint16_t>(packet[2]) << 8U) | packet[3]);
+    const auto timestamp = (static_cast<std::uint32_t>(packet[4]) << 24U)
+        | (static_cast<std::uint32_t>(packet[5]) << 16U)
+        | (static_cast<std::uint32_t>(packet[6]) << 8U)
+        | static_cast<std::uint32_t>(packet[7]);
+
+    std::size_t offset = 12U + static_cast<std::size_t>(csrc_count) * 4U;
+    if (offset > size) {
+        return true;
+    }
+    if (has_extension) {
+        if (offset + 4U > size) {
+            return true;
         }
-        if (pipeline != nullptr) {
-            gst_object_unref(pipeline);
+        const auto extension_words = (static_cast<std::size_t>(packet[offset + 2U]) << 8U) | packet[offset + 3U];
+        offset += 4U + extension_words * 4U;
+        if (offset > size) {
+            return true;
         }
+    }
+
+    std::size_t payload_size = size - offset;
+    if (has_padding && payload_size > 0) {
+        const auto padding = packet[size - 1U];
+        if (padding <= payload_size) {
+            payload_size -= padding;
+        }
+    }
+    if (payload_size == 0) {
+        return true;
+    }
+
+    {
+        std::lock_guard lock(mutex_);
+        ++rtp_packets_;
+        if (have_sequence_) {
+            const auto sequence_delta = static_cast<std::int16_t>(sequence - expected_sequence_);
+            if (sequence_delta < 0) {
+                const auto timestamp_delta = have_rtp_timestamp_
+                    ? static_cast<std::int32_t>(timestamp - last_rtp_timestamp_)
+                    : 0;
+                if (sequence_delta < -1000 || timestamp_delta < -90000) {
+                    ++rtp_sequence_resyncs_;
+                    fragment_.clear();
+                } else {
+                    ++late_or_duplicate_packets_;
+                    return true;
+                }
+            }
+            if (sequence_delta > 0) {
+                ++rtp_sequence_gaps_;
+                fragment_.clear();
+            }
+        }
+        expected_sequence_ = static_cast<std::uint16_t>(sequence + 1U);
+        last_rtp_timestamp_ = timestamp;
+        have_rtp_timestamp_ = true;
+        have_sequence_ = true;
+    }
+
+    return h265_
+        ? append_h265_payload(packet + offset, payload_size, marker, sequence, timestamp)
+        : append_h264_payload(packet + offset, payload_size, marker, sequence, timestamp);
+}
+
+bool RockchipMppRtpDecoder::append_h264_payload(const std::uint8_t* payload, std::size_t size, bool, std::uint16_t, std::uint32_t timestamp)
+{
+    if (size == 0) {
+        return true;
+    }
+
+    const auto nal_type = payload[0] & 0x1FU;
+    if (nal_type >= 1 && nal_type <= 23) {
+        return submit_nal(payload, size, timestamp);
+    }
+    if (nal_type == 24) {
+        std::size_t offset = 1;
+        while (offset + 2U <= size) {
+            const auto nal_size = (static_cast<std::size_t>(payload[offset]) << 8U) | payload[offset + 1U];
+            offset += 2U;
+            if (offset + nal_size > size) {
+                break;
+            }
+            if (!submit_nal(payload + offset, nal_size, timestamp)) {
+                return false;
+            }
+            offset += nal_size;
+        }
+        return true;
+    }
+    if (nal_type == 28 && size >= 2) {
+        const auto fu_indicator = payload[0];
+        const auto fu_header = payload[1];
+        const bool start = (fu_header & 0x80U) != 0;
+        const bool end = (fu_header & 0x40U) != 0;
+        const auto reconstructed = static_cast<std::uint8_t>((fu_indicator & 0xE0U) | (fu_header & 0x1FU));
+        if (start) {
+            fragment_.clear();
+            fragment_.push_back(reconstructed);
+            current_timestamp_ = timestamp;
+        } else if (fragment_.empty() || current_timestamp_ != timestamp) {
+            std::lock_guard lock(mutex_);
+            ++incomplete_fragments_;
+            return true;
+        }
+        fragment_.insert(fragment_.end(), payload + 2, payload + size);
+        if (end) {
+            const auto submitted = submit_nal(fragment_.data(), fragment_.size(), timestamp);
+            fragment_.clear();
+            return submitted;
+        }
+    }
+    return true;
+}
+
+bool RockchipMppRtpDecoder::append_h265_payload(const std::uint8_t* payload, std::size_t size, bool, std::uint16_t, std::uint32_t timestamp)
+{
+    if (size < 2) {
+        return true;
+    }
+
+    const auto nal_type = (payload[0] >> 1U) & 0x3FU;
+    if (nal_type <= 47) {
+        return submit_nal(payload, size, timestamp);
+    }
+    if (nal_type == 48) {
+        std::size_t offset = 2;
+        while (offset + 2U <= size) {
+            const auto nal_size = (static_cast<std::size_t>(payload[offset]) << 8U) | payload[offset + 1U];
+            offset += 2U;
+            if (offset + nal_size > size) {
+                break;
+            }
+            if (!submit_nal(payload + offset, nal_size, timestamp)) {
+                return false;
+            }
+            offset += nal_size;
+        }
+        return true;
+    }
+    if (nal_type == 49 && size >= 3) {
+        const auto fu_header = payload[2];
+        const bool start = (fu_header & 0x80U) != 0;
+        const bool end = (fu_header & 0x40U) != 0;
+        const auto reconstructed_type = fu_header & 0x3FU;
+        if (start) {
+            fragment_.clear();
+            fragment_.push_back(static_cast<std::uint8_t>((payload[0] & 0x81U) | (reconstructed_type << 1U)));
+            fragment_.push_back(payload[1]);
+            current_timestamp_ = timestamp;
+        } else if (fragment_.empty() || current_timestamp_ != timestamp) {
+            std::lock_guard lock(mutex_);
+            ++incomplete_fragments_;
+            return true;
+        }
+        fragment_.insert(fragment_.end(), payload + 3, payload + size);
+        if (end) {
+            const auto submitted = submit_nal(fragment_.data(), fragment_.size(), timestamp);
+            fragment_.clear();
+            return submitted;
+        }
+    }
+    return true;
+}
+
+bool RockchipMppRtpDecoder::submit_nal(const std::uint8_t* data, std::size_t size, std::int64_t pts)
+{
+    if (data == nullptr || size == 0) {
+        return true;
+    }
+    if (!h265_ && update_x20_detection(data, size) && !inject_x20_header_if_needed()) {
         return false;
     }
-    auto* sink = gst_bin_get_by_name(GST_BIN(pipeline), "encoded-sink");
-    if (sink == nullptr) {
-        last_error_ = "failed to access Rockchip MPP encoded appsink";
-        gst_object_unref(pipeline);
-        return false;
+    std::array<std::uint8_t, 4> prefix { 0x00, 0x00, 0x00, 0x01 };
+    if (size >= prefix.size() && std::equal(prefix.begin(), prefix.end(), data)) {
+        return submit_packet(data, size, pts);
     }
-    if (gst_element_set_state(pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
-        last_error_ = "failed to start Rockchip MPP RTP parser pipeline";
-        gst_object_unref(sink);
-        gst_object_unref(pipeline);
-        return false;
+
+    std::vector<std::uint8_t> annex_b;
+    annex_b.reserve(prefix.size() + size);
+    append_start_code(annex_b);
+    annex_b.insert(annex_b.end(), data, data + size);
+    return submit_packet(annex_b.data(), annex_b.size(), pts);
+}
+
+bool RockchipMppRtpDecoder::update_x20_detection(const std::uint8_t* data, std::size_t size)
+{
+    if (x20_header_injected_ || x20_checked_non_x20_ || data == nullptr || size == 0) {
+        return x20_sps_seen_ && x20_pps_seen_ && !x20_header_injected_;
     }
-    gst_pipeline_ = pipeline;
-    gst_sink_ = sink;
+
+    const auto nal_type = data[0] & 0x1FU;
+    if (nal_type == 7) {
+        if (size == std::size(x20_sps) && std::equal(std::begin(x20_sps), std::end(x20_sps), data)) {
+            x20_sps_seen_ = true;
+        } else {
+            x20_checked_non_x20_ = true;
+        }
+    } else if (nal_type == 8) {
+        if (size == std::size(x20_pps) && std::equal(std::begin(x20_pps), std::end(x20_pps), data)) {
+            x20_pps_seen_ = true;
+        } else {
+            x20_checked_non_x20_ = true;
+        }
+    }
+    return x20_sps_seen_ && x20_pps_seen_ && !x20_header_injected_;
+}
+
+bool RockchipMppRtpDecoder::inject_x20_header_if_needed()
+{
+    if (x20_header_injected_ || x20_header_missing_) {
+        return true;
+    }
+
+    std::vector<std::string> paths;
+    if (const auto* override_path = std::getenv("OPENHD_GLIDE_X20_HEADER"); override_path != nullptr && override_path[0] != '\0') {
+        paths.emplace_back(override_path);
+    }
+    paths.emplace_back("/usr/share/openhd-glide/x20_header.h264");
+    paths.emplace_back("/usr/local/share/openhd-glide/x20_header.h264");
+    paths.emplace_back("/usr/local/bin/x20_header.h264");
+
+    for (const auto& path : paths) {
+        std::ifstream input(path, std::ios::binary);
+        if (!input) {
+            continue;
+        }
+        std::vector<std::uint8_t> header(
+            (std::istreambuf_iterator<char>(input)),
+            std::istreambuf_iterator<char>());
+        if (header.empty()) {
+            continue;
+        }
+        if (!submit_packet(header.data(), header.size(), 0)) {
+            return false;
+        }
+        x20_header_injected_ = true;
+        ++x20_header_injections_;
+        return true;
+    }
+
+    x20_header_missing_ = true;
     return true;
 }
 
 void RockchipMppRtpDecoder::feed_loop()
 {
-    auto* sink = static_cast<GstElement*>(gst_sink_);
+    std::uint8_t packet[65536];
     while (running_.load(std::memory_order_acquire)) {
-        auto* sample = gst_app_sink_try_pull_sample(GST_APP_SINK(sink), 100 * GST_MSECOND);
-        if (sample == nullptr) {
-            gst_pull_timeouts_.fetch_add(1, std::memory_order_relaxed);
+        const auto received = recv(socket_fd_, packet, sizeof(packet), 0);
+        if (received < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                continue;
+            }
+            last_error_ = std::string("failed to receive RKMPP RTP packet: ") + std::strerror(errno);
+            running_.store(false, std::memory_order_release);
+            break;
+        }
+        if (received == 0) {
             continue;
         }
-        auto* buffer = gst_sample_get_buffer(sample);
-        if (buffer != nullptr) {
-            GstMapInfo map {};
-            if (gst_buffer_map(buffer, &map, GST_MAP_READ)) {
-                const auto pts = GST_BUFFER_PTS_IS_VALID(buffer) ? static_cast<std::int64_t>(GST_BUFFER_PTS(buffer) / GST_MSECOND) : 0;
-                submit_packet(map.data, map.size, pts);
-                gst_buffer_unmap(buffer, &map);
-            }
+        if (!handle_rtp_packet(packet, static_cast<std::size_t>(received))) {
+            running_.store(false, std::memory_order_release);
+            break;
         }
-        gst_sample_unref(sample);
     }
 }
 
@@ -413,8 +678,8 @@ void RockchipMppRtpDecoder::cleanup()
 {
 #if OPENHD_GLIDE_HAS_RKMPP
     running_.store(false, std::memory_order_release);
-    if (gst_pipeline_ != nullptr) {
-        gst_element_send_event(static_cast<GstElement*>(gst_pipeline_), gst_event_new_eos());
+    if (socket_fd_ >= 0) {
+        shutdown(socket_fd_, SHUT_RDWR);
     }
     if (feed_thread_.joinable()) {
         feed_thread_.join();
@@ -431,16 +696,9 @@ void RockchipMppRtpDecoder::cleanup()
     }
     release_frame(pending_presented_frame_);
     release_frame(current_frame_);
-    if (gst_pipeline_ != nullptr) {
-        gst_element_set_state(static_cast<GstElement*>(gst_pipeline_), GST_STATE_NULL);
-    }
-    if (gst_sink_ != nullptr) {
-        gst_object_unref(static_cast<GstElement*>(gst_sink_));
-        gst_sink_ = nullptr;
-    }
-    if (gst_pipeline_ != nullptr) {
-        gst_object_unref(static_cast<GstElement*>(gst_pipeline_));
-        gst_pipeline_ = nullptr;
+    if (socket_fd_ >= 0) {
+        close(socket_fd_);
+        socket_fd_ = -1;
     }
     if (mpi_ != nullptr && ctx_ != nullptr) {
         as_mpi(mpi_)->reset(as_ctx(ctx_));

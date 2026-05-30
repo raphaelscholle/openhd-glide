@@ -31,6 +31,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace glide::video {
 
@@ -50,10 +51,16 @@ public:
 
 private:
     bool init_mpp(const std::string& codec);
-    bool init_gstreamer(std::uint16_t udp_port, const std::string& codec);
+    bool init_socket(std::uint16_t udp_port);
     bool configure_mpp();
     void feed_loop();
     void frame_loop();
+    bool handle_rtp_packet(const std::uint8_t* packet, std::size_t size);
+    bool append_h264_payload(const std::uint8_t* payload, std::size_t size, bool marker, std::uint16_t sequence, std::uint32_t timestamp);
+    bool append_h265_payload(const std::uint8_t* payload, std::size_t size, bool marker, std::uint16_t sequence, std::uint32_t timestamp);
+    bool submit_nal(const std::uint8_t* data, std::size_t size, std::int64_t pts);
+    bool update_x20_detection(const std::uint8_t* data, std::size_t size);
+    bool inject_x20_header_if_needed();
     bool submit_packet(const std::uint8_t* data, std::size_t size, std::int64_t pts);
     bool frame_to_dmabuf(void* frame, glide::dev::DmabufVideoFrame& out);
     void release_frame(void*& frame);
@@ -61,8 +68,8 @@ private:
 
     void* ctx_ {};
     void* mpi_ {};
-    void* gst_pipeline_ {};
-    void* gst_sink_ {};
+    int socket_fd_ { -1 };
+    bool h265_ {};
     std::thread feed_thread_;
     std::thread frame_thread_;
     std::atomic<bool> running_ {};
@@ -73,9 +80,25 @@ private:
     std::uint64_t parsed_units_ {};
     std::uint64_t decoded_frames_ {};
     std::uint64_t dropped_decoded_frames_ {};
+    std::uint64_t rtp_packets_ {};
+    std::uint64_t rtp_sequence_gaps_ {};
+    std::uint64_t rtp_sequence_resyncs_ {};
+    std::uint64_t late_or_duplicate_packets_ {};
+    std::uint64_t incomplete_fragments_ {};
+    std::uint64_t x20_header_injections_ {};
     std::uint64_t submitted_packets_ {};
     std::uint64_t submit_stalls_ {};
-    std::atomic<std::uint64_t> gst_pull_timeouts_ {};
+    bool have_sequence_ {};
+    std::uint16_t expected_sequence_ {};
+    bool have_rtp_timestamp_ {};
+    std::uint32_t last_rtp_timestamp_ {};
+    std::uint32_t current_timestamp_ {};
+    bool x20_sps_seen_ {};
+    bool x20_pps_seen_ {};
+    bool x20_checked_non_x20_ {};
+    bool x20_header_injected_ {};
+    bool x20_header_missing_ {};
+    std::vector<std::uint8_t> fragment_;
     std::string last_error_;
 };
 

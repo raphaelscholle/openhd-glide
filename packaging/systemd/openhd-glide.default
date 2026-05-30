@@ -28,9 +28,15 @@ GLIDE_FLOW_STATIC_SCANOUT=0
 # Renders Flow with GLES, reads it into a persistent primary-plane ARGB
 # framebuffer, and avoids swapping the Flow plane FB_ID. Experimental.
 GLIDE_FLOW_PRIMARY_READBACK=0
-# Optional vblank pacing. On RK3566 atomic commits this can halve throughput,
-# so keep it disabled unless explicitly testing.
-GLIDE_VBLANK_WAIT=0
+# Pace video atomic commits from KMS page-flip completion events.
+GLIDE_VBLANK_WAIT=1
+# The RK3566 ondemand governor adds frame-time jitter at 120Hz.
+# Leave empty to keep the system default governor.
+GLIDE_CPU_GOVERNOR=performance
+# Main renderer priority. Negative nice needs the service to run as root.
+GLIDE_MAIN_NICE=-10
+GLIDE_MAIN_CHRT_PRIORITY=
+GLIDE_UI_NICE=5
 
 # LVGL UI buffer overlay.
 GLIDE_UI=1
