@@ -142,6 +142,12 @@ if is_enabled "${GLIDE_FLOW_PRIMARY_READBACK:-0}"; then
   ARGS+=(--flow-primary-readback)
 fi
 
+if is_enabled "${GLIDE_VBLANK_WAIT:-0}"; then
+  ARGS+=(--vblank-wait)
+else
+  ARGS+=(--no-vblank-wait)
+fi
+
 if [ -n "${GLIDE_LD_LIBRARY_PATH:-}" ]; then
   export LD_LIBRARY_PATH="$GLIDE_LD_LIBRARY_PATH"
 fi

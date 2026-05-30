@@ -915,6 +915,11 @@ int run_kms_video_preview(const Options& options)
             glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
             return 1;
         }
+        compositor.set_vblank_wait_enabled(options.vblank_wait);
+        glide::log(
+            glide::LogLevel::info,
+            "OpenHD-Glide",
+            options.vblank_wait ? "atomic KMS commits are paced to DRM vblank" : "atomic KMS vblank pacing is disabled");
         if (options.ui_overlay) {
             if (!compositor.publish_solid_ui_frame(options.ui_debug_color)) {
                 glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());

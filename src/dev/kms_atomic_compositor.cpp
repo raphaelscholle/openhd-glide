@@ -45,6 +45,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <sstream>
@@ -665,6 +666,12 @@ bool KmsAtomicCompositor::present_overlay(bool update_flow_frame)
 #endif
 }
 
+void KmsAtomicCompositor::set_vblank_wait_enabled(bool enabled)
+{
+    vblank_wait_enabled_ = enabled;
+    vblank_wait_failed_ = false;
+}
+
 bool KmsAtomicCompositor::enable_writeback_recording(const std::string& path, std::uint32_t every_n_frames, std::uint32_t max_frames)
 {
 #if OPENHD_GLIDE_HAS_KMS_GBM
@@ -999,8 +1006,24 @@ bool KmsAtomicCompositor::choose_connector_and_mode(std::uint32_t requested_widt
     drmModeModeInfo selected_mode = chosen_connector->modes[0];
     bool found_resolution = false;
     bool found_exact_refresh = false;
+    bool found_refresh_fallback = false;
+    std::uint64_t best_refresh_fallback_score = std::numeric_limits<std::uint64_t>::max();
     for (int i = 0; i < chosen_connector->count_modes; ++i) {
         const auto& candidate = chosen_connector->modes[i];
+        if (requested_refresh_hz != 0 && static_cast<std::uint32_t>(candidate.vrefresh) == requested_refresh_hz) {
+            const auto aspect_error = static_cast<std::uint64_t>(std::llabs(
+                static_cast<long long>(candidate.hdisplay) * static_cast<long long>(requested_height)
+                - static_cast<long long>(requested_width) * static_cast<long long>(candidate.vdisplay)));
+            const auto area = static_cast<std::uint64_t>(candidate.hdisplay) * static_cast<std::uint64_t>(candidate.vdisplay);
+            const auto requested_area = static_cast<std::uint64_t>(requested_width) * static_cast<std::uint64_t>(requested_height);
+            const auto area_error = area > requested_area ? area - requested_area : requested_area - area;
+            const auto score = aspect_error * 100000000ULL + area_error;
+            if (!found_refresh_fallback || score < best_refresh_fallback_score) {
+                selected_mode = candidate;
+                best_refresh_fallback_score = score;
+                found_refresh_fallback = true;
+            }
+        }
         if (candidate.hdisplay != requested_width || candidate.vdisplay != requested_height) {
             continue;
         }
@@ -1018,10 +1041,22 @@ bool KmsAtomicCompositor::choose_connector_and_mode(std::uint32_t requested_widt
         }
     }
     if (found_resolution && requested_refresh_hz != 0 && !found_exact_refresh) {
-        last_error_ = "requested refresh rate is unavailable for the selected resolution";
-        drmModeFreeConnector(chosen_connector);
-        drmModeFreeResources(resources);
-        return false;
+        if (!found_refresh_fallback) {
+            last_error_ = "requested refresh rate is unavailable for the selected resolution";
+            drmModeFreeConnector(chosen_connector);
+            drmModeFreeResources(resources);
+            return false;
+        }
+        glide::log(
+            glide::LogLevel::warning,
+            "OpenHD-Glide",
+            "requested "
+                + std::to_string(requested_width) + "x" + std::to_string(requested_height)
+                + " is available, but not at " + std::to_string(requested_refresh_hz)
+                + "Hz; using "
+                + std::to_string(selected_mode.hdisplay) + "x" + std::to_string(selected_mode.vdisplay)
+                + "@" + std::to_string(selected_mode.vrefresh) + "Hz output instead");
+        found_resolution = false;
     }
     if (found_resolution) {
         glide::log(
@@ -1038,7 +1073,7 @@ bool KmsAtomicCompositor::choose_connector_and_mode(std::uint32_t requested_widt
             "OpenHD-Glide",
             "no exact resolution match for requested "
                 + std::to_string(requested_width) + "x" + std::to_string(requested_height)
-                + "; using connector default mode "
+                + (found_refresh_fallback ? "; using requested-refresh output mode " : "; using connector default mode ")
                 + std::to_string(selected_mode.hdisplay) + "x" + std::to_string(selected_mode.vdisplay)
                 + "@" + std::to_string(selected_mode.vrefresh) + "Hz");
     }
@@ -2250,6 +2285,9 @@ bool KmsAtomicCompositor::commit(
         return false;
     }
 
+    if (modeset_committed_) {
+        wait_for_vblank();
+    }
     const std::uint32_t flags = modeset_committed_ ? 0 : DRM_MODE_ATOMIC_ALLOW_MODESET;
     if (drmModeAtomicCommit(drm_fd_, request, flags, nullptr) != 0) {
         last_error_ = "failed to commit atomic KMS video+Flow/UI frame" + errno_suffix();
@@ -2301,6 +2339,25 @@ bool KmsAtomicCompositor::commit(
         }
     }
     return true;
+}
+
+void KmsAtomicCompositor::wait_for_vblank()
+{
+    if (!vblank_wait_enabled_ || vblank_wait_failed_ || drm_fd_ < 0) {
+        return;
+    }
+
+    drmVBlank vblank {};
+    vblank.request.type = DRM_VBLANK_RELATIVE;
+    if (crtc_index_ > 0) {
+        vblank.request.type = static_cast<drmVBlankSeqType>(
+            vblank.request.type | ((crtc_index_ << DRM_VBLANK_HIGH_CRTC_SHIFT) & DRM_VBLANK_HIGH_CRTC_MASK));
+    }
+    vblank.request.sequence = 1;
+    if (drmWaitVBlank(drm_fd_, &vblank) != 0) {
+        vblank_wait_failed_ = true;
+        glide::log(glide::LogLevel::warning, "OpenHD-Glide", "DRM atomic vblank wait failed; continuing with immediate commits" + errno_suffix());
+    }
 }
 
 void KmsAtomicCompositor::destroy_imported(ImportedFramebuffer& imported)
