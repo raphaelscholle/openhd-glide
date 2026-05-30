@@ -1068,7 +1068,13 @@ int run_kms_video_preview(const Options& options)
                 if (update_ui_buffer) {
                     flow_renderer.update_argb_texture(shared_ui.map, options.ui_width, ui_height, options.ui_width * 4U);
                 }
-                flow_renderer.draw_cached_argb_texture({ 0.0F, 0.0F }, flow_surface);
+                const auto ui_scale_x = static_cast<float>(flow_surface.width) / static_cast<float>(options.preview_width);
+                const auto ui_scale_y = static_cast<float>(flow_surface.height) / static_cast<float>(options.flow_height);
+                flow_renderer.draw_cached_argb_texture_scaled(
+                    { 0.0F, 0.0F },
+                    static_cast<float>(options.ui_width) * ui_scale_x,
+                    static_cast<float>(ui_height) * ui_scale_y,
+                    flow_surface);
             }
             if (update_ui_buffer) {
                 next_ui_buffer_upload = now + ui_buffer_interval;
@@ -1159,6 +1165,8 @@ int run_kms_video_preview(const Options& options)
                                              ui_buffer_path = options.ui_buffer_path,
                                              ui_width = options.ui_width,
                                              ui_height,
+                                             preview_width = options.preview_width,
+                                             flow_height = options.flow_height,
                                              ui_buffer_interval]() {
             if (!compositor.make_flow_context_current()) {
                 glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
@@ -1268,7 +1276,13 @@ int run_kms_video_preview(const Options& options)
                             next_ui_buffer_upload = now + ui_buffer_interval;
                         }
                         if (ui_buffer_visible) {
-                            renderer.draw_cached_argb_texture({ 0.0F, 0.0F }, surface);
+                            const auto ui_scale_x = static_cast<float>(surface.width) / static_cast<float>(preview_width);
+                            const auto ui_scale_y = static_cast<float>(surface.height) / static_cast<float>(flow_height);
+                            renderer.draw_cached_argb_texture_scaled(
+                                { 0.0F, 0.0F },
+                                static_cast<float>(ui_width) * ui_scale_x,
+                                static_cast<float>(ui_height) * ui_scale_y,
+                                surface);
                         }
                     } else if (ui_overlay) {
                         ui_buffer_logged_ready = false;

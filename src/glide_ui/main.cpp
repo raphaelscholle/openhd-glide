@@ -215,6 +215,14 @@ struct UiState {
     lv_obj_t* osd_label {};
     std::array<lv_obj_t*, 4> theme_dropdowns {};
     std::array<lv_obj_t*, 4> theme_labels {};
+    lv_obj_t* resolution_dropdown {};
+    lv_obj_t* resolution_label {};
+    lv_obj_t* display_hz_slider {};
+    lv_obj_t* display_hz_label {};
+    lv_obj_t* flow_fps_slider {};
+    lv_obj_t* flow_fps_label {};
+    lv_obj_t* flow_scale_slider {};
+    lv_obj_t* flow_scale_label {};
     lv_obj_t* scan_bar {};
     lv_obj_t* scan_percent {};
     lv_obj_t* nav_buttons[10] {};
@@ -222,6 +230,11 @@ struct UiState {
     std::chrono::steady_clock::time_point minimap_started {};
     std::chrono::steady_clock::time_point minimap_last_render {};
     std::chrono::steady_clock::time_point next_ipc_reconnect {};
+    std::uint32_t glide_width { 1920 };
+    std::uint32_t glide_height { 1080 };
+    std::uint32_t display_hz { 120 };
+    std::uint32_t flow_fps { 60 };
+    std::uint32_t flow_scale_percent { 50 };
 };
 
 struct BufferDisplay {
@@ -577,6 +590,20 @@ constexpr std::array<ColorPreset, 9> color_presets {{
 
 constexpr std::array<const char*, 4> theme_keys {{ "bar_text", "bar_background", "primary", "secondary" }};
 constexpr std::array<const char*, 4> theme_labels {{ "Font color", "Background color", "Primary color", "Secondary color" }};
+constexpr const char* glide_config_path = "/etc/default/openhd-glide";
+
+struct ResolutionPreset {
+    const char* label;
+    std::uint32_t width;
+    std::uint32_t height;
+};
+
+constexpr std::array<ResolutionPreset, 4> resolution_presets {{
+    { "1920 x 1080", 1920, 1080 },
+    { "1600 x 900", 1600, 900 },
+    { "1280 x 720", 1280, 720 },
+    { "960 x 540", 960, 540 },
+}};
 
 std::uint32_t default_theme_color(const char* key)
 {
@@ -638,6 +665,186 @@ std::string rgb_hex(std::uint32_t rgb)
     std::ostringstream stream;
     stream << std::hex << std::setw(6) << std::setfill('0') << (rgb & 0xffffffU);
     return stream.str();
+}
+
+std::string trim(std::string value)
+{
+    const auto begin = value.find_first_not_of(" \t\r\n");
+    if (begin == std::string::npos) {
+        return {};
+    }
+    const auto end = value.find_last_not_of(" \t\r\n");
+    return value.substr(begin, end - begin + 1U);
+}
+
+std::string format_flow_scale(std::uint32_t percent)
+{
+    std::ostringstream stream;
+    stream.setf(std::ios::fixed);
+    stream.precision(2);
+    stream << (static_cast<double>(percent) / 100.0);
+    return stream.str();
+}
+
+std::uint32_t parse_u32_or(std::string value, std::uint32_t fallback)
+{
+    value = trim(std::move(value));
+    if (value.empty()) {
+        return fallback;
+    }
+    try {
+        return static_cast<std::uint32_t>(std::stoul(value));
+    } catch (...) {
+        return fallback;
+    }
+}
+
+std::uint32_t parse_scale_percent_or(std::string value, std::uint32_t fallback)
+{
+    value = trim(std::move(value));
+    if (value.empty()) {
+        return fallback;
+    }
+    try {
+        return static_cast<std::uint32_t>(std::clamp(std::lround(std::stod(value) * 100.0), 25L, 100L));
+    } catch (...) {
+        return fallback;
+    }
+}
+
+void load_device_settings(UiState& state)
+{
+    std::ifstream file(glide_config_path);
+    std::string line;
+    while (std::getline(file, line)) {
+        const auto split = line.find('=');
+        if (split == std::string::npos) {
+            continue;
+        }
+        const auto key = trim(line.substr(0, split));
+        const auto value = trim(line.substr(split + 1U));
+        if (key == "GLIDE_WIDTH") {
+            state.glide_width = parse_u32_or(value, state.glide_width);
+        } else if (key == "GLIDE_HEIGHT") {
+            state.glide_height = parse_u32_or(value, state.glide_height);
+        } else if (key == "GLIDE_DISPLAY_HZ") {
+            state.display_hz = parse_u32_or(value, state.display_hz);
+        } else if (key == "GLIDE_FLOW_FPS") {
+            state.flow_fps = parse_u32_or(value, state.flow_fps);
+        } else if (key == "GLIDE_FLOW_RENDER_SCALE") {
+            state.flow_scale_percent = parse_scale_percent_or(value, state.flow_scale_percent);
+        }
+    }
+    state.display_hz = std::clamp<std::uint32_t>(state.display_hz, 24, 144);
+    state.flow_fps = std::clamp<std::uint32_t>(state.flow_fps, 15, 120);
+    state.flow_scale_percent = std::clamp<std::uint32_t>(state.flow_scale_percent, 25, 100);
+}
+
+std::uint16_t resolution_index_for_state(const UiState& state)
+{
+    for (std::uint16_t i = 0; i < resolution_presets.size(); ++i) {
+        if (resolution_presets[i].width == state.glide_width && resolution_presets[i].height == state.glide_height) {
+            return i;
+        }
+    }
+    return 0;
+}
+
+void sync_video_settings_controls(UiState& state)
+{
+    if (state.resolution_dropdown != nullptr) {
+        lv_dropdown_set_selected(state.resolution_dropdown, resolution_index_for_state(state));
+    }
+    if (state.resolution_label != nullptr) {
+        lv_label_set_text(
+            state.resolution_label,
+            (std::to_string(state.glide_width) + " x " + std::to_string(state.glide_height)).c_str());
+    }
+    if (state.display_hz_slider != nullptr) {
+        lv_slider_set_value(state.display_hz_slider, static_cast<int32_t>(state.display_hz), LV_ANIM_OFF);
+    }
+    if (state.display_hz_label != nullptr) {
+        lv_label_set_text(state.display_hz_label, (std::to_string(state.display_hz) + " Hz").c_str());
+    }
+    if (state.flow_fps_slider != nullptr) {
+        lv_slider_set_value(state.flow_fps_slider, static_cast<int32_t>(state.flow_fps), LV_ANIM_OFF);
+    }
+    if (state.flow_fps_label != nullptr) {
+        lv_label_set_text(state.flow_fps_label, (std::to_string(state.flow_fps) + " fps").c_str());
+    }
+    if (state.flow_scale_slider != nullptr) {
+        lv_slider_set_value(state.flow_scale_slider, static_cast<int32_t>(state.flow_scale_percent), LV_ANIM_OFF);
+    }
+    if (state.flow_scale_label != nullptr) {
+        lv_label_set_text(state.flow_scale_label, (format_flow_scale(state.flow_scale_percent) + "x").c_str());
+    }
+}
+
+bool write_or_replace_setting(std::vector<std::string>& lines, const std::string& key, const std::string& value)
+{
+    const auto prefix = key + "=";
+    for (auto& line : lines) {
+        if (line.rfind(prefix, 0) == 0) {
+            if (line == prefix + value) {
+                return false;
+            }
+            line = prefix + value;
+            return true;
+        }
+    }
+    lines.push_back(prefix + value);
+    return true;
+}
+
+void persist_device_settings_and_restart(UiState& state)
+{
+    std::vector<std::string> lines;
+    {
+        std::ifstream input(glide_config_path);
+        std::string line;
+        while (std::getline(input, line)) {
+            lines.push_back(line);
+        }
+    }
+    bool changed {};
+    changed |= write_or_replace_setting(lines, "GLIDE_WIDTH", std::to_string(state.glide_width));
+    changed |= write_or_replace_setting(lines, "GLIDE_HEIGHT", std::to_string(state.glide_height));
+    changed |= write_or_replace_setting(lines, "GLIDE_DISPLAY_HZ", std::to_string(state.display_hz));
+    changed |= write_or_replace_setting(lines, "GLIDE_FLOW_FPS", std::to_string(state.flow_fps));
+    changed |= write_or_replace_setting(lines, "GLIDE_FLOW_RENDER_SCALE", format_flow_scale(state.flow_scale_percent));
+    if (!changed) {
+        return;
+    }
+
+    const auto temp_path = std::filesystem::temp_directory_path() / "openhd-glide.default.tmp";
+    {
+        std::ofstream output(temp_path);
+        for (const auto& line : lines) {
+            output << line << '\n';
+        }
+    }
+    std::error_code copy_error;
+    std::filesystem::copy_file(temp_path, glide_config_path, std::filesystem::copy_options::overwrite_existing, copy_error);
+    std::error_code remove_error;
+    std::filesystem::remove(temp_path, remove_error);
+    if (copy_error) {
+        glide::log(glide::LogLevel::error, "GlideUI", "failed to write /etc/default/openhd-glide: " + copy_error.message());
+        return;
+    }
+    sync_video_settings_controls(state);
+    glide::log(glide::LogLevel::info, "GlideUI", "saved video mode settings; restarting openhd-glide.service");
+    std::system("systemctl restart --no-block openhd-glide.service >/dev/null 2>&1 &");
+}
+
+void set_resolution_preset(UiState& state, std::uint16_t index, bool persist)
+{
+    const auto bounded = std::min<std::size_t>(index, resolution_presets.size() - 1U);
+    state.glide_width = resolution_presets[bounded].width;
+    state.glide_height = resolution_presets[bounded].height;
+    sync_video_settings_controls(state);
+    if (persist) {
+        persist_device_settings_and_restart(state);
+    }
 }
 
 void sync_theme_controls(UiState& state);
@@ -926,6 +1133,21 @@ void apply_terminal_key(UiState& state, const std::string& line)
             send_mavlink_action(state, glide::mavlink::format_action_command("scan", "bands=openhd width=" + std::to_string(state.mavlink.channel_width_mhz)));
         } else if (state.active_panel == SidebarPanel::link && state.selected_row == 4) {
             send_mavlink_action(state, glide::mavlink::format_action_set_param("air", "PIT_MODE", "toggle"));
+        } else if (state.active_panel == SidebarPanel::video && state.selected_row == 0) {
+            const auto next = static_cast<std::uint16_t>((resolution_index_for_state(state) + 1U) % resolution_presets.size());
+            set_resolution_preset(state, next, true);
+        } else if (state.active_panel == SidebarPanel::video && state.selected_row == 1) {
+            state.display_hz = state.display_hz >= 120 ? 60 : (state.display_hz >= 100 ? 120 : 100);
+            sync_video_settings_controls(state);
+            persist_device_settings_and_restart(state);
+        } else if (state.active_panel == SidebarPanel::video && state.selected_row == 2) {
+            state.flow_fps = state.flow_fps >= 60 ? 30 : 60;
+            sync_video_settings_controls(state);
+            persist_device_settings_and_restart(state);
+        } else if (state.active_panel == SidebarPanel::video && state.selected_row == 3) {
+            state.flow_scale_percent = state.flow_scale_percent >= 100 ? 25 : state.flow_scale_percent + 25;
+            sync_video_settings_controls(state);
+            persist_device_settings_and_restart(state);
         } else if (state.active_panel == SidebarPanel::osd && state.selected_row == 0) {
             if (state.osd_layout == "drone") {
                 state.osd_layout = "rocket";
@@ -1255,10 +1477,104 @@ void build_link_panel(UiState& state)
         &state);
 }
 
+void video_slider_changed(lv_event_t* event)
+{
+    auto* state = static_cast<UiState*>(lv_event_get_user_data(event));
+    auto* target = lv_event_get_target_obj(event);
+    if (state == nullptr || target == nullptr) {
+        return;
+    }
+    if (target == state->display_hz_slider) {
+        state->display_hz = static_cast<std::uint32_t>(lv_slider_get_value(target));
+    } else if (target == state->flow_fps_slider) {
+        state->flow_fps = static_cast<std::uint32_t>(lv_slider_get_value(target));
+    } else if (target == state->flow_scale_slider) {
+        state->flow_scale_percent = static_cast<std::uint32_t>(lv_slider_get_value(target));
+    }
+    sync_video_settings_controls(*state);
+    if (lv_event_get_code(event) == LV_EVENT_RELEASED) {
+        persist_device_settings_and_restart(*state);
+    }
+}
+
+void video_slider_row(
+    UiState& state,
+    const char* title,
+    lv_obj_t*& slider,
+    lv_obj_t*& value_label,
+    std::int32_t min,
+    std::int32_t max)
+{
+    const int row_index = state.row_count++;
+    auto* row = lv_obj_create(state.panel_body);
+    set_panel_style(row, state.focus_panel && state.selected_row == row_index ? 0x2d210e : 0x0f2130, LV_OPA_80);
+    lv_obj_set_style_radius(row, 6, 0);
+    lv_obj_set_style_border_width(row, state.focus_panel && state.selected_row == row_index ? 1 : 0, 0);
+    lv_obj_set_style_border_color(row, color(0xff8a00), 0);
+    lv_obj_set_size(row, LV_PCT(100), 68);
+    lv_obj_set_style_pad_left(row, 16, 0);
+    lv_obj_set_style_pad_right(row, 16, 0);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    auto* title_label = label(row, title, &lv_font_montserrat_14, 0xdce8f0);
+    lv_obj_set_width(title_label, LV_PCT(32));
+    slider = lv_slider_create(row);
+    lv_obj_set_width(slider, LV_PCT(36));
+    lv_slider_set_range(slider, min, max);
+    lv_obj_set_style_bg_color(slider, color(0x203040), 0);
+    lv_obj_set_style_bg_color(slider, color(0xff8a00), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(slider, color(0xebf5ff), LV_PART_KNOB);
+    lv_obj_add_event_cb(slider, video_slider_changed, LV_EVENT_VALUE_CHANGED, &state);
+    lv_obj_add_event_cb(slider, video_slider_changed, LV_EVENT_RELEASED, &state);
+
+    value_label = label(row, "", &lv_font_montserrat_14, 0xffd447);
+    lv_obj_set_width(value_label, LV_PCT(24));
+    lv_obj_set_style_text_align(value_label, LV_TEXT_ALIGN_RIGHT, 0);
+}
+
 void build_video_panel(UiState& state)
 {
     setup_panel_column(state.panel_body);
-    value_row(state, "Resolution", state.mavlink.resolution_fps);
+    auto* section = label(state.panel_body, "Video Mode", &lv_font_montserrat_18, 0xffffff);
+    lv_obj_set_width(section, LV_PCT(100));
+
+    const int resolution_row_index = state.row_count++;
+    auto* resolution_row = lv_obj_create(state.panel_body);
+    set_panel_style(resolution_row, state.focus_panel && state.selected_row == resolution_row_index ? 0x2d210e : 0x0f2130, LV_OPA_80);
+    lv_obj_set_style_radius(resolution_row, 6, 0);
+    lv_obj_set_style_border_width(resolution_row, state.focus_panel && state.selected_row == resolution_row_index ? 1 : 0, 0);
+    lv_obj_set_style_border_color(resolution_row, color(0xff8a00), 0);
+    lv_obj_set_size(resolution_row, LV_PCT(100), 62);
+    lv_obj_set_style_pad_left(resolution_row, 16, 0);
+    lv_obj_set_style_pad_right(resolution_row, 16, 0);
+    lv_obj_set_flex_flow(resolution_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(resolution_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    state.resolution_label = label(resolution_row, "1920 x 1080", &lv_font_montserrat_16, 0xdce8f0);
+    state.resolution_dropdown = lv_dropdown_create(resolution_row);
+    lv_dropdown_set_options(state.resolution_dropdown, "1920 x 1080\n1600 x 900\n1280 x 720\n960 x 540");
+    lv_obj_set_size(state.resolution_dropdown, 160, 38);
+    lv_obj_set_style_bg_color(state.resolution_dropdown, color(0x162a3a), 0);
+    lv_obj_set_style_text_color(state.resolution_dropdown, color(0xffffff), 0);
+    lv_obj_add_event_cb(
+        state.resolution_dropdown,
+        [](lv_event_t* event) {
+            auto* state = static_cast<UiState*>(lv_event_get_user_data(event));
+            set_resolution_preset(*state, lv_dropdown_get_selected(state->resolution_dropdown), true);
+        },
+        LV_EVENT_VALUE_CHANGED,
+        &state);
+
+    video_slider_row(state, "Display Hz", state.display_hz_slider, state.display_hz_label, 24, 120);
+    video_slider_row(state, "Flow FPS", state.flow_fps_slider, state.flow_fps_label, 15, 120);
+    video_slider_row(state, "Flow Scale", state.flow_scale_slider, state.flow_scale_label, 25, 100);
+
+    sync_video_settings_controls(state);
+
+    auto* current = label(state.panel_body, "Signal", &lv_font_montserrat_18, 0xffffff);
+    lv_obj_set_width(current, LV_PCT(100));
+    value_row(state, "Incoming", state.mavlink.resolution_fps);
     value_row(state, "Rotation", state.mavlink.rotation);
     value_row(state, "Codec", "H.264 RTP");
     value_row(state, "KMS Plane", "DMABUF scanout");
@@ -1367,6 +1683,14 @@ void clear_panel(UiState& state)
     state.osd_label = nullptr;
     state.theme_dropdowns.fill(nullptr);
     state.theme_labels.fill(nullptr);
+    state.resolution_dropdown = nullptr;
+    state.resolution_label = nullptr;
+    state.display_hz_slider = nullptr;
+    state.display_hz_label = nullptr;
+    state.flow_fps_slider = nullptr;
+    state.flow_fps_label = nullptr;
+    state.flow_scale_slider = nullptr;
+    state.flow_scale_label = nullptr;
     state.scan_bar = nullptr;
     state.scan_percent = nullptr;
     state.row_count = 0;
@@ -1875,6 +2199,7 @@ int main(int argc, char** argv)
     state.coordinates_enabled = glide::preview_control::coordinates_overlay_enabled();
     state.compact_readouts = glide::preview_control::compact_readouts_enabled();
     state.osd_layout = glide::preview_control::osd_layout();
+    load_device_settings(state);
     for (std::size_t i = 0; i < theme_keys.size(); ++i) {
         theme_color_ref(state, i) = glide::preview_control::theme_color(theme_keys[i]);
     }

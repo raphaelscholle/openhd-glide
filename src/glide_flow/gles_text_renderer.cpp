@@ -741,6 +741,15 @@ bool GlesTextRenderer::update_argb_texture(const void* pixels, std::uint32_t wid
 
 void GlesTextRenderer::draw_cached_argb_texture(RenderPoint top_left, SurfaceSize surface)
 {
+    draw_cached_argb_texture_scaled(
+        top_left,
+        static_cast<float>(image_texture_width_),
+        static_cast<float>(image_texture_height_),
+        surface);
+}
+
+void GlesTextRenderer::draw_cached_argb_texture_scaled(RenderPoint top_left, float width, float height, SurfaceSize surface)
+{
 #if OPENHD_GLIDE_HAS_GLESV2
     if (!image_texture_ready_ || image_texture_width_ == 0 || image_texture_height_ == 0) {
         return;
@@ -758,8 +767,8 @@ void GlesTextRenderer::draw_cached_argb_texture(RenderPoint top_left, SurfaceSiz
     glUniform1i(image_sampler_location_, 0);
     const auto x = top_left.x;
     const auto y = top_left.y;
-    const auto right = x + static_cast<float>(image_texture_width_);
-    const auto bottom = y + static_cast<float>(image_texture_height_);
+    const auto right = x + width;
+    const auto bottom = y + height;
     const std::array<GLfloat, 16> vertices {
         to_ndc_x(x, surface),
         to_ndc_y(y, surface),
@@ -781,6 +790,8 @@ void GlesTextRenderer::draw_cached_argb_texture(RenderPoint top_left, SurfaceSiz
     draw_textured_quad(image_position_location_, image_texcoord_location_, vertices);
 #else
     (void)top_left;
+    (void)width;
+    (void)height;
     (void)surface;
     last_error_ = "OpenGL ES 2.0 was not found at build time";
 #endif

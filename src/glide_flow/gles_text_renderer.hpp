@@ -68,6 +68,7 @@ public:
         SurfaceSize surface);
     bool update_argb_texture(const void* pixels, std::uint32_t width, std::uint32_t height, std::uint32_t stride_bytes);
     void draw_cached_argb_texture(RenderPoint top_left, SurfaceSize surface);
+    void draw_cached_argb_texture_scaled(RenderPoint top_left, float width, float height, SurfaceSize surface);
     void set_text_color(RgbaColor color);
     void draw(const TextPlacement& placement, SurfaceSize surface);
     float measure_text_width(std::string_view text, float scale);

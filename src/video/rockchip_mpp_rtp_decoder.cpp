@@ -104,12 +104,6 @@ bool RockchipMppRtpDecoder::poll(glide::dev::DmabufVideoFrame& frame)
         if (ready_frames_.empty()) {
             return false;
         }
-        while (ready_frames_.size() > 1) {
-            auto dropped = ready_frames_.front();
-            ready_frames_.pop_front();
-            release_frame(dropped);
-            ++dropped_decoded_frames_;
-        }
         selected = ready_frames_.front();
         ready_frames_.pop_front();
     }
