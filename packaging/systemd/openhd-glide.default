@@ -16,9 +16,9 @@ GLIDE_DISPLAY_HZ=120
 
 # Flow OSD overlay.
 GLIDE_FLOW=1
-# RK3566 VOP2 atomic Flow framebuffer publishes are expensive. Keep this
-# conservative by default so 120 Hz video stays above 100 Hz.
-GLIDE_FLOW_FPS=15
+# RK3566 VOP2 with the OpenHD kernel can sustain 60 Hz Flow while keeping
+# 120 Hz video above 100 Hz; lower this if a board regresses.
+GLIDE_FLOW_FPS=60
 # Render the GLES Flow overlay at a lower resolution and let the KMS plane scale
 # it to the display. 1.0 is native resolution; 0.5 reduces overlay bandwidth.
 GLIDE_FLOW_RENDER_SCALE=0.5
