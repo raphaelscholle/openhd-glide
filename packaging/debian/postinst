@@ -3,6 +3,9 @@ set -e
 
 SERVICE="openhd-glide.service"
 DEFAULTS="/etc/default/openhd-glide"
+ETC_UNIT="/etc/systemd/system/$SERVICE"
+OLD_SERVICE_RUN="/usr/local/lib/openhd-glide/openhd-glide-service-run"
+SERVICE_RUN="/usr/lib/openhd-glide/openhd-glide-service-run"
 
 is_enabled() {
   case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
@@ -17,6 +20,10 @@ is_enabled() {
 
 if [ "$1" = "configure" ]; then
   if command -v systemctl >/dev/null 2>&1; then
+    if [ -f "$ETC_UNIT" ] && [ -x "$SERVICE_RUN" ]; then
+      sed -i "s#^ExecStart=$OLD_SERVICE_RUN\$#ExecStart=$SERVICE_RUN#" "$ETC_UNIT"
+    fi
+
     if [ -d /run/systemd/system ]; then
       for obsolete_service in openhd-glide-autostart.service openhd-glide-stream.service openhd-video.service; do
         if systemctl list-unit-files "$obsolete_service" >/dev/null 2>&1; then

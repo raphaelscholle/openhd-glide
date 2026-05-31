@@ -28,6 +28,10 @@ project(openhd-glide
     LANGUAGES CXX
 )
 
+if(UNIX AND NOT APPLE AND CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+    set(CMAKE_INSTALL_PREFIX "/usr" CACHE PATH "Install prefix" FORCE)
+endif()
+
 include(FetchContent)
 include(GNUInstallDirs)
 
