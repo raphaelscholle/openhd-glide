@@ -24,6 +24,8 @@
 #include "video/rockchip_mpp_rtp_decoder.hpp"
 
 #if OPENHD_GLIDE_HAS_RKMPP
+#include "common/logging.hpp"
+
 #include <rockchip/rk_mpi.h>
 
 #include <arpa/inet.h>
@@ -232,6 +234,8 @@ bool RockchipMppRtpDecoder::configure_mpp()
     RK_U32 off {};
     RK_U32 on = 0xffff;
     if (mpi_ != nullptr && ctx_ != nullptr) {
+        auto output_format = static_cast<MppFrameFormat>(MPP_FMT_YUV420SP);
+        as_mpi(mpi_)->control(as_ctx(ctx_), MPP_DEC_SET_OUTPUT_FORMAT, &output_format);
         as_mpi(mpi_)->control(as_ctx(ctx_), MPP_DEC_SET_PARSER_SPLIT_MODE, &off);
         as_mpi(mpi_)->control(as_ctx(ctx_), MPP_DEC_SET_DISABLE_ERROR, &on);
         as_mpi(mpi_)->control(as_ctx(ctx_), MPP_DEC_SET_IMMEDIATE_OUT, &on);
@@ -321,6 +325,8 @@ bool RockchipMppRtpDecoder::handle_rtp_packet(const std::uint8_t* packet, std::s
                 if (sequence_delta < -1000 || timestamp_delta < -90000) {
                     ++rtp_sequence_resyncs_;
                     fragment_.clear();
+                    access_unit_.clear();
+                    have_access_unit_ = false;
                 } else {
                     ++late_or_duplicate_packets_;
                     return true;
@@ -329,6 +335,8 @@ bool RockchipMppRtpDecoder::handle_rtp_packet(const std::uint8_t* packet, std::s
             if (sequence_delta > 0) {
                 ++rtp_sequence_gaps_;
                 fragment_.clear();
+                access_unit_.clear();
+                have_access_unit_ = false;
             }
         }
         expected_sequence_ = static_cast<std::uint16_t>(sequence + 1U);
@@ -342,7 +350,7 @@ bool RockchipMppRtpDecoder::handle_rtp_packet(const std::uint8_t* packet, std::s
         : append_h264_payload(packet + offset, payload_size, marker, sequence, timestamp);
 }
 
-bool RockchipMppRtpDecoder::append_h264_payload(const std::uint8_t* payload, std::size_t size, bool, std::uint16_t, std::uint32_t timestamp)
+bool RockchipMppRtpDecoder::append_h264_payload(const std::uint8_t* payload, std::size_t size, bool marker, std::uint16_t, std::uint32_t timestamp)
 {
     if (size == 0) {
         return true;
@@ -350,7 +358,7 @@ bool RockchipMppRtpDecoder::append_h264_payload(const std::uint8_t* payload, std
 
     const auto nal_type = payload[0] & 0x1FU;
     if (nal_type >= 1 && nal_type <= 23) {
-        return submit_nal(payload, size, timestamp);
+        return queue_nal(payload, size, timestamp) && (!marker || flush_access_unit());
     }
     if (nal_type == 24) {
         std::size_t offset = 1;
@@ -360,12 +368,12 @@ bool RockchipMppRtpDecoder::append_h264_payload(const std::uint8_t* payload, std
             if (offset + nal_size > size) {
                 break;
             }
-            if (!submit_nal(payload + offset, nal_size, timestamp)) {
+            if (!queue_nal(payload + offset, nal_size, timestamp)) {
                 return false;
             }
             offset += nal_size;
         }
-        return true;
+        return !marker || flush_access_unit();
     }
     if (nal_type == 28 && size >= 2) {
         const auto fu_indicator = payload[0];
@@ -384,15 +392,15 @@ bool RockchipMppRtpDecoder::append_h264_payload(const std::uint8_t* payload, std
         }
         fragment_.insert(fragment_.end(), payload + 2, payload + size);
         if (end) {
-            const auto submitted = submit_nal(fragment_.data(), fragment_.size(), timestamp);
+            const auto submitted = queue_nal(fragment_.data(), fragment_.size(), timestamp);
             fragment_.clear();
-            return submitted;
+            return submitted && (!marker || flush_access_unit());
         }
     }
     return true;
 }
 
-bool RockchipMppRtpDecoder::append_h265_payload(const std::uint8_t* payload, std::size_t size, bool, std::uint16_t, std::uint32_t timestamp)
+bool RockchipMppRtpDecoder::append_h265_payload(const std::uint8_t* payload, std::size_t size, bool marker, std::uint16_t, std::uint32_t timestamp)
 {
     if (size < 2) {
         return true;
@@ -400,7 +408,7 @@ bool RockchipMppRtpDecoder::append_h265_payload(const std::uint8_t* payload, std
 
     const auto nal_type = (payload[0] >> 1U) & 0x3FU;
     if (nal_type <= 47) {
-        return submit_nal(payload, size, timestamp);
+        return queue_nal(payload, size, timestamp) && (!marker || flush_access_unit());
     }
     if (nal_type == 48) {
         std::size_t offset = 2;
@@ -410,12 +418,12 @@ bool RockchipMppRtpDecoder::append_h265_payload(const std::uint8_t* payload, std
             if (offset + nal_size > size) {
                 break;
             }
-            if (!submit_nal(payload + offset, nal_size, timestamp)) {
+            if (!queue_nal(payload + offset, nal_size, timestamp)) {
                 return false;
             }
             offset += nal_size;
         }
-        return true;
+        return !marker || flush_access_unit();
     }
     if (nal_type == 49 && size >= 3) {
         const auto fu_header = payload[2];
@@ -434,9 +442,9 @@ bool RockchipMppRtpDecoder::append_h265_payload(const std::uint8_t* payload, std
         }
         fragment_.insert(fragment_.end(), payload + 3, payload + size);
         if (end) {
-            const auto submitted = submit_nal(fragment_.data(), fragment_.size(), timestamp);
+            const auto submitted = queue_nal(fragment_.data(), fragment_.size(), timestamp);
             fragment_.clear();
-            return submitted;
+            return submitted && (!marker || flush_access_unit());
         }
     }
     return true;
@@ -460,6 +468,48 @@ bool RockchipMppRtpDecoder::submit_nal(const std::uint8_t* data, std::size_t siz
     append_start_code(annex_b);
     annex_b.insert(annex_b.end(), data, data + size);
     return submit_packet(annex_b.data(), annex_b.size(), pts);
+}
+
+bool RockchipMppRtpDecoder::queue_nal(const std::uint8_t* data, std::size_t size, std::uint32_t timestamp)
+{
+    if (data == nullptr || size == 0) {
+        return true;
+    }
+    if (have_access_unit_ && access_unit_timestamp_ != timestamp && !flush_access_unit()) {
+        return false;
+    }
+    if (!have_access_unit_) {
+        have_access_unit_ = true;
+        access_unit_timestamp_ = timestamp;
+        access_unit_.clear();
+    }
+
+    if (!h265_ && update_x20_detection(data, size) && !inject_x20_header_if_needed()) {
+        return false;
+    }
+
+    constexpr std::array<std::uint8_t, 4> prefix { 0x00, 0x00, 0x00, 0x01 };
+    if (size >= prefix.size() && std::equal(prefix.begin(), prefix.end(), data)) {
+        access_unit_.insert(access_unit_.end(), data, data + size);
+    } else {
+        access_unit_.insert(access_unit_.end(), prefix.begin(), prefix.end());
+        access_unit_.insert(access_unit_.end(), data, data + size);
+    }
+    return true;
+}
+
+bool RockchipMppRtpDecoder::flush_access_unit()
+{
+    if (!have_access_unit_ || access_unit_.empty()) {
+        have_access_unit_ = false;
+        access_unit_.clear();
+        return true;
+    }
+    const auto timestamp = access_unit_timestamp_;
+    const auto submitted = submit_packet(access_unit_.data(), access_unit_.size(), timestamp);
+    have_access_unit_ = false;
+    access_unit_.clear();
+    return submitted;
 }
 
 bool RockchipMppRtpDecoder::update_x20_detection(const std::uint8_t* data, std::size_t size)
@@ -642,12 +692,22 @@ bool RockchipMppRtpDecoder::frame_to_dmabuf(void* frame_ptr, glide::dev::DmabufV
     const auto hstride = static_cast<std::uint32_t>(mpp_frame_get_hor_stride(frame));
     const auto vstride = static_cast<std::uint32_t>(mpp_frame_get_ver_stride(frame));
     const auto fmt = mpp_frame_get_fmt(frame);
+    const auto base_fmt = static_cast<MppFrameFormat>(fmt & MPP_FRAME_FMT_MASK);
+    const auto fbc = static_cast<std::uint32_t>(fmt & MPP_FRAME_FBC_MASK);
+    const auto tiled = (fmt & MPP_FRAME_TILE_FLAG) != 0;
+    const auto buffer_size = static_cast<std::uint64_t>(mpp_frame_get_buf_size(frame));
     if (width == 0 || height == 0 || hstride == 0 || vstride == 0) {
         last_error_ = "MPP decoded frame has invalid dimensions";
         return false;
     }
-    if (fmt != MPP_FMT_YUV420SP) {
-        last_error_ = "MPP decoded frame format is not NV12";
+    if (base_fmt != MPP_FMT_YUV420SP || fbc != MPP_FRAME_FBC_NONE || tiled) {
+        std::ostringstream error;
+        error << "MPP decoded frame is not linear NV12"
+              << " fmt=0x" << std::hex << static_cast<std::uint32_t>(fmt)
+              << " base=0x" << static_cast<std::uint32_t>(base_fmt)
+              << " fbc=0x" << fbc
+              << " tiled=" << std::dec << (tiled ? 1 : 0);
+        last_error_ = error.str();
         return false;
     }
     out = {};
@@ -660,7 +720,31 @@ bool RockchipMppRtpDecoder::frame_to_dmabuf(void* frame_ptr, glide::dev::DmabufV
     out.strides[0] = hstride;
     out.strides[1] = hstride;
     out.offsets[0] = 0;
-    out.offsets[1] = hstride * vstride;
+    auto allocated_luma_height = vstride;
+    const auto nv12_height_from_size = hstride != 0 ? (buffer_size * 2U) / (static_cast<std::uint64_t>(hstride) * 3U) : 0U;
+    if (nv12_height_from_size > allocated_luma_height
+        && nv12_height_from_size >= height
+        && buffer_size == static_cast<std::uint64_t>(hstride) * nv12_height_from_size * 3U / 2U) {
+        allocated_luma_height = static_cast<std::uint32_t>(nv12_height_from_size);
+    }
+    out.offsets[1] = hstride * allocated_luma_height;
+    if (!logged_first_layout_) {
+        std::ostringstream layout;
+        layout << "first native RKMPP DMABUF layout"
+               << " fmt=0x" << std::hex << static_cast<std::uint32_t>(fmt)
+               << std::dec
+               << " width=" << width
+               << " height=" << height
+               << " hstride=" << hstride
+               << " vstride=" << vstride
+               << " buffer_size=" << buffer_size
+               << " fd=" << info.fd
+               << " drm_format=NV12"
+               << " allocated_luma_height=" << allocated_luma_height
+               << " offset_uv=" << out.offsets[1];
+        glide::log(glide::LogLevel::info, "OpenHD-Glide", layout.str());
+        logged_first_layout_ = true;
+    }
     return true;
 }
 

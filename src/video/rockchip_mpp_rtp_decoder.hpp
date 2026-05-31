@@ -59,6 +59,8 @@ private:
     bool append_h264_payload(const std::uint8_t* payload, std::size_t size, bool marker, std::uint16_t sequence, std::uint32_t timestamp);
     bool append_h265_payload(const std::uint8_t* payload, std::size_t size, bool marker, std::uint16_t sequence, std::uint32_t timestamp);
     bool submit_nal(const std::uint8_t* data, std::size_t size, std::int64_t pts);
+    bool queue_nal(const std::uint8_t* data, std::size_t size, std::uint32_t timestamp);
+    bool flush_access_unit();
     bool update_x20_detection(const std::uint8_t* data, std::size_t size);
     bool inject_x20_header_if_needed();
     bool submit_packet(const std::uint8_t* data, std::size_t size, std::int64_t pts);
@@ -98,7 +100,11 @@ private:
     bool x20_checked_non_x20_ {};
     bool x20_header_injected_ {};
     bool x20_header_missing_ {};
+    bool logged_first_layout_ {};
     std::vector<std::uint8_t> fragment_;
+    std::vector<std::uint8_t> access_unit_;
+    bool have_access_unit_ {};
+    std::uint32_t access_unit_timestamp_ {};
     std::string last_error_;
 };
 
