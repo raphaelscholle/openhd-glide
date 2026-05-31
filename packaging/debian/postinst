@@ -20,6 +20,11 @@ is_enabled() {
 
 if [ "$1" = "configure" ]; then
   if command -v systemctl >/dev/null 2>&1; then
+    if [ -x "$SERVICE_RUN" ]; then
+      mkdir -p "$(dirname "$OLD_SERVICE_RUN")"
+      ln -sfn "$SERVICE_RUN" "$OLD_SERVICE_RUN"
+    fi
+
     if [ -f "$ETC_UNIT" ] && [ -x "$SERVICE_RUN" ]; then
       sed -i "s#^ExecStart=$OLD_SERVICE_RUN\$#ExecStart=$SERVICE_RUN#" "$ETC_UNIT"
     fi

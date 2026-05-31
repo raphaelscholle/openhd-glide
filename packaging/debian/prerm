@@ -2,8 +2,13 @@
 set -e
 
 SERVICE="openhd-glide.service"
+OLD_SERVICE_RUN="/usr/local/lib/openhd-glide/openhd-glide-service-run"
 
 if [ "$1" = "remove" ] || [ "$1" = "deconfigure" ]; then
+  if [ -L "$OLD_SERVICE_RUN" ]; then
+    rm -f "$OLD_SERVICE_RUN"
+  fi
+
   if command -v systemctl >/dev/null 2>&1; then
     if [ -d /run/systemd/system ]; then
       systemctl stop "$SERVICE" >/dev/null 2>&1 || true
