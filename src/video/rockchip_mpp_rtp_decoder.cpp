@@ -720,14 +720,7 @@ bool RockchipMppRtpDecoder::frame_to_dmabuf(void* frame_ptr, glide::dev::DmabufV
     out.strides[0] = hstride;
     out.strides[1] = hstride;
     out.offsets[0] = 0;
-    auto allocated_luma_height = vstride;
-    const auto nv12_height_from_size = hstride != 0 ? (buffer_size * 2U) / (static_cast<std::uint64_t>(hstride) * 3U) : 0U;
-    if (nv12_height_from_size > allocated_luma_height
-        && nv12_height_from_size >= height
-        && buffer_size == static_cast<std::uint64_t>(hstride) * nv12_height_from_size * 3U / 2U) {
-        allocated_luma_height = static_cast<std::uint32_t>(nv12_height_from_size);
-    }
-    out.offsets[1] = hstride * allocated_luma_height;
+    out.offsets[1] = hstride * vstride;
     if (!logged_first_layout_) {
         std::ostringstream layout;
         layout << "first native RKMPP DMABUF layout"
@@ -740,7 +733,7 @@ bool RockchipMppRtpDecoder::frame_to_dmabuf(void* frame_ptr, glide::dev::DmabufV
                << " buffer_size=" << buffer_size
                << " fd=" << info.fd
                << " drm_format=NV12"
-               << " allocated_luma_height=" << allocated_luma_height
+               << " luma_height=" << vstride
                << " offset_uv=" << out.offsets[1];
         glide::log(glide::LogLevel::info, "OpenHD-Glide", layout.str());
         logged_first_layout_ = true;

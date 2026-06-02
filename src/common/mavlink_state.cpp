@@ -225,13 +225,25 @@ bool is_osd_telemetry_line(const std::string& line)
         return false;
     }
 
+    if (key == "alive") {
+        std::string target;
+        int alive {};
+        stream >> target >> alive;
+        return alive != 0 && (target == "air" || target == "fc");
+    }
+
     return key == "attitude"
         || key == "position"
         || key == "speed"
         || key == "battery"
         || key == "gps"
         || key == "link"
-        || key == "rc";
+        || key == "rc"
+        || key == "armed"
+        || key == "mode"
+        || key == "param"
+        || key == "status"
+        || key == "message";
 }
 
 std::string format_action_set_param(const std::string& target, const std::string& param, const std::string& value)
