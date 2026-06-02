@@ -215,6 +215,25 @@ bool apply_ipc_line(Snapshot& snapshot, const std::string& line)
     return false;
 }
 
+bool is_osd_telemetry_line(const std::string& line)
+{
+    std::istringstream stream(line);
+    std::string prefix;
+    std::string key;
+    stream >> prefix >> key;
+    if (prefix != "mav") {
+        return false;
+    }
+
+    return key == "attitude"
+        || key == "position"
+        || key == "speed"
+        || key == "battery"
+        || key == "gps"
+        || key == "link"
+        || key == "rc";
+}
+
 std::string format_action_set_param(const std::string& target, const std::string& param, const std::string& value)
 {
     return "mav set " + target + " " + param + " " + value;

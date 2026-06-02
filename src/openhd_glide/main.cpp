@@ -23,6 +23,7 @@
 
 #include "common/logging.hpp"
 #include "common/ipc.hpp"
+#include "common/mavlink_state.hpp"
 #include "common/mavlink_udp_bridge.hpp"
 #include "common/preview_control.hpp"
 #include "dev/kms_atomic_compositor.hpp"
@@ -34,7 +35,6 @@
 #include "glide_flow/link_overview.hpp"
 #include "glide_flow/osd_theme.hpp"
 #include "glide_flow/performance_horizon.hpp"
-#include "glide_flow/simulated_attitude.hpp"
 #include "glide_flow/speed_widget.hpp"
 #include "platform/core_assignment.hpp"
 #include "platform/cpu_topology.hpp"
@@ -53,6 +53,7 @@
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -190,6 +191,27 @@ void draw_connecting_indicator(
         surface);
 }
 
+glide::flow::LinkOverviewSample link_sample_from_mavlink(const glide::mavlink::Snapshot& mavlink, bool show_coordinates)
+{
+    glide::flow::LinkOverviewSample sample;
+    sample.show_coordinates = show_coordinates && mavlink.position_valid;
+    sample.armed = mavlink.armed;
+    sample.frequency_mhz = mavlink.frequency_mhz;
+    sample.mcs = mavlink.mcs_index;
+    sample.air_voltage_v = mavlink.battery_valid ? mavlink.voltage_v : 0.0F;
+    sample.air_speed_mps = mavlink.speed_valid
+        ? (mavlink.airspeed_mps > 0.0F ? mavlink.airspeed_mps : mavlink.ground_speed_mps)
+        : 0.0F;
+    sample.height_m = mavlink.altitude_valid ? mavlink.altitude_m : 0.0F;
+    sample.satellites = mavlink.satellites;
+    sample.flight_mode = mavlink.flight_mode != "N/A" ? mavlink.flight_mode.c_str() : nullptr;
+    if (mavlink.position_valid) {
+        sample.latitude_deg = mavlink.latitude_deg;
+        sample.longitude_deg = mavlink.longitude_deg;
+    }
+    return sample;
+}
+
 void send_theme_state(glide::ipc::Server& ipc_server, int client_id)
 {
     for (const auto* key : { "bar_text", "bar_background", "primary", "secondary" }) {
@@ -284,12 +306,23 @@ void send_initial_control_state(glide::ipc::Server& ipc_server, int client_id, c
     send_theme_state(ipc_server, client_id);
 }
 
-bool poll_runtime_controls(glide::ipc::Server& ipc_server, glide::mavlink::UdpBridge& mavlink_bridge, RuntimeControlState& state)
+bool poll_runtime_controls(
+    glide::ipc::Server& ipc_server,
+    glide::mavlink::UdpBridge& mavlink_bridge,
+    RuntimeControlState& state,
+    glide::mavlink::Snapshot& mavlink)
 {
     bool received_mavlink {};
     for (const auto& line : mavlink_bridge.poll()) {
         if (line.rfind("mav ", 0) == 0) {
-            received_mavlink = true;
+            std::istringstream state_lines(line);
+            std::string state_line;
+            while (std::getline(state_lines, state_line)) {
+                glide::mavlink::apply_ipc_line(mavlink, state_line);
+                if (glide::mavlink::is_osd_telemetry_line(state_line)) {
+                    received_mavlink = true;
+                }
+            }
         }
         ipc_server.broadcast_line(line);
     }
@@ -970,20 +1003,14 @@ int run_kms_video_preview(const Options& options)
     };
 
     glide::flow::GlesTextRenderer flow_renderer;
-    glide::flow::FpsOverlay flow_fps_overlay;
     glide::flow::AltitudeWidgetRenderer altitude_widget;
-    glide::flow::SimulatedAltitude simulated_altitude;
     glide::flow::SpeedWidgetRenderer speed_widget;
-    glide::flow::SimulatedSpeed simulated_speed;
     glide::flow::LinkOverviewRenderer link_overview;
-    glide::flow::SimulatedLinkOverview simulated_link;
     glide::flow::PerformanceHorizon performance_horizon;
-    glide::flow::SimulatedAttitude simulated_attitude;
     std::atomic<double> video_plane_fps { 0.0 };
     std::atomic<bool> video_signal_present { false };
     std::atomic<bool> telemetry_signal_present { false };
     auto flow_surface = use_atomic_kms ? compositor.surface_size() : glide::flow::SurfaceSize { options.preview_width, options.flow_height };
-    auto flow_fps_placement = flow_fps_overlay.layout(0.0, flow_surface);
     bool flow_runtime_logged {};
     bool ui_buffer_logged_ready {};
     constexpr auto ui_buffer_interval = std::chrono::milliseconds(16);
@@ -999,6 +1026,8 @@ int run_kms_video_preview(const Options& options)
     ScopedThreadJoin async_flow_join { async_flow_thread };
     ScopedThreadJoin ui_buffer_join { ui_buffer_thread };
     RuntimeControlState control_state;
+    glide::mavlink::Snapshot mavlink_snapshot;
+    std::mutex mavlink_snapshot_mutex;
     glide::ipc::Server ipc_server;
     const bool ipc_enabled = ipc_server.listen_on(options.ipc_socket);
     if (!ipc_enabled) {
@@ -1009,7 +1038,8 @@ int run_kms_video_preview(const Options& options)
     const auto poll_control = [&]() {
         if (ipc_enabled) {
             const auto now = std::chrono::steady_clock::now();
-            if (poll_runtime_controls(ipc_server, mavlink_bridge, control_state)) {
+            std::lock_guard<std::mutex> lock(mavlink_snapshot_mutex);
+            if (poll_runtime_controls(ipc_server, mavlink_bridge, control_state, mavlink_snapshot)) {
                 last_telemetry_time = now;
                 telemetry_signal_present.store(true, std::memory_order_relaxed);
             } else if (last_telemetry_time != std::chrono::steady_clock::time_point {}
@@ -1037,8 +1067,6 @@ int run_kms_video_preview(const Options& options)
             flow_runtime_logged = true;
         }
 
-        flow_fps_placement = flow_fps_overlay.layout(video_plane_fps.load(), flow_surface);
-
         flow_renderer.clear(0.0F, 0.0F, 0.0F, 0.0F, flow_surface);
         if (options.flow_debug_solid) {
             flow_renderer.draw_filled_quad(
@@ -1056,24 +1084,40 @@ int run_kms_video_preview(const Options& options)
             if (!has_telemetry) {
                 draw_connecting_indicator(flow_renderer, flow_surface, theme, std::chrono::steady_clock::now());
             } else {
-                auto link_sample = simulated_link.sample();
-                link_sample.show_coordinates = glide::preview_control::coordinates_overlay_enabled();
+                glide::mavlink::Snapshot mavlink;
+                {
+                    std::lock_guard<std::mutex> lock(mavlink_snapshot_mutex);
+                    mavlink = mavlink_snapshot;
+                }
+                const auto link_sample = link_sample_from_mavlink(mavlink, glide::preview_control::coordinates_overlay_enabled());
                 flow_renderer.set_text_color(theme.primary);
                 link_overview.draw(flow_renderer, flow_surface, link_sample, theme);
                 performance_horizon.draw(
                     flow_renderer,
                     flow_surface,
-                    simulated_attitude.sample(),
+                    glide::flow::AttitudeSample {
+                        .roll_degrees = mavlink.attitude_valid ? mavlink.roll_degrees : 0.0F,
+                        .pitch_degrees = mavlink.attitude_valid ? mavlink.pitch_degrees : 0.0F,
+                    },
                     glide::flow::WindSample {
                         .direction_degrees = link_sample.wind_direction_deg,
                         .speed_mps = link_sample.wind_speed_mps,
-                        .valid = true,
+                        .valid = false,
                     },
                     theme);
                 const auto compact_readouts = glide::preview_control::compact_readouts_enabled();
-                speed_widget.draw(flow_renderer, flow_surface, simulated_speed.sample(), theme, compact_readouts);
-                altitude_widget.draw(flow_renderer, flow_surface, simulated_altitude.sample(), theme, compact_readouts);
-                flow_renderer.draw(flow_fps_placement, flow_surface);
+                speed_widget.draw(
+                    flow_renderer,
+                    flow_surface,
+                    glide::flow::SpeedSample { .speed_mps = mavlink.speed_valid ? mavlink.ground_speed_mps : 0.0F },
+                    theme,
+                    compact_readouts);
+                altitude_widget.draw(
+                    flow_renderer,
+                    flow_surface,
+                    glide::flow::AltitudeSample { .altitude_m = mavlink.altitude_valid ? mavlink.altitude_m : 0.0F },
+                    theme,
+                    compact_readouts);
                 if (!has_video) {
                     draw_connecting_indicator(flow_renderer, flow_surface, theme, std::chrono::steady_clock::now(), "WAITING FOR VIDEO");
                 }
@@ -1183,6 +1227,8 @@ int run_kms_video_preview(const Options& options)
                                              &video_plane_fps,
                                              &video_signal_present,
                                              &telemetry_signal_present,
+                                             &mavlink_snapshot,
+                                             &mavlink_snapshot_mutex,
                                              flow_frame_interval,
                                              flow_fps = options.flow_fps,
                                              flow_overlay = options.flow_overlay,
@@ -1221,17 +1267,11 @@ int run_kms_video_preview(const Options& options)
 
             {
                 glide::flow::GlesTextRenderer renderer;
-                glide::flow::FpsOverlay fps_overlay;
                 glide::flow::AltitudeWidgetRenderer altitude;
-                glide::flow::SimulatedAltitude simulated_altitude;
                 glide::flow::SpeedWidgetRenderer speed;
-                glide::flow::SimulatedSpeed simulated_speed;
                 glide::flow::LinkOverviewRenderer links;
-                glide::flow::SimulatedLinkOverview simulated_link;
                 glide::flow::PerformanceHorizon horizon;
-                glide::flow::SimulatedAttitude simulated_attitude;
                 auto surface = compositor.surface_size();
-                auto fps_placement = fps_overlay.layout(0.0, surface);
                 bool runtime_logged {};
                 bool scanout_published {};
                 bool ui_buffer_logged_ready {};
@@ -1253,8 +1293,6 @@ int run_kms_video_preview(const Options& options)
                         runtime_logged = true;
                     }
 
-                    fps_placement = fps_overlay.layout(video_plane_fps.load(), surface);
-
                     renderer.clear(0.0F, 0.0F, 0.0F, 0.0F, surface);
                     if (flow_debug_solid) {
                         renderer.draw_filled_quad(
@@ -1272,24 +1310,40 @@ int run_kms_video_preview(const Options& options)
                         if (!has_telemetry) {
                             draw_connecting_indicator(renderer, surface, theme, std::chrono::steady_clock::now());
                         } else {
-                            auto link_sample = simulated_link.sample();
-                            link_sample.show_coordinates = glide::preview_control::coordinates_overlay_enabled();
+                            glide::mavlink::Snapshot mavlink;
+                            {
+                                std::lock_guard<std::mutex> lock(mavlink_snapshot_mutex);
+                                mavlink = mavlink_snapshot;
+                            }
+                            const auto link_sample = link_sample_from_mavlink(mavlink, glide::preview_control::coordinates_overlay_enabled());
                             renderer.set_text_color(theme.primary);
                             links.draw(renderer, surface, link_sample, theme);
                             horizon.draw(
                                 renderer,
                                 surface,
-                                simulated_attitude.sample(),
+                                glide::flow::AttitudeSample {
+                                    .roll_degrees = mavlink.attitude_valid ? mavlink.roll_degrees : 0.0F,
+                                    .pitch_degrees = mavlink.attitude_valid ? mavlink.pitch_degrees : 0.0F,
+                                },
                                 glide::flow::WindSample {
                                     .direction_degrees = link_sample.wind_direction_deg,
                                     .speed_mps = link_sample.wind_speed_mps,
-                                    .valid = true,
+                                    .valid = false,
                                 },
                                 theme);
                             const auto compact_readouts = glide::preview_control::compact_readouts_enabled();
-                            speed.draw(renderer, surface, simulated_speed.sample(), theme, compact_readouts);
-                            altitude.draw(renderer, surface, simulated_altitude.sample(), theme, compact_readouts);
-                            renderer.draw(fps_placement, surface);
+                            speed.draw(
+                                renderer,
+                                surface,
+                                glide::flow::SpeedSample { .speed_mps = mavlink.speed_valid ? mavlink.ground_speed_mps : 0.0F },
+                                theme,
+                                compact_readouts);
+                            altitude.draw(
+                                renderer,
+                                surface,
+                                glide::flow::AltitudeSample { .altitude_m = mavlink.altitude_valid ? mavlink.altitude_m : 0.0F },
+                                theme,
+                                compact_readouts);
                             if (!has_video) {
                                 draw_connecting_indicator(renderer, surface, theme, std::chrono::steady_clock::now(), "WAITING FOR VIDEO");
                             }

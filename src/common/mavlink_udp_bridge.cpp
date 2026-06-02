@@ -157,15 +157,12 @@ std::optional<std::string> decode_frame(const Frame& frame)
     }
     case 22: {
         const auto value = read_float(p, 0);
-        const auto count = read_le<std::uint16_t>(p, 4);
-        const auto index = read_le<std::uint16_t>(p, 6);
         const auto name = c_string(p, 8, 16);
         if (!name.empty()) {
             line << "mav param auto " << name << ' ' << value;
             return line.str();
         }
-        line << "mav message PARAM_VALUE " << index << "/" << count;
-        return line.str();
+        break;
     }
     case 24: {
         const auto lat = read_le<std::int32_t>(p, 8);
@@ -216,10 +213,6 @@ std::optional<std::string> decode_frame(const Frame& frame)
         break;
     }
     default:
-        if (frame.msgid >= 24000) {
-            line << "mav message OpenHD/custom msgid=" << frame.msgid << " sys=" << static_cast<int>(frame.sysid) << " comp=" << static_cast<int>(frame.compid) << " len=" << p.size();
-            return line.str();
-        }
         break;
     }
     return std::nullopt;

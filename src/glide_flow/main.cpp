@@ -37,13 +37,13 @@
 #include "glide_flow/performance_horizon.hpp"
 #include "glide_flow/rocket_osd.hpp"
 #include "glide_flow/rover_osd.hpp"
-#include "glide_flow/simulated_attitude.hpp"
 #include "glide_flow/speed_widget.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <csignal>
 #include <cstdint>
-#include <iostream>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -127,14 +127,6 @@ Options parse_options(int argc, char** argv)
     return options;
 }
 
-std::string describe_placement(const glide::flow::TextPlacement& placement)
-{
-    std::ostringstream stream;
-    stream << "FPS overlay '" << placement.text << "' at x=" << placement.x
-           << " y=" << placement.y << " scale=" << placement.scale;
-    return stream.str();
-}
-
 glide::flow::RgbaColor color_from_rgb(std::uint32_t rgb, float alpha)
 {
     return glide::flow::RgbaColor {
@@ -155,6 +147,72 @@ glide::flow::OsdTheme load_theme()
     };
 }
 
+void draw_connecting_indicator(
+    glide::flow::GlesTextRenderer& renderer,
+    glide::flow::SurfaceSize surface,
+    const glide::flow::OsdTheme& theme,
+    std::chrono::steady_clock::time_point now)
+{
+    if (surface.width == 0 || surface.height == 0) {
+        return;
+    }
+
+    constexpr float pi = 3.14159265358979323846F;
+    const auto scale = std::max(0.80F, std::min(
+        static_cast<float>(surface.width) / 1280.0F,
+        static_cast<float>(surface.height) / 720.0F));
+    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+    const auto dot_count = static_cast<int>((elapsed_ms / 450) % 4);
+    std::string text = "CONNECTING";
+    text.append(static_cast<std::size_t>(dot_count), '.');
+
+    const auto text_scale = 22.0F * scale;
+    const auto text_width = renderer.measure_text_width(text, text_scale);
+    const auto panel_width = std::max(330.0F * scale, text_width + 108.0F * scale);
+    const auto panel_height = 92.0F * scale;
+    const auto panel_x = (static_cast<float>(surface.width) - panel_width) * 0.5F;
+    const auto panel_y = (static_cast<float>(surface.height) - panel_height) * 0.5F;
+    const auto center_y = panel_y + (panel_height * 0.5F);
+
+    renderer.draw_filled_quad(
+        { panel_x, panel_y },
+        { panel_x + panel_width, panel_y },
+        { panel_x, panel_y + panel_height },
+        { panel_x + panel_width, panel_y + panel_height },
+        { .red = 0.0F, .green = 0.0F, .blue = 0.0F, .alpha = 0.42F },
+        surface);
+
+    const auto spinner_center = glide::flow::RenderPoint {
+        .x = panel_x + 48.0F * scale,
+        .y = center_y,
+    };
+    const auto spinner_radius = 18.0F * scale;
+    const auto phase = static_cast<int>((elapsed_ms / 85) % 12);
+    for (int i = 0; i < 12; ++i) {
+        const auto age = (i - phase + 12) % 12;
+        const auto alpha = 0.18F + (static_cast<float>(11 - age) / 11.0F) * 0.70F;
+        const auto angle = (static_cast<float>(i) / 12.0F) * 2.0F * pi;
+        const auto inner = spinner_radius * 0.55F;
+        const auto outer = spinner_radius;
+        renderer.draw_line(
+            { spinner_center.x + std::cos(angle) * inner, spinner_center.y + std::sin(angle) * inner },
+            { spinner_center.x + std::cos(angle) * outer, spinner_center.y + std::sin(angle) * outer },
+            3.0F * scale,
+            { .red = theme.primary.red, .green = theme.primary.green, .blue = theme.primary.blue, .alpha = alpha },
+            surface);
+    }
+
+    renderer.set_text_color(theme.text);
+    renderer.draw(
+        glide::flow::TextPlacement {
+            .text = text,
+            .x = panel_x + 82.0F * scale,
+            .y = center_y + (text_scale * 0.36F),
+            .scale = text_scale,
+        },
+        surface);
+}
+
 bool apply_theme_line(const std::string& line)
 {
     if (line.rfind("state theme ", 0) != 0) {
@@ -173,6 +231,27 @@ bool apply_theme_line(const std::string& line)
     return true;
 }
 
+glide::flow::LinkOverviewSample link_sample_from_mavlink(const glide::mavlink::Snapshot& mavlink, bool show_coordinates)
+{
+    glide::flow::LinkOverviewSample sample;
+    sample.show_coordinates = show_coordinates && mavlink.position_valid;
+    sample.armed = mavlink.armed;
+    sample.frequency_mhz = mavlink.frequency_mhz;
+    sample.mcs = mavlink.mcs_index;
+    sample.air_voltage_v = mavlink.battery_valid ? mavlink.voltage_v : 0.0F;
+    sample.air_speed_mps = mavlink.speed_valid
+        ? (mavlink.airspeed_mps > 0.0F ? mavlink.airspeed_mps : mavlink.ground_speed_mps)
+        : 0.0F;
+    sample.height_m = mavlink.altitude_valid ? mavlink.altitude_m : 0.0F;
+    sample.satellites = mavlink.satellites;
+    sample.flight_mode = mavlink.flight_mode != "N/A" ? mavlink.flight_mode.c_str() : nullptr;
+    if (mavlink.position_valid) {
+        sample.latitude_deg = mavlink.latitude_deg;
+        sample.longitude_deg = mavlink.longitude_deg;
+    }
+    return sample;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -185,25 +264,21 @@ int main(int argc, char** argv)
     glide::flow::FpsOverlay fps_overlay;
     glide::flow::GlesTextRenderer renderer;
     glide::flow::AltitudeWidgetRenderer altitude_widget;
-    glide::flow::SimulatedAltitude simulated_altitude;
     glide::flow::SpeedWidgetRenderer speed_widget;
-    glide::flow::SimulatedSpeed simulated_speed;
     glide::flow::LinkOverviewRenderer link_overview;
-    glide::flow::SimulatedLinkOverview simulated_link;
     glide::flow::PerformanceHorizon performance_horizon;
-    glide::flow::SimulatedAttitude simulated_attitude;
     glide::flow::RocketOsdRenderer rocket_osd;
-    glide::flow::SimulatedRocketOsd simulated_rocket;
     glide::flow::RoverOsdRenderer rover_osd;
-    glide::flow::SimulatedRoverOsd simulated_rover;
     glide::flow::NavalOsdRenderer naval_osd;
-    glide::flow::SimulatedNavalOsd simulated_naval;
     glide::dev::KmsGlesWindow kms_window;
     glide::dev::SdlGlesWindow preview_window;
     glide::ipc::Client ipc;
     glide::mavlink::Snapshot mavlink;
     bool coordinates_enabled = glide::preview_control::coordinates_overlay_enabled();
     bool compact_readouts = glide::preview_control::compact_readouts_enabled();
+    bool telemetry_seen {};
+    auto last_telemetry_time = std::chrono::steady_clock::time_point {};
+    constexpr auto telemetry_signal_timeout = std::chrono::milliseconds(1500);
     std::string osd_layout = glide::preview_control::osd_layout();
     auto theme = load_theme();
     constexpr bool fps_overlay_enabled = false;
@@ -252,7 +327,7 @@ int main(int argc, char** argv)
         ipc.send_line("hello glide-flow");
         ipc.send_line("status glide-flow ready");
     } else {
-        glide::log(glide::LogLevel::warning, "GlideFlow", "IPC controller unavailable; using preview fallback state");
+        glide::log(glide::LogLevel::warning, "GlideFlow", "IPC controller unavailable; waiting for telemetry");
     }
     if (options.render_gles && !renderer.available()) {
         glide::log(glide::LogLevel::warning, "GlideFlow", "OpenGL ES renderer unavailable; running layout path only");
@@ -275,6 +350,7 @@ int main(int argc, char** argv)
         if (options.preview && !preview_window.poll()) {
             break;
         }
+        const auto now = std::chrono::steady_clock::now();
         if (ipc.connected()) {
             for (const auto& line : ipc.poll_lines()) {
                 if (line == "state coords 0" || line == "state coords 1") {
@@ -289,7 +365,15 @@ int main(int argc, char** argv)
                 } else if (apply_theme_line(line)) {
                     theme = load_theme();
                 } else {
-                    glide::mavlink::apply_ipc_line(mavlink, line);
+                    std::istringstream state_lines(line);
+                    std::string state_line;
+                    while (std::getline(state_lines, state_line)) {
+                        const bool applied = glide::mavlink::apply_ipc_line(mavlink, state_line);
+                        if (applied && glide::mavlink::is_osd_telemetry_line(state_line)) {
+                            telemetry_seen = true;
+                            last_telemetry_time = now;
+                        }
+                    }
                 }
             }
         } else {
@@ -298,12 +382,14 @@ int main(int argc, char** argv)
             osd_layout = glide::preview_control::osd_layout();
             theme = load_theme();
         }
+        if (last_telemetry_time != std::chrono::steady_clock::time_point {} && now - last_telemetry_time >= telemetry_signal_timeout) {
+            telemetry_seen = false;
+        }
 
         options.surface = options.preview ? preview_window.surface_size() : options.surface;
         const auto fps = fps_counter.frame();
         if (fps) {
             placement = fps_overlay.layout(*fps, options.surface);
-            std::cout << describe_placement(placement) << '\n';
             if (ipc.connected()) {
                 ipc.send_line("status glide-flow fps " + std::to_string(*fps));
             }
@@ -311,73 +397,59 @@ int main(int argc, char** argv)
 
         if (options.render_gles && renderer.available()) {
             renderer.clear(0.02F, 0.02F, 0.025F, 1.0F, options.surface);
-            renderer.set_text_color(theme.primary);
-            auto link_sample = simulated_link.sample();
-            link_sample.show_coordinates = coordinates_enabled;
-            link_sample.armed = mavlink.armed;
-            if (mavlink.flight_mode != "N/A") {
-                link_sample.flight_mode = mavlink.flight_mode.c_str();
-            }
-            if (mavlink.position_valid) {
-                link_sample.latitude_deg = mavlink.latitude_deg;
-                link_sample.longitude_deg = mavlink.longitude_deg;
-                link_sample.height_m = mavlink.altitude_m;
-            }
-            if (mavlink.speed_valid) {
-                link_sample.air_speed_mps = mavlink.airspeed_mps > 0.0F ? mavlink.airspeed_mps : mavlink.ground_speed_mps;
-            }
-            if (mavlink.battery_valid) {
-                link_sample.air_voltage_v = mavlink.voltage_v;
-            }
-            if (mavlink.satellites > 0) {
-                link_sample.satellites = mavlink.satellites;
-            }
-            if (osd_layout == "rocket") {
-                link_overview.draw_top(renderer, options.surface, link_sample, theme);
-                rocket_osd.draw(renderer, options.surface, simulated_rocket.sample(), theme);
-            } else if (osd_layout == "rover") {
-                link_overview.draw(renderer, options.surface, link_sample, theme);
-                rover_osd.draw(renderer, options.surface, simulated_rover.sample(), theme);
-            } else if (osd_layout == "ship") {
-                link_overview.draw(renderer, options.surface, link_sample, theme);
-                naval_osd.draw(renderer, options.surface, simulated_naval.sample(), theme);
+            if (!telemetry_seen) {
+                draw_connecting_indicator(renderer, options.surface, theme, std::chrono::steady_clock::now());
             } else {
-                link_overview.draw(renderer, options.surface, link_sample, theme);
-                const auto attitude_sample = mavlink.attitude_valid
-                    ? glide::flow::AttitudeSample { .roll_degrees = mavlink.roll_degrees, .pitch_degrees = mavlink.pitch_degrees }
-                    : simulated_attitude.sample();
-                performance_horizon.draw(
-                    renderer,
-                    options.surface,
-                    attitude_sample,
-                    glide::flow::WindSample {
-                        .direction_degrees = link_sample.wind_direction_deg,
-                        .speed_mps = link_sample.wind_speed_mps,
-                        .valid = true,
-                    },
-                    theme);
-                const auto speed_sample = mavlink.speed_valid
-                    ? glide::flow::SpeedSample { .speed_mps = mavlink.ground_speed_mps }
-                    : simulated_speed.sample();
-                const auto altitude_sample = mavlink.altitude_valid
-                    ? glide::flow::AltitudeSample { .altitude_m = mavlink.altitude_m }
-                    : simulated_altitude.sample();
-                speed_widget.draw(renderer, options.surface, speed_sample, theme, compact_readouts);
-                altitude_widget.draw(renderer, options.surface, altitude_sample, theme, compact_readouts);
-            }
-            if (fps_overlay_enabled) {
-                renderer.draw(placement, options.surface);
-            }
-            if (mavlink.message_count > 0) {
-                const auto& latest = mavlink.messages[mavlink.message_count - 1U];
-                renderer.draw(
-                    glide::flow::TextPlacement {
-                        .text = latest,
-                        .x = 28.0F,
-                        .y = static_cast<float>(options.surface.height) - 92.0F,
-                        .scale = 20.0F,
-                    },
-                    options.surface);
+                renderer.set_text_color(theme.primary);
+                const auto link_sample = link_sample_from_mavlink(mavlink, coordinates_enabled);
+                if (osd_layout == "rocket") {
+                    link_overview.draw_top(renderer, options.surface, link_sample, theme);
+                    rocket_osd.draw(renderer, options.surface, glide::flow::RocketOsdSample {}, theme);
+                } else if (osd_layout == "rover") {
+                    link_overview.draw(renderer, options.surface, link_sample, theme);
+                    rover_osd.draw(
+                        renderer,
+                        options.surface,
+                        glide::flow::RoverOsdSample { .speed_kmh = mavlink.speed_valid ? mavlink.ground_speed_mps * 3.6F : 0.0F, .heading_degrees = mavlink.attitude_valid ? mavlink.yaw_degrees : 0.0F },
+                        theme);
+                } else if (osd_layout == "ship") {
+                    link_overview.draw(renderer, options.surface, link_sample, theme);
+                    naval_osd.draw(
+                        renderer,
+                        options.surface,
+                        glide::flow::NavalOsdSample { .heading_degrees = mavlink.attitude_valid ? mavlink.yaw_degrees : 0.0F },
+                        theme);
+                } else {
+                    link_overview.draw(renderer, options.surface, link_sample, theme);
+                    performance_horizon.draw(
+                        renderer,
+                        options.surface,
+                        glide::flow::AttitudeSample {
+                            .roll_degrees = mavlink.attitude_valid ? mavlink.roll_degrees : 0.0F,
+                            .pitch_degrees = mavlink.attitude_valid ? mavlink.pitch_degrees : 0.0F,
+                        },
+                        glide::flow::WindSample {
+                            .direction_degrees = link_sample.wind_direction_deg,
+                            .speed_mps = link_sample.wind_speed_mps,
+                            .valid = false,
+                        },
+                        theme);
+                    speed_widget.draw(
+                        renderer,
+                        options.surface,
+                        glide::flow::SpeedSample { .speed_mps = mavlink.speed_valid ? mavlink.ground_speed_mps : 0.0F },
+                        theme,
+                        compact_readouts);
+                    altitude_widget.draw(
+                        renderer,
+                        options.surface,
+                        glide::flow::AltitudeSample { .altitude_m = mavlink.altitude_valid ? mavlink.altitude_m : 0.0F },
+                        theme,
+                        compact_readouts);
+                }
+                if (fps_overlay_enabled) {
+                    renderer.draw(placement, options.surface);
+                }
             }
         }
 
