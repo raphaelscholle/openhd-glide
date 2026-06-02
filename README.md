@@ -194,7 +194,7 @@ Native Cedar remains available only through the explicit `--native-cedar-video` 
 Example run scripts cover the current device modes. Each script takes the UDP video port as its first optional
 argument, defaulting to `5600`; GStreamer/view scripts default to H.264 and take `h264` or `h265` as the second optional argument.
 Set `GLIDE_WIDTH` and `GLIDE_HEIGHT` to override the default `1920x1080`.
-Device KMS scripts default to `GLIDE_DISPLAY_HZ=120`; override it if the panel should use a different mode.
+Device KMS scripts default to `GLIDE_DISPLAY_HZ=0`, which auto-selects the highest refresh mode exposed by the connected display. Set `GLIDE_DISPLAY_HZ` to a non-zero value to request a specific refresh rate.
 
 ```sh
 # Native Rockchip MPP decode, fastest RK3566/RK3568 video-only path.

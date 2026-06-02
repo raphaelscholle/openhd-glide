@@ -12,7 +12,8 @@ GLIDE_VIEW_CODEC=h264
 # KMS mode and OSD/UI dimensions.
 GLIDE_WIDTH=1920
 GLIDE_HEIGHT=1080
-GLIDE_DISPLAY_HZ=120
+# 0 means auto-select the highest refresh rate exposed by the connected display.
+GLIDE_DISPLAY_HZ=0
 
 # Flow OSD overlay.
 GLIDE_FLOW=1

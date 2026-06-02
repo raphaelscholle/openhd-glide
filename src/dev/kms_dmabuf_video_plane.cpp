@@ -315,10 +315,14 @@ bool KmsDmabufVideoPlane::choose_connector_and_mode(std::uint32_t requested_widt
     }
 
     drmModeModeInfo selected_mode = chosen_connector->modes[0];
+    drmModeModeInfo highest_refresh_mode = chosen_connector->modes[0];
     bool found_resolution = false;
     bool found_exact_refresh = false;
     for (int i = 0; i < chosen_connector->count_modes; ++i) {
         const auto& candidate = chosen_connector->modes[i];
+        if (candidate.vrefresh > highest_refresh_mode.vrefresh) {
+            highest_refresh_mode = candidate;
+        }
         if (candidate.hdisplay != requested_width || candidate.vdisplay != requested_height) {
             continue;
         }
@@ -331,15 +335,21 @@ bool KmsDmabufVideoPlane::choose_connector_and_mode(std::uint32_t requested_widt
             found_exact_refresh = true;
             break;
         }
-        if (requested_refresh_hz == 0 && candidate.vrefresh > selected_mode.vrefresh) {
+        if (candidate.vrefresh > selected_mode.vrefresh) {
             selected_mode = candidate;
         }
     }
     if (found_resolution && requested_refresh_hz != 0 && !found_exact_refresh) {
-        last_error_ = "requested refresh rate is unavailable for the selected resolution";
-        drmModeFreeConnector(chosen_connector);
-        drmModeFreeResources(resources);
-        return false;
+        glide::log(
+            glide::LogLevel::warning,
+            "OpenHD-Glide",
+            "requested "
+                + std::to_string(requested_width) + "x" + std::to_string(requested_height)
+                + "@" + std::to_string(requested_refresh_hz)
+                + "Hz is unavailable; using highest refresh for that resolution");
+    }
+    if (!found_resolution && requested_refresh_hz == 0) {
+        selected_mode = highest_refresh_mode;
     }
     if (found_resolution) {
         glide::log(
@@ -356,7 +366,7 @@ bool KmsDmabufVideoPlane::choose_connector_and_mode(std::uint32_t requested_widt
             "OpenHD-Glide",
             "no exact resolution match for requested "
                 + std::to_string(requested_width) + "x" + std::to_string(requested_height)
-                + "; using connector default mode "
+                + "; using highest-refresh connected mode "
                 + std::to_string(selected_mode.hdisplay) + "x" + std::to_string(selected_mode.vdisplay)
                 + "@" + std::to_string(selected_mode.vrefresh) + "Hz");
     }

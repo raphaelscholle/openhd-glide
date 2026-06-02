@@ -1013,12 +1013,16 @@ bool KmsAtomicCompositor::choose_connector_and_mode(std::uint32_t requested_widt
     }
 
     drmModeModeInfo selected_mode = chosen_connector->modes[0];
+    drmModeModeInfo highest_refresh_mode = chosen_connector->modes[0];
     bool found_resolution = false;
     bool found_exact_refresh = false;
     bool found_refresh_fallback = false;
     std::uint64_t best_refresh_fallback_score = std::numeric_limits<std::uint64_t>::max();
     for (int i = 0; i < chosen_connector->count_modes; ++i) {
         const auto& candidate = chosen_connector->modes[i];
+        if (candidate.vrefresh > highest_refresh_mode.vrefresh) {
+            highest_refresh_mode = candidate;
+        }
         if (requested_refresh_hz != 0 && static_cast<std::uint32_t>(candidate.vrefresh) == requested_refresh_hz) {
             const auto aspect_error = static_cast<std::uint64_t>(std::llabs(
                 static_cast<long long>(candidate.hdisplay) * static_cast<long long>(requested_height)
@@ -1045,27 +1049,26 @@ bool KmsAtomicCompositor::choose_connector_and_mode(std::uint32_t requested_widt
             found_exact_refresh = true;
             break;
         }
-        if (requested_refresh_hz == 0 && candidate.vrefresh > selected_mode.vrefresh) {
+        if (candidate.vrefresh > selected_mode.vrefresh) {
             selected_mode = candidate;
         }
     }
     if (found_resolution && requested_refresh_hz != 0 && !found_exact_refresh) {
-        if (!found_refresh_fallback) {
-            last_error_ = "requested refresh rate is unavailable for the selected resolution";
-            drmModeFreeConnector(chosen_connector);
-            drmModeFreeResources(resources);
-            return false;
-        }
         glide::log(
             glide::LogLevel::warning,
             "OpenHD-Glide",
             "requested "
                 + std::to_string(requested_width) + "x" + std::to_string(requested_height)
-                + " is available, but not at " + std::to_string(requested_refresh_hz)
-                + "Hz; using "
-                + std::to_string(selected_mode.hdisplay) + "x" + std::to_string(selected_mode.vdisplay)
-                + "@" + std::to_string(selected_mode.vrefresh) + "Hz output instead");
-        found_resolution = false;
+                + "@" + std::to_string(requested_refresh_hz)
+                + "Hz is unavailable; using highest refresh for that resolution");
+    }
+    if (!found_resolution && requested_refresh_hz == 0) {
+        selected_mode = highest_refresh_mode;
+    }
+    if (found_resolution && requested_refresh_hz != 0 && !found_exact_refresh) {
+        if (!found_refresh_fallback) {
+            found_refresh_fallback = true;
+        }
     }
     if (found_resolution) {
         glide::log(
@@ -1082,7 +1085,7 @@ bool KmsAtomicCompositor::choose_connector_and_mode(std::uint32_t requested_widt
             "OpenHD-Glide",
             "no exact resolution match for requested "
                 + std::to_string(requested_width) + "x" + std::to_string(requested_height)
-                + (found_refresh_fallback ? "; using requested-refresh output mode " : "; using connector default mode ")
+                + (found_refresh_fallback ? "; using requested-refresh output mode " : "; using highest-refresh connected mode ")
                 + std::to_string(selected_mode.hdisplay) + "x" + std::to_string(selected_mode.vdisplay)
                 + "@" + std::to_string(selected_mode.vrefresh) + "Hz");
     }

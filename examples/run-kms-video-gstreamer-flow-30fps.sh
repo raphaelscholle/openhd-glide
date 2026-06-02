@@ -46,7 +46,7 @@ CODEC="${2:-${GLIDE_VIEW_CODEC:-${GLIDE_CODEC:-h264}}}"
 WIDTH="${GLIDE_WIDTH:-1920}"
 HEIGHT="${GLIDE_HEIGHT:-1080}"
 FLOW_FPS="${GLIDE_FLOW_FPS:-30}"
-DISPLAY_HZ="${GLIDE_DISPLAY_HZ:-120}"
+DISPLAY_HZ="${GLIDE_DISPLAY_HZ:-0}"
 CODEC="$(printf "%s" "$CODEC" | tr '[:upper:]' '[:lower:]')"
 case "$CODEC" in
   h264|avc)

@@ -48,7 +48,7 @@ PORT="${1:-5600}"
 CODEC="${2:-${GLIDE_VIEW_CODEC:-${GLIDE_CODEC:-h264}}}"
 WIDTH="${GLIDE_WIDTH:-1920}"
 HEIGHT="${GLIDE_HEIGHT:-1080}"
-DISPLAY_HZ="${GLIDE_DISPLAY_HZ:-60}"
+DISPLAY_HZ="${GLIDE_DISPLAY_HZ:-0}"
 CODEC="$(printf "%s" "$CODEC" | tr '[:upper:]' '[:lower:]')"
 case "$CODEC" in
   h264|avc)
