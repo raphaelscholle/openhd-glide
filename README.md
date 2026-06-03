@@ -321,8 +321,10 @@ examples/run-wsl-minimap-preview.sh
 
 For WSL development, `openhd-glide --preview-stack` starts `glide-view`, `glide-flow`, and then places a
 `glide-ui` LVGL/SDL preview over the left side. In WSL, the UI preview is kept as a sidebar surface to avoid
-covering the Flow preview. The sidebar `OSD` panel has toggles for FPS, coordinates, and the Flow speed/altitude
-ladder versus compact text mode. The custom wind indicator is rendered by Flow inside the performance horizon.
+covering the Flow preview. The sidebar `OSD` panel has toggles for the top link bar, FPS, coordinates, and the
+Flow speed/altitude ladder versus compact text mode. Flow renders OSD elements as display-only output; widget
+visibility and settings live in the UI menu and controller IPC. The custom wind indicator is rendered by Flow inside
+the performance horizon.
 The UI preview also owns the LVGL minimap layer. Press `M` to cycle menu -> minimap -> hidden, or press `N` to
 cycle minimap -> menu -> hidden. When the minimap is visible, `+` zooms in and `-` zooms out. The two views share one
 layer and are never displayed at the same time.

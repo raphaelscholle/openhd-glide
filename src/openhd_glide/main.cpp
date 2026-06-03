@@ -198,6 +198,11 @@ glide::flow::LinkOverviewSample link_sample_from_mavlink(const glide::mavlink::S
     sample.armed = mavlink.armed;
     sample.frequency_mhz = mavlink.frequency_mhz;
     sample.mcs = mavlink.mcs_index;
+    sample.rssi_dbm = mavlink.link_rssi_dbm;
+    sample.txc_temp_c = mavlink.link_txc_temp_c;
+    sample.downlink_quality = mavlink.link_quality_percent;
+    sample.rc_quality = mavlink.rc_quality_percent;
+    sample.bitrate_mbit = mavlink.link_bitrate_mbit;
     sample.air_voltage_v = mavlink.battery_valid ? mavlink.voltage_v : 0.0F;
     sample.air_speed_mps = mavlink.speed_valid
         ? (mavlink.airspeed_mps > 0.0F ? mavlink.airspeed_mps : mavlink.ground_speed_mps)
@@ -292,6 +297,7 @@ struct RuntimeControlState {
     bool fps_enabled { true };
     bool coordinates_enabled { true };
     bool compact_readouts { false };
+    bool top_bar_enabled { true };
     std::string osd_layout { glide::preview_control::osd_layout() };
 };
 
@@ -302,6 +308,7 @@ void send_initial_control_state(glide::ipc::Server& ipc_server, int client_id, c
     ipc_server.send_line(client_id, std::string("state fps ") + (state.fps_enabled ? "1" : "0"));
     ipc_server.send_line(client_id, std::string("state coords ") + (state.coordinates_enabled ? "1" : "0"));
     ipc_server.send_line(client_id, std::string("state compact ") + (state.compact_readouts ? "1" : "0"));
+    ipc_server.send_line(client_id, std::string("state topbar ") + (state.top_bar_enabled ? "1" : "0"));
     ipc_server.send_line(client_id, "state osd " + state.osd_layout);
     send_theme_state(ipc_server, client_id);
 }
@@ -335,6 +342,8 @@ bool poll_runtime_controls(
             ipc_server.send_line(event.client_id, std::string("state coords ") + (state.coordinates_enabled ? "1" : "0"));
         } else if (event.line == "get compact") {
             ipc_server.send_line(event.client_id, std::string("state compact ") + (state.compact_readouts ? "1" : "0"));
+        } else if (event.line == "get topbar") {
+            ipc_server.send_line(event.client_id, std::string("state topbar ") + (state.top_bar_enabled ? "1" : "0"));
         } else if (event.line == "get osd") {
             ipc_server.send_line(event.client_id, "state osd " + state.osd_layout);
         } else if (event.line == "get theme") {
@@ -351,6 +360,10 @@ bool poll_runtime_controls(
             state.compact_readouts = event.line.back() == '1';
             glide::preview_control::set_compact_readouts_enabled(state.compact_readouts);
             ipc_server.broadcast_line(std::string("state compact ") + (state.compact_readouts ? "1" : "0"));
+        } else if (event.line == "set topbar 0" || event.line == "set topbar 1") {
+            state.top_bar_enabled = event.line.back() == '1';
+            glide::preview_control::set_top_bar_enabled(state.top_bar_enabled);
+            ipc_server.broadcast_line(std::string("state topbar ") + (state.top_bar_enabled ? "1" : "0"));
         } else if (event.line == "set osd drone" || event.line == "set osd rocket" || event.line == "set osd rover" || event.line == "set osd ship") {
             state.osd_layout = event.line.substr(8);
             glide::preview_control::set_osd_layout(state.osd_layout);
@@ -1091,7 +1104,10 @@ int run_kms_video_preview(const Options& options)
                 }
                 const auto link_sample = link_sample_from_mavlink(mavlink, glide::preview_control::coordinates_overlay_enabled());
                 flow_renderer.set_text_color(theme.primary);
-                link_overview.draw(flow_renderer, flow_surface, link_sample, theme);
+                if (glide::preview_control::top_bar_enabled()) {
+                    link_overview.draw_top(flow_renderer, flow_surface, link_sample, theme);
+                }
+                link_overview.draw_bottom(flow_renderer, flow_surface, link_sample, theme);
                 performance_horizon.draw(
                     flow_renderer,
                     flow_surface,
@@ -1317,7 +1333,10 @@ int run_kms_video_preview(const Options& options)
                             }
                             const auto link_sample = link_sample_from_mavlink(mavlink, glide::preview_control::coordinates_overlay_enabled());
                             renderer.set_text_color(theme.primary);
-                            links.draw(renderer, surface, link_sample, theme);
+                            if (glide::preview_control::top_bar_enabled()) {
+                                links.draw_top(renderer, surface, link_sample, theme);
+                            }
+                            links.draw_bottom(renderer, surface, link_sample, theme);
                             horizon.draw(
                                 renderer,
                                 surface,
@@ -1803,6 +1822,7 @@ int run_kms_video_preview(const Options& options)
     glide::preview_control::set_fps_overlay_enabled(true);
     glide::preview_control::set_coordinates_overlay_enabled(true);
     glide::preview_control::set_compact_readouts_enabled(false);
+    glide::preview_control::set_top_bar_enabled(true);
     glide::log(
         glide::LogLevel::info,
         "OpenHD-Glide",
@@ -2104,6 +2124,7 @@ int run_preview_stack(char* argv0, const Options& options)
 
     glide::preview_control::set_fps_overlay_enabled(true);
     glide::preview_control::set_compact_readouts_enabled(false);
+    glide::preview_control::set_top_bar_enabled(true);
     glide::ipc::Server ipc_server;
     if (!ipc_server.listen_on(options.ipc_socket)) {
         glide::log(glide::LogLevel::error, "OpenHD-Glide", "failed to start IPC server: " + ipc_server.last_error());
@@ -2148,6 +2169,7 @@ int run_preview_stack(char* argv0, const Options& options)
     bool fps_enabled = true;
     bool coordinates_enabled = true;
     bool compact_readouts = false;
+    bool top_bar_enabled = true;
     std::string osd_layout = glide::preview_control::osd_layout();
 
     while (stop_requested == 0) {
@@ -2158,6 +2180,7 @@ int run_preview_stack(char* argv0, const Options& options)
                 ipc_server.send_line(event.client_id, std::string("state fps ") + (fps_enabled ? "1" : "0"));
                 ipc_server.send_line(event.client_id, std::string("state coords ") + (coordinates_enabled ? "1" : "0"));
                 ipc_server.send_line(event.client_id, std::string("state compact ") + (compact_readouts ? "1" : "0"));
+                ipc_server.send_line(event.client_id, std::string("state topbar ") + (top_bar_enabled ? "1" : "0"));
                 ipc_server.send_line(event.client_id, "state osd " + osd_layout);
                 send_theme_state(ipc_server, event.client_id);
             } else if (event.line == "get fps") {
@@ -2166,6 +2189,8 @@ int run_preview_stack(char* argv0, const Options& options)
                 ipc_server.send_line(event.client_id, std::string("state coords ") + (coordinates_enabled ? "1" : "0"));
             } else if (event.line == "get compact") {
                 ipc_server.send_line(event.client_id, std::string("state compact ") + (compact_readouts ? "1" : "0"));
+            } else if (event.line == "get topbar") {
+                ipc_server.send_line(event.client_id, std::string("state topbar ") + (top_bar_enabled ? "1" : "0"));
             } else if (event.line == "get osd") {
                 ipc_server.send_line(event.client_id, "state osd " + osd_layout);
             } else if (event.line == "get theme") {
@@ -2182,6 +2207,10 @@ int run_preview_stack(char* argv0, const Options& options)
                 compact_readouts = event.line.back() == '1';
                 glide::preview_control::set_compact_readouts_enabled(compact_readouts);
                 ipc_server.broadcast_line(std::string("state compact ") + (compact_readouts ? "1" : "0"));
+            } else if (event.line == "set topbar 0" || event.line == "set topbar 1") {
+                top_bar_enabled = event.line.back() == '1';
+                glide::preview_control::set_top_bar_enabled(top_bar_enabled);
+                ipc_server.broadcast_line(std::string("state topbar ") + (top_bar_enabled ? "1" : "0"));
             } else if (event.line == "set osd drone" || event.line == "set osd rocket" || event.line == "set osd rover" || event.line == "set osd ship") {
                 osd_layout = event.line.substr(8);
                 glide::preview_control::set_osd_layout(osd_layout);
@@ -2247,6 +2276,7 @@ int run_kms_stack(char* argv0, const Options& options)
     glide::preview_control::set_fps_overlay_enabled(true);
     glide::preview_control::set_coordinates_overlay_enabled(true);
     glide::preview_control::set_compact_readouts_enabled(false);
+    glide::preview_control::set_top_bar_enabled(true);
     glide::ipc::Server ipc_server;
     if (!ipc_server.listen_on(options.ipc_socket)) {
         glide::log(glide::LogLevel::error, "OpenHD-Glide", "failed to start IPC server: " + ipc_server.last_error());
@@ -2301,6 +2331,7 @@ int run_kms_stack(char* argv0, const Options& options)
     bool fps_enabled = true;
     bool coordinates_enabled = true;
     bool compact_readouts = false;
+    bool top_bar_enabled = true;
     std::string osd_layout = glide::preview_control::osd_layout();
 
     while (stop_requested == 0) {
@@ -2311,6 +2342,7 @@ int run_kms_stack(char* argv0, const Options& options)
                 ipc_server.send_line(event.client_id, std::string("state fps ") + (fps_enabled ? "1" : "0"));
                 ipc_server.send_line(event.client_id, std::string("state coords ") + (coordinates_enabled ? "1" : "0"));
                 ipc_server.send_line(event.client_id, std::string("state compact ") + (compact_readouts ? "1" : "0"));
+                ipc_server.send_line(event.client_id, std::string("state topbar ") + (top_bar_enabled ? "1" : "0"));
                 ipc_server.send_line(event.client_id, "state osd " + osd_layout);
                 send_theme_state(ipc_server, event.client_id);
             } else if (event.line == "get fps") {
@@ -2319,6 +2351,8 @@ int run_kms_stack(char* argv0, const Options& options)
                 ipc_server.send_line(event.client_id, std::string("state coords ") + (coordinates_enabled ? "1" : "0"));
             } else if (event.line == "get compact") {
                 ipc_server.send_line(event.client_id, std::string("state compact ") + (compact_readouts ? "1" : "0"));
+            } else if (event.line == "get topbar") {
+                ipc_server.send_line(event.client_id, std::string("state topbar ") + (top_bar_enabled ? "1" : "0"));
             } else if (event.line == "get osd") {
                 ipc_server.send_line(event.client_id, "state osd " + osd_layout);
             } else if (event.line == "get theme") {
@@ -2335,6 +2369,10 @@ int run_kms_stack(char* argv0, const Options& options)
                 compact_readouts = event.line.back() == '1';
                 glide::preview_control::set_compact_readouts_enabled(compact_readouts);
                 ipc_server.broadcast_line(std::string("state compact ") + (compact_readouts ? "1" : "0"));
+            } else if (event.line == "set topbar 0" || event.line == "set topbar 1") {
+                top_bar_enabled = event.line.back() == '1';
+                glide::preview_control::set_top_bar_enabled(top_bar_enabled);
+                ipc_server.broadcast_line(std::string("state topbar ") + (top_bar_enabled ? "1" : "0"));
             } else if (event.line == "set osd drone" || event.line == "set osd rocket" || event.line == "set osd rover" || event.line == "set osd ship") {
                 osd_layout = event.line.substr(8);
                 glide::preview_control::set_osd_layout(osd_layout);

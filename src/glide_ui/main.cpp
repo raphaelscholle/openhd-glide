@@ -96,6 +96,7 @@ int run_headless_ui(const HeadlessOptions& options)
         ipc.send_line("get fps");
         ipc.send_line("get coords");
         ipc.send_line("get compact");
+        ipc.send_line("get topbar");
         ipc.send_line("get osd");
         ipc.send_line("get theme");
     } else {
@@ -113,6 +114,8 @@ int run_headless_ui(const HeadlessOptions& options)
                     glide::preview_control::set_coordinates_overlay_enabled(line.back() == '1');
                 } else if (line == "state compact 0" || line == "state compact 1") {
                     glide::preview_control::set_compact_readouts_enabled(line.back() == '1');
+                } else if (line == "state topbar 0" || line == "state topbar 1") {
+                    glide::preview_control::set_top_bar_enabled(line.back() == '1');
                 } else if (line == "state osd drone" || line == "state osd rocket" || line == "state osd rover" || line == "state osd ship") {
                     glide::preview_control::set_osd_layout(line.substr(10));
                 } else if (line.rfind("state theme ", 0) == 0) {
@@ -187,6 +190,7 @@ struct UiState {
     bool fps_enabled { true };
     bool coordinates_enabled { true };
     bool compact_readouts { false };
+    bool top_bar_enabled { true };
     std::string osd_layout { "drone" };
     std::uint32_t theme_bar_text { 0xebf5ff };
     std::uint32_t theme_bar_background { 0x0e1318 };
@@ -211,6 +215,8 @@ struct UiState {
     lv_obj_t* coordinates_label {};
     lv_obj_t* compact_switch {};
     lv_obj_t* compact_label {};
+    lv_obj_t* top_bar_switch {};
+    lv_obj_t* top_bar_label {};
     lv_obj_t* osd_dropdown {};
     lv_obj_t* osd_label {};
     std::array<lv_obj_t*, 4> theme_dropdowns {};
@@ -549,6 +555,29 @@ void sync_compact_readouts_controls(UiState& state)
     } else {
         lv_obj_remove_state(state.compact_switch, LV_STATE_CHECKED);
         lv_label_set_text(state.compact_label, "Speed/alt ladder");
+    }
+}
+
+void send_top_bar_state(UiState& state)
+{
+    glide::preview_control::set_top_bar_enabled(state.top_bar_enabled);
+    if (state.ipc.connected()) {
+        state.ipc.send_line(std::string("set topbar ") + (state.top_bar_enabled ? "1" : "0"));
+    }
+}
+
+void sync_top_bar_controls(UiState& state)
+{
+    if (state.top_bar_switch == nullptr || state.top_bar_label == nullptr) {
+        return;
+    }
+
+    if (state.top_bar_enabled) {
+        lv_obj_add_state(state.top_bar_switch, LV_STATE_CHECKED);
+        lv_label_set_text(state.top_bar_label, "Top link bar enabled");
+    } else {
+        lv_obj_remove_state(state.top_bar_switch, LV_STATE_CHECKED);
+        lv_label_set_text(state.top_bar_label, "Top link bar disabled");
     }
 }
 
@@ -1235,14 +1264,18 @@ void apply_terminal_key(UiState& state, const std::string& line)
             sync_osd_layout_controls(state);
             send_osd_layout_state(state);
         } else if (state.active_panel == SidebarPanel::osd && state.selected_row == 1) {
+            state.top_bar_enabled = !state.top_bar_enabled;
+            sync_top_bar_controls(state);
+            send_top_bar_state(state);
+        } else if (state.active_panel == SidebarPanel::osd && state.selected_row == 2) {
             state.fps_enabled = !state.fps_enabled;
             sync_fps_controls(state);
             send_fps_state(state);
-        } else if (state.active_panel == SidebarPanel::osd && state.selected_row == 2) {
+        } else if (state.active_panel == SidebarPanel::osd && state.selected_row == 3) {
             state.coordinates_enabled = !state.coordinates_enabled;
             sync_coordinates_controls(state);
             send_coordinates_state(state);
-        } else if (state.active_panel == SidebarPanel::osd && state.selected_row == 3) {
+        } else if (state.active_panel == SidebarPanel::osd && state.selected_row == 4) {
             state.compact_readouts = !state.compact_readouts;
             sync_compact_readouts_controls(state);
             send_compact_readouts_state(state);
@@ -1406,6 +1439,33 @@ void build_osd_panel(UiState& state)
 
     auto* section = label(state.panel_body, "Overlay", &lv_font_montserrat_18, 0xffffff);
     lv_obj_set_width(section, LV_PCT(100));
+
+    const int top_bar_row_index = state.row_count++;
+    auto* top_bar_row = lv_obj_create(state.panel_body);
+    set_panel_style(top_bar_row, state.focus_panel && state.selected_row == top_bar_row_index ? 0x2d210e : 0x0f2130, LV_OPA_80);
+    lv_obj_set_style_radius(top_bar_row, 6, 0);
+    lv_obj_set_style_border_width(top_bar_row, state.focus_panel && state.selected_row == top_bar_row_index ? 1 : 0, 0);
+    lv_obj_set_style_border_color(top_bar_row, color(0xff8a00), 0);
+    lv_obj_set_size(top_bar_row, LV_PCT(100), 62);
+    lv_obj_set_style_pad_left(top_bar_row, 16, 0);
+    lv_obj_set_style_pad_right(top_bar_row, 16, 0);
+    lv_obj_set_flex_flow(top_bar_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(top_bar_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    state.top_bar_label = label(top_bar_row, "Top link bar", &lv_font_montserrat_16, 0xdce8f0);
+    state.top_bar_switch = lv_switch_create(top_bar_row);
+    lv_obj_set_size(state.top_bar_switch, 58, 30);
+    lv_obj_add_event_cb(
+        state.top_bar_switch,
+        [](lv_event_t* event) {
+            auto* state = static_cast<UiState*>(lv_event_get_user_data(event));
+            state->top_bar_enabled = lv_obj_has_state(state->top_bar_switch, LV_STATE_CHECKED);
+            sync_top_bar_controls(*state);
+            send_top_bar_state(*state);
+        },
+        LV_EVENT_VALUE_CHANGED,
+        &state);
+    sync_top_bar_controls(state);
 
     const int row_index = state.row_count++;
     auto* row = lv_obj_create(state.panel_body);
@@ -1858,6 +1918,8 @@ void clear_panel(UiState& state)
     state.coordinates_label = nullptr;
     state.compact_switch = nullptr;
     state.compact_label = nullptr;
+    state.top_bar_switch = nullptr;
+    state.top_bar_label = nullptr;
     state.osd_dropdown = nullptr;
     state.osd_label = nullptr;
     state.theme_dropdowns.fill(nullptr);
@@ -1939,6 +2001,7 @@ void send_initial_ipc_requests(UiState& state, const char* backend_name)
     state.ipc.send_line("get fps");
     state.ipc.send_line("get coords");
     state.ipc.send_line("get compact");
+    state.ipc.send_line("get topbar");
     state.ipc.send_line("get osd");
     state.ipc.send_line("get theme");
 }
@@ -2258,6 +2321,9 @@ void poll_ipc(UiState& state, std::chrono::steady_clock::time_point now)
         if (update_bool(state.compact_readouts, glide::preview_control::compact_readouts_enabled())) {
             sync_compact_readouts_controls(state);
         }
+        if (update_bool(state.top_bar_enabled, glide::preview_control::top_bar_enabled())) {
+            sync_top_bar_controls(state);
+        }
         if (update_string(state.osd_layout, glide::preview_control::osd_layout())) {
             sync_osd_layout_controls(state);
         }
@@ -2284,6 +2350,11 @@ void poll_ipc(UiState& state, std::chrono::steady_clock::time_point now)
             if (update_bool(state.compact_readouts, line.back() == '1')) {
                 glide::preview_control::set_compact_readouts_enabled(state.compact_readouts);
                 sync_compact_readouts_controls(state);
+            }
+        } else if (line == "state topbar 0" || line == "state topbar 1") {
+            if (update_bool(state.top_bar_enabled, line.back() == '1')) {
+                glide::preview_control::set_top_bar_enabled(state.top_bar_enabled);
+                sync_top_bar_controls(state);
             }
         } else if (line == "state osd drone" || line == "state osd rocket" || line == "state osd rover" || line == "state osd ship") {
             if (update_string(state.osd_layout, line.substr(10))) {
@@ -2377,6 +2448,7 @@ int main(int argc, char** argv)
     state.fps_enabled = glide::preview_control::fps_overlay_enabled();
     state.coordinates_enabled = glide::preview_control::coordinates_overlay_enabled();
     state.compact_readouts = glide::preview_control::compact_readouts_enabled();
+    state.top_bar_enabled = glide::preview_control::top_bar_enabled();
     state.osd_layout = glide::preview_control::osd_layout();
     load_device_settings(state);
     for (std::size_t i = 0; i < theme_keys.size(); ++i) {

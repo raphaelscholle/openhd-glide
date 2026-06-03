@@ -79,7 +79,7 @@ The first OSD elements are an FPS counter positioned in the bottom-left corner, 
 - deterministic top-right text layout with a fixed bitmap font;
 - an OpenGL ES 2.0 text renderer that prefers FreeType antialiased TrueType glyphs and falls back to lightweight vector strokes when FreeType is unavailable.
 - a port of QOpenHD's `PerformanceHorizonWidget2`: split horizon bars shifted by pitch, rotated by roll, with a fixed center circle/crossbar.
-- a port of QOpenHD's left and right link overview widgets: downlink RSSI/temp/MCS/SNR blocks and uplink/frequency/bitrate/record/RC blocks.
+- a port of QOpenHD's left and right link overview widgets: downlink RSSI/temp/MCS/SNR blocks and uplink/frequency/bitrate/record/RC blocks. Flow only displays this bar; visibility is controlled by the UI menu through controller IPC.
 - a port of QOpenHD's bottom link overview widget: full-width bottom panel with center flight mode/time notch and telemetry slots.
 - a port of QOpenHD's speed widget: left-side pointer box plus vertical ladder ticks/labels.
 - a port of QOpenHD's altitude widget: right-side pointer box plus vertical ladder ticks/labels.
@@ -110,8 +110,8 @@ Use `--preview-width`, `--flow-height`, `--ui-width`, `--ui-height`, `--preview-
 The WSL preview stack starts a controller-owned Unix domain socket at `/tmp/openhd-glide.sock` by default.
 `glide-view`, `glide-flow`, and `glide-ui` register with `hello <worker>` messages and can exchange simple
 line-based status/control messages with the controller. `glide-ui` currently uses this path for an FPS toggle
-inside the preview sidebar `MISC` panel; the controller receives `set fps 0/1` and broadcasts `state fps 0/1`, which `glide-flow`
-uses before drawing the FPS overlay. The socket path can be changed with `--ipc-socket`.
+inside the preview sidebar. The controller receives `set ...` menu updates and broadcasts `state ...` lines, which
+`glide-flow` consumes before drawing display-only OSD elements. The socket path can be changed with `--ipc-socket`.
 
 The LVGL UI is intentionally backend-isolated: the current SDL display driver is for WSL/Windows-style iteration. The target backend should render the same LVGL tree into shared buffers or a plane-owned buffer path supplied by `openhd-glide`, without letting `glide-ui` become DRM/KMS master.
 
@@ -165,3 +165,6 @@ The current prototype is newline-delimited text:
 - `get fps`
 - `set fps 0|1`
 - `state fps 0|1`
+- `get topbar`
+- `set topbar 0|1`
+- `state topbar 0|1`

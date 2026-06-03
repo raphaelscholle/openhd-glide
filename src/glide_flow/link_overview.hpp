@@ -73,6 +73,7 @@ class LinkOverviewRenderer {
 public:
     void draw(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverviewSample& sample, const OsdTheme& theme) const;
     void draw_top(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverviewSample& sample, const OsdTheme& theme) const;
+    void draw_bottom(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverviewSample& sample, const OsdTheme& theme) const;
 };
 
 } // namespace glide::flow

@@ -139,6 +139,40 @@ bool apply_ipc_line(Snapshot& snapshot, const std::string& line)
     }
     if (key == "link") {
         stream >> snapshot.frequency_mhz >> snapshot.channel_width_mhz >> snapshot.mcs_index >> snapshot.tx_power_mw;
+        if (stream >> snapshot.link_bitrate_mbit >> snapshot.link_quality_percent >> snapshot.link_rssi_dbm >> snapshot.link_txc_temp_c) {
+            snapshot.rc_quality_percent = snapshot.link_quality_percent;
+            stream >> snapshot.link_snr_antenna1_db >> snapshot.link_snr_antenna2_db;
+        }
+        snapshot.link_quality_percent = clamp_percent(snapshot.link_quality_percent);
+        snapshot.rc_quality_percent = clamp_percent(snapshot.rc_quality_percent);
+        return true;
+    }
+    if (key == "openhd") {
+        std::string field;
+        stream >> field;
+        if (field == "wifi_card") {
+            int rssi_dbm {};
+            int quality_percent {};
+            int snr_antenna1_db {};
+            int snr_antenna2_db {};
+            int txc_temp_c {};
+            stream >> rssi_dbm >> quality_percent >> snr_antenna1_db >> snr_antenna2_db >> txc_temp_c;
+            if (snapshot.link_rssi_dbm <= -127 || (rssi_dbm > -127 && rssi_dbm >= snapshot.link_rssi_dbm)) {
+                snapshot.link_rssi_dbm = rssi_dbm;
+                snapshot.link_quality_percent = clamp_percent(quality_percent);
+                snapshot.link_snr_antenna1_db = snr_antenna1_db;
+                snapshot.link_snr_antenna2_db = snr_antenna2_db;
+                snapshot.link_txc_temp_c = txc_temp_c;
+            }
+            if (snapshot.rc_quality_percent == 0) {
+                snapshot.rc_quality_percent = snapshot.link_quality_percent;
+            }
+        } else if (field == "wifi_link") {
+            stream >> snapshot.frequency_mhz >> snapshot.channel_width_mhz >> snapshot.mcs_index >> snapshot.link_bitrate_mbit >> snapshot.rc_quality_percent >> snapshot.link_snr_antenna1_db >> snapshot.link_snr_antenna2_db >> snapshot.link_txc_temp_c;
+            snapshot.rc_quality_percent = clamp_percent(snapshot.rc_quality_percent);
+        } else if (field == "core") {
+            stream >> snapshot.link_txc_temp_c;
+        }
         return true;
     }
     if (key == "scan") {
@@ -238,6 +272,7 @@ bool is_osd_telemetry_line(const std::string& line)
         || key == "battery"
         || key == "gps"
         || key == "link"
+        || key == "openhd"
         || key == "rc"
         || key == "armed"
         || key == "mode"

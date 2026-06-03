@@ -46,6 +46,14 @@ std::string fixed_1(float value)
     return stream.str();
 }
 
+std::string invalid_or_int_text(int value, std::string_view suffix = {})
+{
+    if (value <= -127) {
+        return "N/A";
+    }
+    return std::to_string(value) + std::string(suffix);
+}
+
 RgbaColor quality_color(int value)
 {
     if (value > 60) {
@@ -173,7 +181,7 @@ void draw_left(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOvervi
     draw_text(renderer, "O", x + sx(17.0F, scale), y + sx(36.0F, scale), sx(16.0F, scale), surface);
     draw_text(
         renderer,
-        std::to_string(sample.rssi_dbm) + " DBM " + std::to_string(sample.txc_temp_c) + "C",
+        invalid_or_int_text(sample.rssi_dbm) + " DBM " + invalid_or_int_text(sample.txc_temp_c, "C"),
         x + sx(66.0F, scale),
         y + sx(36.0F, scale),
         sx(18.0F, scale),
@@ -373,7 +381,7 @@ void draw_gps_position(GlesTextRenderer& renderer, SurfaceSize surface, const Li
     draw_text(renderer, lon_fraction, fraction_x, baseline_2, font_scale, surface);
 }
 
-void draw_bottom(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverviewSample& sample, const OsdTheme& theme)
+void draw_bottom_impl(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverviewSample& sample, const OsdTheme& theme)
 {
     const auto scale = layout_scale(surface);
     const auto height = sx(40.0F, scale);
@@ -445,13 +453,18 @@ void LinkOverviewRenderer::draw(GlesTextRenderer& renderer, SurfaceSize surface,
 {
     draw_left(renderer, surface, sample, theme);
     draw_right(renderer, surface, sample, theme);
-    draw_bottom(renderer, surface, sample, theme);
+    draw_bottom_impl(renderer, surface, sample, theme);
 }
 
 void LinkOverviewRenderer::draw_top(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverviewSample& sample, const OsdTheme& theme) const
 {
     draw_left(renderer, surface, sample, theme);
     draw_right(renderer, surface, sample, theme);
+}
+
+void LinkOverviewRenderer::draw_bottom(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverviewSample& sample, const OsdTheme& theme) const
+{
+    draw_bottom_impl(renderer, surface, sample, theme);
 }
 
 } // namespace glide::flow

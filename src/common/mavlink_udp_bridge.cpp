@@ -72,6 +72,11 @@ float read_float(const std::vector<std::uint8_t>& payload, std::size_t offset)
     return read_le<float>(payload, offset);
 }
 
+int read_i8(const std::vector<std::uint8_t>& payload, std::size_t offset)
+{
+    return static_cast<int>(read_le<std::int8_t>(payload, offset));
+}
+
 std::string c_string(const std::vector<std::uint8_t>& payload, std::size_t offset, std::size_t length)
 {
     if (offset >= payload.size()) {
@@ -212,6 +217,36 @@ std::optional<std::string> decode_frame(const Frame& frame)
         }
         break;
     }
+    case 1211: {
+        const auto frequency_mhz = read_le<std::uint16_t>(p, 26);
+        const auto rate_kbits = read_le<std::uint16_t>(p, 28);
+        const auto channel_width_mhz = read_le<std::uint8_t>(p, 33);
+        const auto mcs_index = read_le<std::uint8_t>(p, 34);
+        const auto packet_loss = std::clamp(read_i8(p, 32), 0, 100);
+        const auto rc_quality = 100 - packet_loss;
+        line << "mav openhd wifi_link "
+             << frequency_mhz << ' '
+             << static_cast<int>(channel_width_mhz) << ' '
+             << static_cast<int>(mcs_index) << ' '
+             << (static_cast<float>(rate_kbits) / 1000.0F) << ' '
+             << rc_quality << ' '
+             << read_i8(p, 38) << ' '
+             << read_i8(p, 39) << ' '
+             << read_i8(p, 40);
+        return line.str();
+    }
+    case 1212: {
+        line << "mav openhd wifi_card "
+             << read_i8(p, 23) << ' '
+             << std::clamp(read_i8(p, 29), 0, 100) << ' '
+             << read_i8(p, 34) << ' '
+             << read_i8(p, 35) << ' '
+             << read_i8(p, 36);
+        return line.str();
+    }
+    case 1227:
+        line << "mav openhd core " << read_i8(p, 15);
+        return line.str();
     default:
         break;
     }

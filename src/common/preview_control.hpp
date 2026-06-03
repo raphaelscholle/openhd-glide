@@ -34,6 +34,8 @@ bool coordinates_overlay_enabled();
 void set_coordinates_overlay_enabled(bool enabled);
 bool compact_readouts_enabled();
 void set_compact_readouts_enabled(bool enabled);
+bool top_bar_enabled();
+void set_top_bar_enabled(bool enabled);
 std::string osd_layout();
 void set_osd_layout(const std::string& layout);
 std::uint32_t theme_color(const std::string& key);

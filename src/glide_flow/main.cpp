@@ -238,6 +238,11 @@ glide::flow::LinkOverviewSample link_sample_from_mavlink(const glide::mavlink::S
     sample.armed = mavlink.armed;
     sample.frequency_mhz = mavlink.frequency_mhz;
     sample.mcs = mavlink.mcs_index;
+    sample.rssi_dbm = mavlink.link_rssi_dbm;
+    sample.txc_temp_c = mavlink.link_txc_temp_c;
+    sample.downlink_quality = mavlink.link_quality_percent;
+    sample.rc_quality = mavlink.rc_quality_percent;
+    sample.bitrate_mbit = mavlink.link_bitrate_mbit;
     sample.air_voltage_v = mavlink.battery_valid ? mavlink.voltage_v : 0.0F;
     sample.air_speed_mps = mavlink.speed_valid
         ? (mavlink.airspeed_mps > 0.0F ? mavlink.airspeed_mps : mavlink.ground_speed_mps)
@@ -276,6 +281,7 @@ int main(int argc, char** argv)
     glide::mavlink::Snapshot mavlink;
     bool coordinates_enabled = glide::preview_control::coordinates_overlay_enabled();
     bool compact_readouts = glide::preview_control::compact_readouts_enabled();
+    bool top_bar_enabled = glide::preview_control::top_bar_enabled();
     bool telemetry_seen {};
     auto last_telemetry_time = std::chrono::steady_clock::time_point {};
     constexpr auto telemetry_signal_timeout = std::chrono::milliseconds(1500);
@@ -359,6 +365,9 @@ int main(int argc, char** argv)
                 } else if (line == "state compact 0" || line == "state compact 1") {
                     compact_readouts = line.back() == '1';
                     glide::preview_control::set_compact_readouts_enabled(compact_readouts);
+                } else if (line == "state topbar 0" || line == "state topbar 1") {
+                    top_bar_enabled = line.back() == '1';
+                    glide::preview_control::set_top_bar_enabled(top_bar_enabled);
                 } else if (line == "state osd drone" || line == "state osd rocket" || line == "state osd rover" || line == "state osd ship") {
                     osd_layout = line.substr(10);
                     glide::preview_control::set_osd_layout(osd_layout);
@@ -379,6 +388,7 @@ int main(int argc, char** argv)
         } else {
             coordinates_enabled = glide::preview_control::coordinates_overlay_enabled();
             compact_readouts = glide::preview_control::compact_readouts_enabled();
+            top_bar_enabled = glide::preview_control::top_bar_enabled();
             osd_layout = glide::preview_control::osd_layout();
             theme = load_theme();
         }
@@ -403,24 +413,35 @@ int main(int argc, char** argv)
                 renderer.set_text_color(theme.primary);
                 const auto link_sample = link_sample_from_mavlink(mavlink, coordinates_enabled);
                 if (osd_layout == "rocket") {
-                    link_overview.draw_top(renderer, options.surface, link_sample, theme);
+                    if (top_bar_enabled) {
+                        link_overview.draw_top(renderer, options.surface, link_sample, theme);
+                    }
                     rocket_osd.draw(renderer, options.surface, glide::flow::RocketOsdSample {}, theme);
                 } else if (osd_layout == "rover") {
-                    link_overview.draw(renderer, options.surface, link_sample, theme);
+                    if (top_bar_enabled) {
+                        link_overview.draw_top(renderer, options.surface, link_sample, theme);
+                    }
+                    link_overview.draw_bottom(renderer, options.surface, link_sample, theme);
                     rover_osd.draw(
                         renderer,
                         options.surface,
                         glide::flow::RoverOsdSample { .speed_kmh = mavlink.speed_valid ? mavlink.ground_speed_mps * 3.6F : 0.0F, .heading_degrees = mavlink.attitude_valid ? mavlink.yaw_degrees : 0.0F },
                         theme);
                 } else if (osd_layout == "ship") {
-                    link_overview.draw(renderer, options.surface, link_sample, theme);
+                    if (top_bar_enabled) {
+                        link_overview.draw_top(renderer, options.surface, link_sample, theme);
+                    }
+                    link_overview.draw_bottom(renderer, options.surface, link_sample, theme);
                     naval_osd.draw(
                         renderer,
                         options.surface,
                         glide::flow::NavalOsdSample { .heading_degrees = mavlink.attitude_valid ? mavlink.yaw_degrees : 0.0F },
                         theme);
                 } else {
-                    link_overview.draw(renderer, options.surface, link_sample, theme);
+                    if (top_bar_enabled) {
+                        link_overview.draw_top(renderer, options.surface, link_sample, theme);
+                    }
+                    link_overview.draw_bottom(renderer, options.surface, link_sample, theme);
                     performance_horizon.draw(
                         renderer,
                         options.surface,

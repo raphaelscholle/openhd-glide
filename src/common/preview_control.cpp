@@ -50,6 +50,11 @@ std::filesystem::path compact_readouts_control_path()
     return std::filesystem::temp_directory_path() / "openhd-glide-flow-compact-readouts.enabled";
 }
 
+std::filesystem::path top_bar_control_path()
+{
+    return std::filesystem::temp_directory_path() / "openhd-glide-flow-topbar.enabled";
+}
+
 std::filesystem::path osd_layout_control_path()
 {
     return std::filesystem::temp_directory_path() / "openhd-glide-flow-osd.layout";
@@ -132,6 +137,16 @@ bool compact_readouts_enabled()
 void set_compact_readouts_enabled(bool enabled)
 {
     write_enabled_file(compact_readouts_control_path(), enabled);
+}
+
+bool top_bar_enabled()
+{
+    return read_enabled_file(top_bar_control_path());
+}
+
+void set_top_bar_enabled(bool enabled)
+{
+    write_enabled_file(top_bar_control_path(), enabled);
 }
 
 std::string osd_layout()

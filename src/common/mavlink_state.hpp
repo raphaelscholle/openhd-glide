@@ -42,6 +42,12 @@ struct Snapshot {
     int channel_width_mhz {};
     int mcs_index {};
     int tx_power_mw {};
+    int link_rssi_dbm { -128 };
+    int link_txc_temp_c { -128 };
+    int link_quality_percent {};
+    int rc_quality_percent {};
+    int link_snr_antenna1_db { -128 };
+    int link_snr_antenna2_db { -128 };
     int scan_progress { 0 };
     int rc_channels[4] {};
     int battery_percent { -1 };
@@ -53,6 +59,7 @@ struct Snapshot {
     float ground_speed_mps {};
     float airspeed_mps {};
     float voltage_v {};
+    float link_bitrate_mbit {};
     double latitude_deg {};
     double longitude_deg {};
     std::string flight_mode { "N/A" };
