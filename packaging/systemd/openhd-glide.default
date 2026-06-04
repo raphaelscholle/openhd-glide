@@ -9,10 +9,11 @@ GLIDE_VIDEO_BACKEND=auto
 GLIDE_VIEW_PORT=5600
 GLIDE_VIEW_CODEC=h264
 
-# KMS mode and OSD/UI dimensions.
-GLIDE_WIDTH=1920
-GLIDE_HEIGHT=1080
-# 0 means auto-select the highest refresh rate exposed by the connected display.
+# KMS mode and OSD/UI dimensions. Use auto/native/preferred or 0 to use the
+# first mode exposed by the connected display.
+GLIDE_WIDTH=auto
+GLIDE_HEIGHT=auto
+# 0 means auto-select the refresh rate from the selected display mode.
 GLIDE_DISPLAY_HZ=0
 
 # Flow OSD overlay.
@@ -42,7 +43,7 @@ GLIDE_UI_NICE=5
 # LVGL UI buffer overlay.
 GLIDE_UI=1
 GLIDE_UI_WIDTH=760
-# GLIDE_UI_HEIGHT defaults to GLIDE_HEIGHT.
+# GLIDE_UI_HEIGHT defaults to the resolved GLIDE_HEIGHT.
 GLIDE_UI_COLOR=0xCC0B1722
 # GLIDE_UI_BUFFER defaults to /run/openhd-glide/openhd-glide-ui.argb.
 

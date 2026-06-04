@@ -42,8 +42,9 @@ else
   BIN="$GLIDE_BIN"
 fi
 PORT="${1:-5600}"
-WIDTH="${GLIDE_WIDTH:-1920}"
-HEIGHT="${GLIDE_HEIGHT:-1080}"
+WIDTH="${GLIDE_WIDTH:-auto}"
+HEIGHT="${GLIDE_HEIGHT:-auto}"
+glide_resolve_example_dimensions
 DISPLAY_HZ="${GLIDE_DISPLAY_HZ:-0}"
 
 glide_prepare_kms_example_service

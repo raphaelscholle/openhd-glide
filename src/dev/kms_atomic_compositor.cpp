@@ -556,6 +556,22 @@ bool KmsAtomicCompositor::create(
         && choose_connector_and_mode(requested_width, requested_height, requested_refresh_hz)
         && [&] {
             flow_surface_ = surface_;
+            if (ui_surface_.width != 0 && ui_surface_.height != 0) {
+                const auto requested_ui_width = ui_surface_.width;
+                const auto requested_ui_height = ui_surface_.height;
+                ui_surface_.width = std::min(ui_surface_.width, surface_.width);
+                ui_surface_.height = std::min(ui_surface_.height, surface_.height);
+                if (ui_surface_.width != requested_ui_width || ui_surface_.height != requested_ui_height) {
+                    glide::log(
+                        glide::LogLevel::warning,
+                        "OpenHD-Glide",
+                        "UI overlay surface clamped from " + std::to_string(requested_ui_width) + "x"
+                            + std::to_string(requested_ui_height) + " to "
+                            + std::to_string(ui_surface_.width) + "x" + std::to_string(ui_surface_.height)
+                            + " for selected KMS mode "
+                            + std::to_string(surface_.width) + "x" + std::to_string(surface_.height));
+                }
+            }
             if (!primary_flow_readback_ && flow_render_width != 0 && flow_render_height != 0) {
                 flow_surface_.width = std::clamp(flow_render_width, 64U, surface_.width);
                 flow_surface_.height = std::clamp(flow_render_height, 64U, surface_.height);
@@ -1065,7 +1081,10 @@ bool KmsAtomicCompositor::choose_connector_and_mode(std::uint32_t requested_widt
                 + "@" + std::to_string(requested_refresh_hz)
                 + "Hz is unavailable; using highest refresh for that resolution");
     }
-    if (!found_resolution && requested_refresh_hz == 0) {
+    const bool requested_native_mode = requested_width == 0 || requested_height == 0;
+    if (requested_native_mode) {
+        selected_mode = chosen_connector->modes[0];
+    } else if (!found_resolution && requested_refresh_hz == 0) {
         selected_mode = highest_refresh_mode;
     }
     if (found_resolution && requested_refresh_hz != 0 && !found_exact_refresh) {
@@ -1073,7 +1092,7 @@ bool KmsAtomicCompositor::choose_connector_and_mode(std::uint32_t requested_widt
             found_refresh_fallback = true;
         }
     }
-    if (found_resolution) {
+    if (found_resolution || requested_native_mode) {
         glide::log(
             glide::LogLevel::info,
             "OpenHD-Glide",
@@ -1081,7 +1100,9 @@ bool KmsAtomicCompositor::choose_connector_and_mode(std::uint32_t requested_widt
                 + std::to_string(selected_mode.hdisplay) + "x" + std::to_string(selected_mode.vdisplay)
                 + "@" + std::to_string(selected_mode.vrefresh)
                 + "Hz on connector " + std::to_string(chosen_connector->connector_id)
-                + (requested_refresh_hz != 0 ? (" (requested " + std::to_string(requested_refresh_hz) + "Hz)") : " (highest refresh auto-selection)"));
+                + (requested_native_mode
+                        ? " (connected display preferred mode)"
+                        : (requested_refresh_hz != 0 ? (" (requested " + std::to_string(requested_refresh_hz) + "Hz)") : " (highest refresh auto-selection)")));
     } else {
         glide::log(
             glide::LogLevel::warning,

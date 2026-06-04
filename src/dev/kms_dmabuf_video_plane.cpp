@@ -348,10 +348,13 @@ bool KmsDmabufVideoPlane::choose_connector_and_mode(std::uint32_t requested_widt
                 + "@" + std::to_string(requested_refresh_hz)
                 + "Hz is unavailable; using highest refresh for that resolution");
     }
-    if (!found_resolution && requested_refresh_hz == 0) {
+    const bool requested_native_mode = requested_width == 0 || requested_height == 0;
+    if (requested_native_mode) {
+        selected_mode = chosen_connector->modes[0];
+    } else if (!found_resolution && requested_refresh_hz == 0) {
         selected_mode = highest_refresh_mode;
     }
-    if (found_resolution) {
+    if (found_resolution || requested_native_mode) {
         glide::log(
             glide::LogLevel::info,
             "OpenHD-Glide",
@@ -359,7 +362,9 @@ bool KmsDmabufVideoPlane::choose_connector_and_mode(std::uint32_t requested_widt
                 + std::to_string(selected_mode.hdisplay) + "x" + std::to_string(selected_mode.vdisplay)
                 + "@" + std::to_string(selected_mode.vrefresh)
                 + "Hz on connector " + std::to_string(chosen_connector->connector_id)
-                + (requested_refresh_hz != 0 ? (" (requested " + std::to_string(requested_refresh_hz) + "Hz)") : " (highest refresh auto-selection)"));
+                + (requested_native_mode
+                        ? " (connected display preferred mode)"
+                        : (requested_refresh_hz != 0 ? (" (requested " + std::to_string(requested_refresh_hz) + "Hz)") : " (highest refresh auto-selection)")));
     } else {
         glide::log(
             glide::LogLevel::warning,
