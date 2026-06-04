@@ -225,6 +225,8 @@ private:
     std::vector<CachedFlowFramebuffer> flow_framebuffer_cache_;
     std::vector<unsigned char> flow_readback_buffer_;
     std::vector<CachedFramebuffer> video_framebuffer_cache_;
+    DmabufVideoFrame current_video_frame_ {};
+    std::uint32_t current_video_framebuffer_ {};
     std::uint64_t frame_serial_ {};
     std::string card_path_;
     std::string last_error_;

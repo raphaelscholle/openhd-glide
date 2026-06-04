@@ -55,6 +55,7 @@
 
 #if defined(__linux__)
 #include <fcntl.h>
+#include <linux/input.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -243,6 +244,8 @@ struct UiState {
     std::uint32_t flow_scale_percent { 50 };
 };
 
+void dispatch_key(UiState& state, const char* key);
+
 struct BufferDisplay {
     int fd { -1 };
     std::uint32_t width {};
@@ -253,6 +256,28 @@ struct BufferDisplay {
 };
 
 BufferDisplay* active_buffer_display {};
+
+struct LinuxKeyboardInput {
+    std::vector<int> fds;
+    std::chrono::steady_clock::time_point next_scan {};
+
+    ~LinuxKeyboardInput()
+    {
+        close_all();
+    }
+
+    void close_all()
+    {
+#if defined(__linux__)
+        for (const auto fd : fds) {
+            if (fd >= 0) {
+                close(fd);
+            }
+        }
+#endif
+        fds.clear();
+    }
+};
 
 void clear_active_buffer_display()
 {
@@ -278,6 +303,106 @@ void close_buffer_display(BufferDisplay& display)
 #endif
     display = {};
 }
+
+#if defined(__linux__)
+std::string linux_key_name(unsigned short code)
+{
+    switch (code) {
+    case KEY_UP:
+        return "up";
+    case KEY_DOWN:
+        return "down";
+    case KEY_LEFT:
+        return "left";
+    case KEY_RIGHT:
+        return "right";
+    case KEY_ENTER:
+    case KEY_KPENTER:
+    case KEY_SPACE:
+        return "enter";
+    case KEY_ESC:
+    case KEY_BACKSPACE:
+        return "back";
+    case KEY_M:
+    case KEY_MENU:
+        return "m";
+    case KEY_N:
+        return "n";
+    case KEY_EQUAL:
+    case KEY_KPPLUS:
+        return "+";
+    case KEY_MINUS:
+    case KEY_KPMINUS:
+        return "-";
+    default:
+        return {};
+    }
+}
+
+void open_keyboard_candidates(LinuxKeyboardInput& input)
+{
+    input.close_all();
+    std::vector<std::filesystem::path> candidates;
+    const auto by_path = std::filesystem::path("/dev/input/by-path");
+    std::error_code error;
+    if (std::filesystem::is_directory(by_path, error)) {
+        for (const auto& entry : std::filesystem::directory_iterator(by_path, error)) {
+            const auto path = entry.path();
+            const auto name = path.filename().string();
+            if (name.find("event-kbd") != std::string::npos) {
+                candidates.push_back(path);
+            }
+        }
+    }
+
+    if (candidates.empty()) {
+        const auto input_dir = std::filesystem::path("/dev/input");
+        if (std::filesystem::is_directory(input_dir, error)) {
+            for (const auto& entry : std::filesystem::directory_iterator(input_dir, error)) {
+                const auto path = entry.path();
+                const auto name = path.filename().string();
+                if (name.rfind("event", 0) == 0) {
+                    candidates.push_back(path);
+                }
+            }
+        }
+    }
+
+    for (const auto& path : candidates) {
+        const auto fd = open(path.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        if (fd >= 0) {
+            input.fds.push_back(fd);
+        }
+    }
+
+    if (!input.fds.empty()) {
+        glide::log(glide::LogLevel::info, "GlideUI", "Linux keyboard input enabled on " + std::to_string(input.fds.size()) + " event device(s)");
+    }
+}
+
+void poll_linux_keyboard(LinuxKeyboardInput& input, UiState& state, std::chrono::steady_clock::time_point now)
+{
+    if (input.fds.empty() && now >= input.next_scan) {
+        open_keyboard_candidates(input);
+        input.next_scan = now + std::chrono::seconds(2);
+    }
+
+    for (const auto fd : input.fds) {
+        input_event event {};
+        while (read(fd, &event, sizeof(event)) == sizeof(event)) {
+            if (event.type != EV_KEY || event.value == 0) {
+                continue;
+            }
+            const auto key = linux_key_name(event.code);
+            if (!key.empty()) {
+                dispatch_key(state, key.c_str());
+            }
+        }
+    }
+}
+#else
+void poll_linux_keyboard(LinuxKeyboardInput&, UiState&, std::chrono::steady_clock::time_point) {}
+#endif
 
 bool create_buffer_display(BufferDisplay& target, const Options& options)
 {
@@ -2408,6 +2533,7 @@ int main(int argc, char** argv)
     set_sdl_position(options);
     lv_init();
     BufferDisplay buffer_display;
+    LinuxKeyboardInput keyboard_input;
 #if OPENHD_GLIDE_HAS_LVGL_SDL
     if (options.preview) {
         auto* display = lv_sdl_window_create(static_cast<int32_t>(options.width), static_cast<int32_t>(options.height));
@@ -2480,6 +2606,9 @@ int main(int argc, char** argv)
             last_tick = now;
         }
 
+        if (options.buffer) {
+            poll_linux_keyboard(keyboard_input, state, now);
+        }
         poll_ipc(state, now);
         if (options.buffer && state.overlay_mode == OverlayMode::hidden) {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));

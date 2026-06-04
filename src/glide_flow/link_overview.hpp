@@ -37,6 +37,7 @@ struct LinkOverviewSample {
     int mcs {};
     int downlink_quality {};
     int frequency_mhz {};
+    int channel_width_mhz {};
     float bitrate_mbit {};
     bool recording {};
     bool uplink_ok {};

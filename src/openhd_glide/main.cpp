@@ -203,6 +203,7 @@ glide::flow::LinkOverviewSample link_sample_from_mavlink(const glide::mavlink::S
     sample.downlink_quality = mavlink.link_quality_percent;
     sample.rc_quality = mavlink.rc_quality_percent;
     sample.bitrate_mbit = mavlink.link_bitrate_mbit;
+    sample.channel_width_mhz = mavlink.channel_width_mhz;
     sample.air_voltage_v = mavlink.battery_valid ? mavlink.voltage_v : 0.0F;
     sample.air_speed_mps = mavlink.speed_valid
         ? (mavlink.airspeed_mps > 0.0F ? mavlink.airspeed_mps : mavlink.ground_speed_mps)

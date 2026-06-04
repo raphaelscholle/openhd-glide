@@ -54,6 +54,22 @@ std::string invalid_or_int_text(int value, std::string_view suffix = {})
     return std::to_string(value) + std::string(suffix);
 }
 
+std::string channel_width_text(int value)
+{
+    if (value <= 0) {
+        return "N/A";
+    }
+    return std::to_string(value) + "MHz";
+}
+
+std::string bitrate_text(float value)
+{
+    if (value <= 0.0F) {
+        return "N/A";
+    }
+    return fixed_1(value) + "MBIT";
+}
+
 RgbaColor quality_color(int value)
 {
     if (value > 60) {
@@ -177,8 +193,7 @@ void draw_left(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOvervi
 
     draw_panel_left(renderer, x, y, width, height, surface, theme);
     renderer.set_text_color(theme.text);
-    renderer.draw_circle_outline({ x + sx(26.0F, scale), y + sx(28.0F, scale) }, sx(16.0F, scale), sx(2.0F, scale), theme.text, surface);
-    draw_text(renderer, "O", x + sx(17.0F, scale), y + sx(36.0F, scale), sx(16.0F, scale), surface);
+    draw_text(renderer, channel_width_text(sample.channel_width_mhz), x + sx(18.0F, scale), y + sx(36.0F, scale), sx(15.0F, scale), surface);
     draw_text(
         renderer,
         invalid_or_int_text(sample.rssi_dbm) + " DBM " + invalid_or_int_text(sample.txc_temp_c, "C"),
@@ -209,7 +224,7 @@ void draw_right(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverv
         surface);
     draw_text(
         renderer,
-        fixed_1(sample.bitrate_mbit) + "MBIT",
+        bitrate_text(sample.bitrate_mbit),
         x + sx(270.0F, scale),
         y + sx(36.0F, scale),
         sx(15.0F, scale),
@@ -424,6 +439,7 @@ LinkOverviewSample SimulatedLinkOverview::sample(std::chrono::steady_clock::time
         .mcs = 2,
         .downlink_quality = std::clamp(76 + static_cast<int>(std::round(wave * 18.0F)), 0, 100),
         .frequency_mhz = 5800,
+        .channel_width_mhz = 20,
         .bitrate_mbit = 12.5F + faster * 1.8F,
         .recording = std::sin(seconds * 0.35F) > 0.0F,
         .uplink_ok = std::sin(seconds * 0.23F) > -0.85F,

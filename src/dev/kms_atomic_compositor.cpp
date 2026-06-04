@@ -632,6 +632,8 @@ bool KmsAtomicCompositor::present(const DmabufVideoFrame& video_frame, bool upda
         return false;
     }
 
+    current_video_frame_ = video_frame;
+    current_video_framebuffer_ = video->framebuffer;
     adopt_flow_framebuffer(flow_framebuffer, flow_bo, flow_is_solid_dumb);
     return true;
 #else
@@ -662,7 +664,8 @@ bool KmsAtomicCompositor::present_overlay(bool update_flow_frame)
         return false;
     }
 
-    if (!commit(nullptr, 0, flow_framebuffer, solid_ui_.framebuffer)) {
+    const auto* retained_video_frame = current_video_framebuffer_ != 0 ? &current_video_frame_ : nullptr;
+    if (!commit(retained_video_frame, current_video_framebuffer_, flow_framebuffer, solid_ui_.framebuffer)) {
         release_acquired_flow_framebuffer(flow_framebuffer, flow_bo, flow_is_solid_dumb);
         return false;
     }
@@ -2451,6 +2454,8 @@ void KmsAtomicCompositor::destroy_imported(ImportedFramebuffer& imported)
 
 void KmsAtomicCompositor::destroy_video_framebuffer_cache()
 {
+    current_video_frame_ = {};
+    current_video_framebuffer_ = 0;
     for (auto& cached : video_framebuffer_cache_) {
         destroy_imported(cached.imported);
     }
