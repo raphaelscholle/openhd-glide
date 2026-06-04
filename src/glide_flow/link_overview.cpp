@@ -54,20 +54,26 @@ std::string invalid_or_int_text(int value, std::string_view suffix = {})
     return std::to_string(value) + std::string(suffix);
 }
 
-std::string channel_width_text(int value)
+std::string channel_text(int frequency_mhz, int channel_width_mhz)
 {
-    if (value <= 0) {
-        return "N/A";
+    std::string text = frequency_mhz > 10 ? std::to_string(frequency_mhz) : "Chan N/A";
+    if (channel_width_mhz == 40 || channel_width_mhz == 20) {
+        text += " " + std::to_string(channel_width_mhz) + " MHz";
+    } else {
+        text += " N/A";
     }
-    return std::to_string(value) + "MHz";
+    return text;
 }
 
-std::string bitrate_text(float value)
+std::string bitrate_mcs_text(float bitrate_mbit, int mcs)
 {
-    if (value <= 0.0F) {
-        return "N/A";
+    if (bitrate_mbit <= 0.0F || mcs < 0) {
+        return "RATE N/A";
     }
-    return fixed_1(value) + "MBIT";
+    std::string value = bitrate_mbit < 10.0F
+        ? fixed_1(bitrate_mbit)
+        : std::to_string(static_cast<int>(std::round(bitrate_mbit)));
+    return value + " MBit/s [" + std::to_string(mcs) + "]";
 }
 
 RgbaColor quality_color(int value)
@@ -89,6 +95,12 @@ void draw_text(GlesTextRenderer& renderer, std::string text, float x, float base
         .y = baseline,
         .scale = scale,
     }, surface);
+}
+
+void draw_centered_text(GlesTextRenderer& renderer, std::string text, float center_x, float baseline, float scale, SurfaceSize surface)
+{
+    const auto width = renderer.measure_text_width(text, scale);
+    draw_text(renderer, std::move(text), center_x - width * 0.5F, baseline, scale, surface);
 }
 
 float layout_scale(SurfaceSize surface)
@@ -193,16 +205,14 @@ void draw_left(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOvervi
 
     draw_panel_left(renderer, x, y, width, height, surface, theme);
     renderer.set_text_color(theme.text);
-    draw_text(renderer, channel_width_text(sample.channel_width_mhz), x + sx(18.0F, scale), y + sx(36.0F, scale), sx(15.0F, scale), surface);
     draw_text(
         renderer,
         invalid_or_int_text(sample.rssi_dbm) + " DBM " + invalid_or_int_text(sample.txc_temp_c, "C"),
-        x + sx(66.0F, scale),
+        x + sx(26.0F, scale),
         y + sx(36.0F, scale),
         sx(18.0F, scale),
         surface);
-    draw_text(renderer, "MCS:" + std::to_string(sample.mcs), x + sx(300.0F, scale), y + sx(36.0F, scale), sx(15.0F, scale), surface);
-    draw_skew_blocks(renderer, x + sx(66.0F, scale), y + sx(50.0F, scale), sample.downlink_quality, surface, theme);
+    draw_skew_blocks(renderer, x + sx(26.0F, scale), y + sx(50.0F, scale), sample.downlink_quality, surface, theme);
 }
 
 void draw_right(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverviewSample& sample, const OsdTheme& theme)
@@ -214,21 +224,10 @@ void draw_right(GlesTextRenderer& renderer, SurfaceSize surface, const LinkOverv
     constexpr float y = 0.0F;
 
     draw_panel_right(renderer, x, y, width, height, surface, theme);
-    draw_text(renderer, sample.uplink_ok ? "UP" : "NO", x + sx(92.0F, scale), y + sx(36.0F, scale), sx(15.0F, scale), surface);
-    draw_text(
-        renderer,
-        std::to_string(sample.frequency_mhz) + "MHZ",
-        x + sx(165.0F, scale),
-        y + sx(36.0F, scale),
-        sx(15.0F, scale),
-        surface);
-    draw_text(
-        renderer,
-        bitrate_text(sample.bitrate_mbit),
-        x + sx(270.0F, scale),
-        y + sx(36.0F, scale),
-        sx(15.0F, scale),
-        surface);
+    draw_text(renderer, sample.uplink_ok ? "UP" : "NO", x + sx(74.0F, scale), y + sx(31.0F, scale), sx(15.0F, scale), surface);
+    const auto text_center_x = x + sx(255.0F, scale);
+    draw_centered_text(renderer, channel_text(sample.frequency_mhz, sample.channel_width_mhz), text_center_x, y + sx(24.0F, scale), sx(14.0F, scale), surface);
+    draw_centered_text(renderer, bitrate_mcs_text(sample.bitrate_mbit, sample.mcs), text_center_x, y + sx(42.0F, scale), sx(14.0F, scale), surface);
 
     renderer.set_text_color(theme.text);
     const auto record_color = sample.recording ? bad_color : theme.text;
