@@ -44,6 +44,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -511,6 +512,34 @@ std::string fourcc_string(std::uint32_t format)
         '\0',
     };
     return text.data();
+}
+
+drmModeModeInfo vesa_1280x960_60_mode()
+{
+    drmModeModeInfo mode {};
+    mode.clock = 108000;
+    mode.hdisplay = 1280;
+    mode.hsync_start = 1376;
+    mode.hsync_end = 1488;
+    mode.htotal = 1800;
+    mode.vdisplay = 960;
+    mode.vsync_start = 961;
+    mode.vsync_end = 964;
+    mode.vtotal = 1000;
+    mode.vrefresh = 60;
+    mode.flags = DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC;
+    mode.type = DRM_MODE_TYPE_USERDEF;
+    std::snprintf(mode.name, sizeof(mode.name), "1280x960");
+    return mode;
+}
+
+bool can_use_builtin_mode(std::uint32_t requested_width, std::uint32_t requested_height, std::uint32_t requested_refresh_hz, drmModeModeInfo& mode)
+{
+    if (requested_width == 1280 && requested_height == 960 && (requested_refresh_hz == 0 || requested_refresh_hz == 60)) {
+        mode = vesa_1280x960_60_mode();
+        return true;
+    }
+    return false;
 }
 
 void configure_mesa_runtime_for_board()
@@ -1082,17 +1111,21 @@ bool KmsAtomicCompositor::choose_connector_and_mode(std::uint32_t requested_widt
                 + "Hz is unavailable; using highest refresh for that resolution");
     }
     const bool requested_native_mode = requested_width == 0 || requested_height == 0;
+    bool using_builtin_mode = false;
     if (requested_native_mode) {
         selected_mode = chosen_connector->modes[0];
-    } else if (!found_resolution && requested_refresh_hz == 0) {
-        selected_mode = highest_refresh_mode;
+    } else if (!found_resolution) {
+        using_builtin_mode = can_use_builtin_mode(requested_width, requested_height, requested_refresh_hz, selected_mode);
+        if (!using_builtin_mode && requested_refresh_hz == 0) {
+            selected_mode = highest_refresh_mode;
+        }
     }
     if (found_resolution && requested_refresh_hz != 0 && !found_exact_refresh) {
         if (!found_refresh_fallback) {
             found_refresh_fallback = true;
         }
     }
-    if (found_resolution || requested_native_mode) {
+    if (found_resolution || requested_native_mode || using_builtin_mode) {
         glide::log(
             glide::LogLevel::info,
             "OpenHD-Glide",
@@ -1100,7 +1133,9 @@ bool KmsAtomicCompositor::choose_connector_and_mode(std::uint32_t requested_widt
                 + std::to_string(selected_mode.hdisplay) + "x" + std::to_string(selected_mode.vdisplay)
                 + "@" + std::to_string(selected_mode.vrefresh)
                 + "Hz on connector " + std::to_string(chosen_connector->connector_id)
-                + (requested_native_mode
+                + (using_builtin_mode
+                        ? " (built-in VESA timing)"
+                        : requested_native_mode
                         ? " (connected display preferred mode)"
                         : (requested_refresh_hz != 0 ? (" (requested " + std::to_string(requested_refresh_hz) + "Hz)") : " (highest refresh auto-selection)")));
     } else {
