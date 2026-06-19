@@ -148,6 +148,38 @@ jobs:
 
           apt-get remove -y gstreamer1.0-plugins-rtp || true
 
+          install_exact_runtime_for_dev_package() {
+            local dev_package="$1"
+            local runtime_package="$2"
+            local dev_version
+            local runtime_version
+
+            dev_version="$(apt-cache policy "${dev_package}" | awk '/Candidate:/ { print $2; exit }')"
+            if [ -z "${dev_version}" ] || [ "${dev_version}" = "(none)" ]; then
+              return 0
+            fi
+
+            runtime_version="$(
+              apt-cache show "${dev_package}=${dev_version}" 2>/dev/null \
+                | awk -v runtime="${runtime_package}" '
+                    $1 == "Depends:" {
+                      for (i = 2; i <= NF; ++i) {
+                        if ($i == runtime && $(i + 1) == "(=") {
+                          gsub(/[),]/, "", $(i + 2))
+                          print $(i + 2)
+                          exit
+                        }
+                      }
+                    }'
+            )"
+            if [ -n "${runtime_version}" ]; then
+              apt-get install -y --allow-downgrades "${runtime_package}=${runtime_version}"
+            fi
+          }
+
+          install_exact_runtime_for_dev_package libgstreamer1.0-dev libgstreamer1.0-0
+          install_exact_runtime_for_dev_package libgstreamer-plugins-base1.0-dev libgstreamer-plugins-base1.0-0
+
           apt-get install -y \
             build-essential \
             ca-certificates \
