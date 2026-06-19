@@ -44,7 +44,36 @@ jobs:
             package_arch: arm64
             cloudsmith_distro: debian
             release: bookworm
-            extra_debian_depends: "gstreamer1.0-tools, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-ugly, gstreamer1.0-libav, gstreamer1.0-rockchip1, librockchip-mpp1, librga2"
+            require_rkmpp: "1"
+            extra_debian_depends: "gstreamer1.0-tools, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-ugly, gstreamer1.0-libav, gstreamer1.0-rockchip1, librockchip-mpp1, librga2"
+          - image_type: radxa-cubie
+            package_suffix: radxa-cubie
+            package_arch: arm64
+            cloudsmith_distro: debian
+            release: bullseye
+            require_rkmpp: "0"
+            extra_debian_depends: "gstreamer1.0-tools, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-ugly, gstreamer1.0-libav"
+          - image_type: rock5a
+            package_suffix: rock5a
+            package_arch: arm64
+            cloudsmith_distro: debian
+            release: bookworm
+            require_rkmpp: "1"
+            extra_debian_depends: "gstreamer1.0-tools, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-ugly, gstreamer1.0-libav, gstreamer1.0-rockchip1, librockchip-mpp1, librga2"
+          - image_type: rock5b
+            package_suffix: rock5b
+            package_arch: arm64
+            cloudsmith_distro: debian
+            release: bookworm
+            require_rkmpp: "1"
+            extra_debian_depends: "gstreamer1.0-tools, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-ugly, gstreamer1.0-libav, gstreamer1.0-rockchip1, librockchip-mpp1, librga2"
+          - image_type: radxa-cm5
+            package_suffix: radxa-cm5
+            package_arch: arm64
+            cloudsmith_distro: debian
+            release: bookworm
+            require_rkmpp: "1"
+            extra_debian_depends: "gstreamer1.0-tools, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-ugly, gstreamer1.0-libav, gstreamer1.0-rockchip1, librockchip-mpp1, librga2"
     env:
       CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
       API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
@@ -130,12 +159,16 @@ jobs:
             libgstreamer1.0-dev \
             libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-tools \
+            gstreamer1.0-plugins-base \
             gstreamer1.0-plugins-good \
             gstreamer1.0-plugins-bad \
             gstreamer1.0-plugins-ugly \
             gstreamer1.0-libav
 
-          apt-get install -y librockchip-mpp-dev librga-dev gstreamer1.0-rockchip1
+          require_rkmpp="$(cat require_rkmpp.txt)"
+          if [ "${require_rkmpp}" = "1" ]; then
+            apt-get install -y librockchip-mpp-dev librga-dev gstreamer1.0-rockchip1
+          fi
           apt-get install -y cmake || true
           cmake_ge_320() {
             if ! command -v cmake >/dev/null 2>&1; then
@@ -153,18 +186,22 @@ jobs:
           package_version="$(cat package_version.txt)"
           package_arch="$(cat package_arch.txt)"
           extra_debian_depends="$(cat extra_debian_depends.txt)"
-          cmake \
+          cmake_args=(
             -S . \
             -B build-package \
             -DCMAKE_BUILD_TYPE=Release \
             -DOPENHD_GLIDE_DEVICE_KMS=ON \
             -DOPENHD_GLIDE_REQUIRE_KMS_GBM=ON \
             -DOPENHD_GLIDE_REQUIRE_GSTREAMER=ON \
-            -DOPENHD_GLIDE_REQUIRE_RKMPP=ON \
             -DOPENHD_GLIDE_PACKAGE_SUFFIX="-${package_suffix}" \
             -DOPENHD_GLIDE_PACKAGE_VERSION="${package_version}" \
             -DOPENHD_GLIDE_PACKAGE_ARCHITECTURE="${package_arch}" \
             -DOPENHD_GLIDE_EXTRA_DEBIAN_DEPENDS="${extra_debian_depends}"
+          )
+          if [ "${require_rkmpp}" = "1" ]; then
+            cmake_args+=(-DOPENHD_GLIDE_REQUIRE_RKMPP=ON)
+          fi
+          cmake "${cmake_args[@]}"
           cmake --build build-package -j"$(nproc)"
           cmake --build build-package --target package
           package_file="$(find build-package -maxdepth 1 -name '*.deb' -print -quit)"
@@ -174,17 +211,23 @@ jobs:
             gstreamer1.0-plugins-good \
             gstreamer1.0-plugins-bad \
             gstreamer1.0-plugins-ugly \
-            gstreamer1.0-libav \
+            gstreamer1.0-libav; do
+            dpkg-deb -f "${package_file}" Depends | grep -q "${required}"
+          done
+          if [ "${require_rkmpp}" = "1" ]; then
+            for required in \
             gstreamer1.0-rockchip1 \
             librockchip-mpp1 \
             librga2; do
-            dpkg-deb -f "${package_file}" Depends | grep -q "${required}"
-          done
+              dpkg-deb -f "${package_file}" Depends | grep -q "${required}"
+            done
+          fi
           cp build-package/*.deb /out/
           EOF
           chmod +x /opt/OpenHD-ChrootCompiler/additionalFiles/build_chroot.sh
           echo "${{ matrix.package_suffix }}" > /opt/OpenHD-ChrootCompiler/additionalFiles/package_suffix.txt
           echo "${{ matrix.package_arch }}" > /opt/OpenHD-ChrootCompiler/additionalFiles/package_arch.txt
+          echo "${{ matrix.require_rkmpp }}" > /opt/OpenHD-ChrootCompiler/additionalFiles/require_rkmpp.txt
           echo "${{ matrix.extra_debian_depends }}" > /opt/OpenHD-ChrootCompiler/additionalFiles/extra_debian_depends.txt
           echo "0.1.0.${{ github.run_number }}" > /opt/OpenHD-ChrootCompiler/additionalFiles/package_version.txt
 
@@ -233,13 +276,13 @@ jobs:
           image_needle = "mv OpenHD-ImageBuilder/images .\n"
           image_patch = (
               image_needle
-              + "for board in radxa-zero3w; do\n"
+              + "for board in radxa-zero3w radxa-cubie rock5a rock5b radxa-cm5; do\n"
               + "  if [ ! -f \"images/${board}\" ] && [ -f \"images/${board}_base\" ]; then\n"
               + "    cp \"images/${board}_base\" \"images/${board}\"\n"
               + "  fi\n"
               + "done\n"
           )
-          if "images/${board}_base" not in text:
+          if "radxa-cubie rock5a rock5b radxa-cm5" not in text:
               if image_needle not in text:
                   raise SystemExit("Could not find ImageBuilder image import in build.sh")
               text = text.replace(image_needle, image_patch, 1)
