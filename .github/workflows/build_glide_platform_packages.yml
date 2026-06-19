@@ -218,6 +218,10 @@ jobs:
           package_version="$(cat package_version.txt)"
           package_arch="$(cat package_arch.txt)"
           extra_debian_depends="$(cat extra_debian_depends.txt)"
+          build_jobs="$(nproc)"
+          if [ "${package_suffix}" = "radxa-cubie" ]; then
+            build_jobs=1
+          fi
           cmake_args=(
             -S . \
             -B build-package \
@@ -234,7 +238,7 @@ jobs:
             cmake_args+=(-DOPENHD_GLIDE_REQUIRE_RKMPP=ON)
           fi
           cmake "${cmake_args[@]}"
-          cmake --build build-package -j"$(nproc)"
+          cmake --build build-package -j"${build_jobs}"
           cmake --build build-package --target package
           package_file="$(find build-package -maxdepth 1 -name '*.deb' -print -quit)"
           dpkg-deb -f "${package_file}" Depends
