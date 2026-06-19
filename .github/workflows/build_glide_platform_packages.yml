@@ -240,6 +240,7 @@ jobs:
           dpkg-deb -f "${package_file}" Depends
           for required in \
             gstreamer1.0-tools \
+            gstreamer1.0-plugins-base \
             gstreamer1.0-plugins-good \
             gstreamer1.0-plugins-bad \
             gstreamer1.0-plugins-ugly \
@@ -280,12 +281,18 @@ jobs:
               + "  if [[ \"${DISTRO}\" != \"bookworm\" ]]; then\n"
               + "    return 0\n"
               + "  fi\n"
-              + "  echo \"[apt-preflight] Removing legacy Radxa Bullseye sources from Bookworm image...\"\n"
+              + "  echo \"[apt-preflight] Normalizing Bookworm apt sources...\"\n"
               + "  for source_file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do\n"
-              + "    [[ -f \"${source_file}\" ]] && sudo sed -i '\\|radxa-repo.github.io/bullseye|d' \"${source_file}\"\n"
+              + "    [[ -f \"${source_file}\" ]] || continue\n"
+              + "    sudo sed -i 's|http://archive.debian.org/debian|http://deb.debian.org/debian|g' \"${source_file}\"\n"
+              + "    sudo sed -i 's|https://archive.debian.org/debian|http://deb.debian.org/debian|g' \"${source_file}\"\n"
+              + "    sudo sed -i '\\|radxa-repo.github.io/bullseye|d' \"${source_file}\"\n"
               + "  done\n"
               + "  for source_file in /etc/apt/sources.list.d/*.sources; do\n"
-              + "    [[ -f \"${source_file}\" ]] && grep -q 'radxa-repo.github.io/bullseye' \"${source_file}\" && sudo rm -f \"${source_file}\"\n"
+              + "    [[ -f \"${source_file}\" ]] || continue\n"
+              + "    sudo sed -i 's|http://archive.debian.org/debian|http://deb.debian.org/debian|g' \"${source_file}\"\n"
+              + "    sudo sed -i 's|https://archive.debian.org/debian|http://deb.debian.org/debian|g' \"${source_file}\"\n"
+              + "    grep -q 'radxa-repo.github.io/bullseye' \"${source_file}\" && sudo rm -f \"${source_file}\"\n"
               + "  done\n"
               + "}\n"
               + f"{packages_marker}\n"
