@@ -306,6 +306,18 @@ jobs:
               + "APT_CONF\n"
               + "  sudo rm -rf /var/lib/apt/lists/*\n"
               + "}\n"
+              + "apt() {\n"
+              + "  if [[ \"${1:-}\" == \"update\" ]]; then\n"
+              + f"    {packages_marker}\n"
+              + "  fi\n"
+              + "  command apt \"$@\"\n"
+              + "}\n"
+              + "apt-get() {\n"
+              + "  if [[ \"${1:-}\" == \"update\" ]]; then\n"
+              + f"    {packages_marker}\n"
+              + "  fi\n"
+              + "  command apt-get \"$@\"\n"
+              + "}\n"
               + f"{packages_marker}\n"
           )
           if packages_marker not in packages_text:
