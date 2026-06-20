@@ -1650,7 +1650,9 @@ bool KmsAtomicCompositor::create_flow_surface()
         arm_afbc_16x16_ytr_sparse_cbr_modifier,
         arm_afbc_16x16_ytr_split_sparse_modifier,
     };
-    gbm_surface_ = gbm_surface_create_with_modifiers2(
+    gbm_surface* modifier_surface {};
+#if OPENHD_GLIDE_HAS_GBM_SURFACE_CREATE_WITH_MODIFIERS2
+    modifier_surface = gbm_surface_create_with_modifiers2(
         static_cast<gbm_device*>(gbm_device_),
         flow_surface_.width,
         flow_surface_.height,
@@ -1658,6 +1660,16 @@ bool KmsAtomicCompositor::create_flow_surface()
         rockchip_overlay_modifiers.data(),
         rockchip_overlay_modifiers.size(),
         use_flags);
+#else
+    modifier_surface = gbm_surface_create_with_modifiers(
+        static_cast<gbm_device*>(gbm_device_),
+        flow_surface_.width,
+        flow_surface_.height,
+        GBM_FORMAT_ARGB8888,
+        rockchip_overlay_modifiers.data(),
+        rockchip_overlay_modifiers.size());
+#endif
+    gbm_surface_ = modifier_surface;
     if (gbm_surface_ == nullptr) {
         gbm_surface_ = gbm_surface_create(
             static_cast<gbm_device*>(gbm_device_),
