@@ -272,6 +272,7 @@ jobs:
           sudo apt update
           sudo bash install_dep.sh
           python3 - <<'PY'
+          import re
           from pathlib import Path
 
           packages_stage = Path("/opt/OpenHD-ChrootCompiler/stages/02-Packages/00-run-chroot.sh")
@@ -324,6 +325,17 @@ jobs:
               if packages_needle not in packages_text:
                   raise SystemExit("Could not find package-stage build marker in ChrootCompiler")
               packages_stage.write_text(packages_text.replace(packages_needle, packages_patch, 1))
+
+          packages_text = packages_stage.read_text()
+          apt_update_marker = "# openhd_glide_patch_apt_update_calls"
+          if apt_update_marker not in packages_text:
+              packages_text = packages_text.replace("set -e\n", f"set -e\n\n{apt_update_marker}\n", 1)
+              apt_update_pattern = re.compile(r"^([ \t]*)((?:sudo\s+)?apt(?:-get)?\s+update(?:\s+.*)?)$", re.MULTILINE)
+              packages_text = apt_update_pattern.sub(
+                  lambda match: f"{match.group(1)}{packages_marker}\n{match.group(1)}{match.group(2)}",
+                  packages_text,
+              )
+              packages_stage.write_text(packages_text)
 
           build_sh = Path("/opt/OpenHD-ChrootCompiler/build.sh")
           text = build_sh.read_text()
