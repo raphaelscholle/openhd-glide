@@ -397,9 +397,29 @@ jobs:
           needle = "mv OpenHD-ImageBuilder/stages/01-Baseimage stages/\n"
           patch = (
               needle
-              + "sed -i 's/WANTEDSIZE=\"6800000000\"/WANTEDSIZE=\"15000000000\"/' stages/01-Baseimage/01-run.sh\n"
+              + "python3 - <<'PATCH_IMAGE_SIZE'\n"
+              + "from pathlib import Path\n"
+              + "stage = Path('stages/01-Baseimage/01-run.sh')\n"
+              + "stage_text = stage.read_text()\n"
+              + "old = '''if [[ \"${OS}\" == radxa-debian-rock5a ]] || [[ \"${OS}\" == radxa-debian-rock5b ]];then\n"
+              + "    WANTEDSIZE=\"6800000000\"\n"
+              + "    else\n"
+              + "    WANTEDSIZE=\"${ROOT_IMAGE_SIZE_BYTES:-5632000000}\"\n"
+              + "    fi'''\n"
+              + "new = '''if [[ \"${OS}\" == radxa-debian-rock5b ]]; then\n"
+              + "    WANTEDSIZE=\"22000000000\"\n"
+              + "    elif [[ \"${OS}\" == radxa-debian-rock5a ]]; then\n"
+              + "    WANTEDSIZE=\"15000000000\"\n"
+              + "    else\n"
+              + "    WANTEDSIZE=\"${ROOT_IMAGE_SIZE_BYTES:-5632000000}\"\n"
+              + "    fi'''\n"
+              + "if new not in stage_text:\n"
+              + "    if old not in stage_text:\n"
+              + "        raise SystemExit('Could not find Rock5 image size block')\n"
+              + "    stage.write_text(stage_text.replace(old, new, 1))\n"
+              + "PATCH_IMAGE_SIZE\n"
           )
-          if "WANTEDSIZE=\"15000000000\"" not in text:
+          if "PATCH_IMAGE_SIZE" not in text:
               if needle not in text:
                   raise SystemExit("Could not find ImageBuilder stage import in build.sh")
               text = text.replace(needle, patch, 1)
