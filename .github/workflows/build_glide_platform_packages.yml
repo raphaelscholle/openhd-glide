@@ -327,6 +327,21 @@ jobs:
               packages_stage.write_text(packages_text.replace(packages_needle, packages_patch, 1))
 
           packages_text = packages_stage.read_text()
+          rock5_bookworm_guard_marker = "# openhd_glide_bookworm_guard_rock5_preflight"
+          rock5_func_needle = "  normalize_bullseye_sources() {\n"
+          if rock5_bookworm_guard_marker not in packages_text and rock5_func_needle in packages_text:
+              rock5_func_patch = (
+                  f"  {rock5_bookworm_guard_marker}\n"
+                  + rock5_func_needle
+                  + "    if [[ \"${DISTRO}\" == \"bookworm\" ]]; then\n"
+                  + f"      {packages_marker}\n"
+                  + "      return 0\n"
+                  + "    fi\n"
+              )
+              packages_text = packages_text.replace(rock5_func_needle, rock5_func_patch, 1)
+              packages_stage.write_text(packages_text)
+
+          packages_text = packages_stage.read_text()
           apt_update_marker = "# openhd_glide_patch_apt_update_calls"
           if apt_update_marker not in packages_text:
               packages_text = packages_text.replace("set -e\n", f"set -e\n\n{apt_update_marker}\n", 1)
