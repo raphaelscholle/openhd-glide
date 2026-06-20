@@ -281,6 +281,7 @@ jobs:
           sudo apt update
           sudo bash install_dep.sh
           python3 - <<'PY'
+          import os
           import re
           from pathlib import Path
 
@@ -366,6 +367,58 @@ jobs:
               )
               packages_stage.write_text(packages_text)
 
+          packages_text = packages_stage.read_text()
+          out_mount_marker = "# openhd_glide_bind_out_guard"
+          out_link_needle = """HOST=$(cat /opt/additionalFiles/mount.txt)
+          mkdir /host
+          mount $HOST /host
+          INDIR=$(cat /opt/additionalFiles/pwd.txt)
+          OUTDIR="/host"$INDIR
+          ln -s $OUTDIR /out
+          rm -Rf /out/*
+          """
+          out_link_patch = f"""{out_mount_marker}
+          if mountpoint -q /out; then
+            rm -Rf /out/*
+          else
+            HOST=$(cat /opt/additionalFiles/mount.txt)
+            mkdir /host
+            mount $HOST /host
+            INDIR=$(cat /opt/additionalFiles/pwd.txt)
+            OUTDIR="/host"$INDIR
+            ln -s $OUTDIR /out
+            rm -Rf /out/*
+          fi
+          """
+          if out_mount_marker not in packages_text:
+              if out_link_needle not in packages_text:
+                  raise SystemExit("Could not find package-stage /out symlink block")
+              packages_stage.write_text(packages_text.replace(out_link_needle, out_link_patch, 1))
+
+          package_suffix = Path("/opt/OpenHD-ChrootCompiler/additionalFiles/package_suffix.txt").read_text().strip()
+          workspace = Path(os.environ["GITHUB_WORKSPACE"])
+          host_out = workspace / f"chroot-out-{package_suffix}"
+          host_out.mkdir(parents=True, exist_ok=True)
+          common_sh = Path("/opt/OpenHD-ChrootCompiler/scripts/common.sh")
+          common_text = common_sh.read_text()
+          common_marker = "# openhd_glide_bind_workspace_out"
+          if common_marker not in common_text:
+              common_needle = '    cp -r "${STAGE_DIR}/../../additionalFiles" "${MNT_DIR}/opt"\n    capsh --drop=cap_setfcap "--chroot=${MNT_DIR}/" -- "$@"\n\n    umount -l "${MNT_DIR}/etc/resolv.conf"\n'
+              common_patch = (
+                  f"    {common_marker}\n"
+                  + f"    mkdir -p {host_out.as_posix()} \"${{MNT_DIR}}/out\"\n"
+                  + f"    mountpoint -q \"${{MNT_DIR}}/out\" || mount --bind {host_out.as_posix()} \"${{MNT_DIR}}/out\"\n"
+                  + '    cp -r "${STAGE_DIR}/../../additionalFiles" "${MNT_DIR}/opt"\n'
+                  + '    capsh --drop=cap_setfcap "--chroot=${MNT_DIR}/" -- "$@"\n\n'
+                  + '    if mountpoint -q "${MNT_DIR}/out"; then\n'
+                  + '        umount -l "${MNT_DIR}/out"\n'
+                  + '    fi\n\n'
+                  + '    umount -l "${MNT_DIR}/etc/resolv.conf"\n'
+              )
+              if common_needle not in common_text:
+                  raise SystemExit("Could not find ChrootCompiler chroot entry block")
+              common_sh.write_text(common_text.replace(common_needle, common_patch, 1))
+
           build_sh = Path("/opt/OpenHD-ChrootCompiler/build.sh")
           text = build_sh.read_text()
           original = text
@@ -433,7 +486,7 @@ jobs:
 
       - name: Collect artifacts
         run: |
-          cp -r /opt/OpenHD-ChrootCompiler/out/* .
+          find /opt/OpenHD-ChrootCompiler/out "$GITHUB_WORKSPACE"/chroot-out-* -maxdepth 1 -name '*.deb' -exec cp {} . \;
 
       - name: Upload to Github
         uses: "actions/upload-artifact@v4"
