@@ -109,9 +109,9 @@ jobs:
           set -euo pipefail
           chmod 1777 /tmp || true
           export DEBIAN_FRONTEND=noninteractive
-          mkdir -p /opt/additionalFiles/apt-archives/partial
+          mkdir -p /out/apt-archives/partial
           cat >/etc/apt/apt.conf.d/99openhd-ci-cache-dir <<'APT_CONF'
-          Dir::Cache::archives "/opt/additionalFiles/apt-archives";
+          Dir::Cache::archives "/out/apt-archives";
           APT_CONF
           apt-get clean
 
@@ -264,6 +264,7 @@ jobs:
               dpkg-deb -f "${package_file}" Depends | grep -q "${required}"
             done
           fi
+          rm -rf /out/apt-archives
           cp build-package/*.deb /out/
           EOF
           chmod +x /opt/OpenHD-ChrootCompiler/additionalFiles/build_chroot.sh
@@ -310,9 +311,9 @@ jobs:
               + "Acquire::IndexTargets::deb::DEP-11-icons-small::DefaultEnabled \"false\";\n"
               + "Acquire::IndexTargets::deb::DEP-11-icons::DefaultEnabled \"false\";\n"
               + "APT_CONF\n"
-              + "  sudo mkdir -p /opt/additionalFiles/apt-archives/partial\n"
+              + "  sudo mkdir -p /out/apt-archives/partial\n"
               + "  sudo tee /etc/apt/apt.conf.d/99openhd-ci-cache-dir >/dev/null <<'APT_CONF'\n"
-              + "Dir::Cache::archives \"/opt/additionalFiles/apt-archives\";\n"
+              + "Dir::Cache::archives \"/out/apt-archives\";\n"
               + "APT_CONF\n"
               + "  sudo rm -rf /var/lib/apt/lists/*\n"
               + "  sudo apt-get clean\n"
