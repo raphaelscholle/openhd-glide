@@ -134,6 +134,24 @@ The helper accepts environment overrides:
 GLIDE_BUILD_DIR=build-kms GLIDE_INSTALL_PREFIX=/usr/local GLIDE_JOBS=8 scripts/compile-install.sh
 ```
 
+### Orange Pi Zero 3W Bookworm
+
+For Orange Pi Zero 3W Bookworm images, use the board helper to install the normal target-device dependencies,
+build the DRM/KMS binary, and start the Allwinner/Cedar KMS preview path:
+
+```sh
+examples/buildrun-orangepi-zero3w-bookworm.sh 5600 h264
+```
+
+The helper defaults to `GLIDE_ORANGEPI_MODE=all`, which runs dependency install, build, and run. Use
+`GLIDE_ORANGEPI_MODE=deps`, `build`, or `run` to execute only one step. It also defaults to
+`GLIDE_ORANGEPI_BACKEND=cedar`; set `GLIDE_ORANGEPI_BACKEND=gstreamer` to use the portable GStreamer KMS path
+instead. Display sizing follows the normal KMS script overrides:
+
+```sh
+GLIDE_ORANGEPI_MODE=run GLIDE_WIDTH=auto GLIDE_HEIGHT=auto GLIDE_DISPLAY_HZ=0 examples/buildrun-orangepi-zero3w-bookworm.sh
+```
+
 On Linux, install `libdrm` development headers to enable real DRM plane discovery. Without `libdrm`, or on non-Linux platforms, the probe builds and reports that DRM discovery is unavailable.
 
 Install OpenGL ES 2.0 development files to enable the first `glide-flow` renderer path. Until the DRM/EGL surface is added, `glide-flow` runs the FPS layout path and prints where the top-right counter will render. Passing `--render-gles` submits the FPS glyphs through GLES and requires a current EGL/GLES context.

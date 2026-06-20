@@ -46,6 +46,13 @@ jobs:
             release: bookworm
             require_rkmpp: "1"
             extra_debian_depends: "gstreamer1.0-tools, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-ugly, gstreamer1.0-libav, gstreamer1.0-rockchip1, librockchip-mpp1, librga2"
+          - image_type: orangepi-zero3w-lite
+            package_suffix: orangepi-zero3w
+            package_arch: arm64
+            cloudsmith_distro: debian
+            release: bookworm
+            require_rkmpp: "0"
+            extra_debian_depends: "gstreamer1.0-tools, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good, gstreamer1.0-plugins-bad, gstreamer1.0-plugins-ugly, gstreamer1.0-libav"
           - image_type: radxa-cubie
             package_suffix: radxa-cubie
             package_arch: arm64
@@ -436,13 +443,13 @@ jobs:
           image_needle = "mv OpenHD-ImageBuilder/images .\n"
           image_patch = (
               image_needle
-              + "for board in radxa-zero3w radxa-cubie rock5a rock5b radxa-cm5; do\n"
+              + "for board in radxa-zero3w orangepi-zero3w-lite radxa-cubie rock5a rock5b radxa-cm5; do\n"
               + "  if [ ! -f \"images/${board}\" ] && [ -f \"images/${board}_base\" ]; then\n"
               + "    cp \"images/${board}_base\" \"images/${board}\"\n"
               + "  fi\n"
               + "done\n"
           )
-          if "radxa-cubie rock5a rock5b radxa-cm5" not in text:
+          if "orangepi-zero3w-lite radxa-cubie rock5a rock5b radxa-cm5" not in text:
               if image_needle not in text:
                   raise SystemExit("Could not find ImageBuilder image import in build.sh")
               text = text.replace(image_needle, image_patch, 1)

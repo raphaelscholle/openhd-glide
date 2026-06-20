@@ -30,10 +30,14 @@ BUILD_TYPE="${GLIDE_BUILD_TYPE:-Release}"
 INSTALL_PREFIX="${GLIDE_INSTALL_PREFIX:-/usr/local}"
 JOBS="${GLIDE_JOBS:-$(nproc)}"
 INSTALL_DEPS="${GLIDE_INSTALL_DEPS:-0}"
+DEPS_ONLY=0
 APT_BACKPORTS_TARGET="${GLIDE_APT_BACKPORTS_TARGET:-bookworm-backports}"
 
 if [ "${1:-}" = "--deps" ]; then
   INSTALL_DEPS=1
+elif [ "${1:-}" = "--deps-only" ]; then
+  INSTALL_DEPS=1
+  DEPS_ONLY=1
 fi
 
 if [ "$INSTALL_DEPS" = "1" ]; then
@@ -74,6 +78,10 @@ if [ "$INSTALL_DEPS" = "1" ]; then
     gstreamer1.0-plugins-bad \
     gstreamer1.0-plugins-ugly \
     gstreamer1.0-libav
+
+  if [ "$DEPS_ONLY" = "1" ]; then
+    exit 0
+  fi
 fi
 
 cmake \
