@@ -223,13 +223,15 @@ jobs:
           package_version="$(cat package_version.txt)"
           package_arch="$(cat package_arch.txt)"
           extra_debian_depends="$(cat extra_debian_depends.txt)"
+          build_dir="/out/build-package-${package_suffix}"
+          rm -rf "${build_dir}"
           build_jobs="$(nproc)"
           if [ "${package_suffix}" = "radxa-cubie" ]; then
             build_jobs=1
           fi
           cmake_args=(
             -S . \
-            -B build-package \
+            -B "${build_dir}" \
             -DCMAKE_BUILD_TYPE=Release \
             -DOPENHD_GLIDE_DEVICE_KMS=ON \
             -DOPENHD_GLIDE_REQUIRE_KMS_GBM=ON \
@@ -243,9 +245,9 @@ jobs:
             cmake_args+=(-DOPENHD_GLIDE_REQUIRE_RKMPP=ON)
           fi
           cmake "${cmake_args[@]}"
-          cmake --build build-package -j"${build_jobs}"
-          cmake --build build-package --target package
-          package_file="$(find build-package -maxdepth 1 -name '*.deb' -print -quit)"
+          cmake --build "${build_dir}" -j"${build_jobs}"
+          cmake --build "${build_dir}" --target package
+          package_file="$(find "${build_dir}" -maxdepth 1 -name '*.deb' -print -quit)"
           dpkg-deb -f "${package_file}" Depends
           for required in \
             gstreamer1.0-tools \
@@ -265,7 +267,8 @@ jobs:
             done
           fi
           rm -rf /out/apt-archives
-          cp build-package/*.deb /out/
+          cp "${build_dir}"/*.deb /out/
+          rm -rf "${build_dir}"
           EOF
           chmod +x /opt/OpenHD-ChrootCompiler/additionalFiles/build_chroot.sh
           echo "${{ matrix.package_suffix }}" > /opt/OpenHD-ChrootCompiler/additionalFiles/package_suffix.txt
