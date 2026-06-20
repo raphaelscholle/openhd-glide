@@ -112,6 +112,8 @@ jobs:
           mkdir -p /out/apt-archives/partial
           cat >/etc/apt/apt.conf.d/99openhd-ci-cache-dir <<'APT_CONF'
           Dir::Cache::archives "/out/apt-archives";
+          APT::Install-Recommends "false";
+          APT::Install-Suggests "false";
           APT_CONF
           apt-get clean
 
@@ -135,20 +137,10 @@ jobs:
             libgles2-mesa-dev
             libegl1-mesa-dev
           )
-          graphics_runtime_packages=(
-            libdrm2
-            libdrm-radeon1
-            libdrm-nouveau2
-            libdrm-amdgpu1
-            libgbm1
-            libegl-mesa0
-            libglapi-mesa
-          )
           if apt-cache policy libdrm2 libgbm1 | awk '/Installed:|Candidate:/ && /~bpo/ { found = 1 } END { exit(found ? 0 : 1) }'; then
-            apt-get install -y -t bookworm-backports "${graphics_runtime_packages[@]}"
-            apt-get install -y -t bookworm-backports "${graphics_dev_packages[@]}"
+            apt-get install -y --no-install-recommends -t bookworm-backports "${graphics_dev_packages[@]}"
           else
-            apt-get install -y "${graphics_dev_packages[@]}"
+            apt-get install -y --no-install-recommends "${graphics_dev_packages[@]}"
           fi
 
           apt-get remove -y gstreamer1.0-plugins-rtp || true
@@ -178,14 +170,14 @@ jobs:
                     }'
             )"
             if [ -n "${runtime_version}" ]; then
-              apt-get install -y --allow-downgrades "${runtime_package}=${runtime_version}"
+              apt-get install -y --no-install-recommends --allow-downgrades "${runtime_package}=${runtime_version}"
             fi
           }
 
           install_exact_runtime_for_dev_package libgstreamer1.0-dev libgstreamer1.0-0
           install_exact_runtime_for_dev_package libgstreamer-plugins-base1.0-dev libgstreamer-plugins-base1.0-0
 
-          apt-get install -y \
+          apt-get install -y --no-install-recommends \
             build-essential \
             ca-certificates \
             git \
@@ -204,9 +196,9 @@ jobs:
 
           require_rkmpp="$(cat require_rkmpp.txt)"
           if [ "${require_rkmpp}" = "1" ]; then
-            apt-get install -y librockchip-mpp-dev librga-dev gstreamer1.0-rockchip1
+            apt-get install -y --no-install-recommends librockchip-mpp-dev librga-dev gstreamer1.0-rockchip1
           fi
-          apt-get install -y cmake || true
+          apt-get install -y --no-install-recommends cmake || true
           cmake_ge_320() {
             if ! command -v cmake >/dev/null 2>&1; then
               return 1
@@ -218,14 +210,19 @@ jobs:
             pip3 install --upgrade cmake || pip3 install --upgrade cmake --break-system-packages
           fi
           cmake --version
+          rm -rf /usr/share/doc/* /usr/share/man/* /var/cache/man/* /var/lib/apt/lists/*
+          apt-get clean
 
           package_suffix="$(cat package_suffix.txt)"
           package_version="$(cat package_version.txt)"
           package_arch="$(cat package_arch.txt)"
           extra_debian_depends="$(cat extra_debian_depends.txt)"
           build_dir="/mnt/openhd-glide-build/build-package-${package_suffix}"
+          fetchcontent_dir="/mnt/openhd-glide-build/fetchcontent-${package_suffix}"
           mkdir -p /mnt/openhd-glide-build
-          rm -rf "${build_dir}"
+          rm -rf "${build_dir}" "${fetchcontent_dir}"
+          echo "[openhd-glide-ci] build filesystem:"
+          df -h / /out /mnt/openhd-glide-build || true
           build_jobs="$(nproc)"
           if [ "${package_suffix}" = "radxa-cubie" ]; then
             build_jobs=1
@@ -233,6 +230,7 @@ jobs:
           cmake_args=(
             -S . \
             -B "${build_dir}" \
+            -DFETCHCONTENT_BASE_DIR="${fetchcontent_dir}" \
             -DCMAKE_BUILD_TYPE=Release \
             -DOPENHD_GLIDE_DEVICE_KMS=ON \
             -DOPENHD_GLIDE_REQUIRE_KMS_GBM=ON \
@@ -315,10 +313,14 @@ jobs:
               + "Acquire::IndexTargets::deb::DEP-11::DefaultEnabled \"false\";\n"
               + "Acquire::IndexTargets::deb::DEP-11-icons-small::DefaultEnabled \"false\";\n"
               + "Acquire::IndexTargets::deb::DEP-11-icons::DefaultEnabled \"false\";\n"
+              + "APT::Install-Recommends \"false\";\n"
+              + "APT::Install-Suggests \"false\";\n"
               + "APT_CONF\n"
               + "  sudo mkdir -p /out/apt-archives/partial\n"
               + "  sudo tee /etc/apt/apt.conf.d/99openhd-ci-cache-dir >/dev/null <<'APT_CONF'\n"
               + "Dir::Cache::archives \"/out/apt-archives\";\n"
+              + "APT::Install-Recommends \"false\";\n"
+              + "APT::Install-Suggests \"false\";\n"
               + "APT_CONF\n"
               + "  sudo rm -rf /var/lib/apt/lists/*\n"
               + "  sudo apt-get clean\n"
