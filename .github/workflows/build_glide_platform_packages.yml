@@ -84,6 +84,7 @@ jobs:
     env:
       CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
       API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+      OPENHD_RCLONE_CONFIG_GDRIVE: ${{ secrets.OPENHD_GDRIVE_RCLONE_CONFIG }}
     steps:
       - name: Maximize build space
         uses: easimon/maximize-build-space@master
@@ -286,6 +287,7 @@ jobs:
           cd /opt/OpenHD-ChrootCompiler/
           sudo apt update
           sudo bash install_dep.sh
+          sudo apt install -y rclone
           python3 - <<'PY'
           import os
           import re
@@ -440,6 +442,18 @@ jobs:
                   raise SystemExit("Could not find ImageBuilder clone in build.sh")
               text = text.replace(imagebuilder_clone_old, imagebuilder_clone_new, 1)
 
+          gdrive_script_marker = "# openhd_glide_import_gdrive_helper"
+          if gdrive_script_marker not in text:
+              gdrive_script_needle = "mv OpenHD-ImageBuilder/stages/01-Baseimage stages/\n"
+              gdrive_script_patch = (
+                  gdrive_script_needle
+                  + f"{gdrive_script_marker}\n"
+                  + "cp OpenHD-ImageBuilder/scripts/gdrive.sh scripts/gdrive.sh\n"
+              )
+              if gdrive_script_needle not in text:
+                  raise SystemExit("Could not find ImageBuilder base-stage import in build.sh")
+              text = text.replace(gdrive_script_needle, gdrive_script_patch, 1)
+
           image_needle = "mv OpenHD-ImageBuilder/images .\n"
           image_patch = (
               image_needle
@@ -458,6 +472,12 @@ jobs:
               text = text.replace(
                   "export BASE_IMAGE_SHA256\n",
                   "export BASE_IMAGE_SHA256\nexport BASE_IMAGE_SHA512\n",
+                  1,
+              )
+          if "export BASE_IMAGE_GDRIVE_URL" not in text:
+              text = text.replace(
+                  "export BASE_IMAGE_URL\n",
+                  "export BASE_IMAGE_GDRIVE_URL\nexport BASE_IMAGE_GDRIVE_RCLONE_PATH\nexport BASE_IMAGE_URL\n",
                   1,
               )
 
@@ -493,7 +513,7 @@ jobs:
           if text != original:
               build_sh.write_text(text)
           PY
-          sudo bash build.sh "${{ matrix.image_type }}" "$API_KEY" debian "${{ matrix.release }}"
+          sudo --preserve-env=OPENHD_RCLONE_CONFIG_GDRIVE bash build.sh "${{ matrix.image_type }}" "$API_KEY" debian "${{ matrix.release }}"
 
       - name: Collect artifacts
         run: |
