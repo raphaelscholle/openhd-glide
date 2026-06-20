@@ -223,7 +223,8 @@ jobs:
           package_version="$(cat package_version.txt)"
           package_arch="$(cat package_arch.txt)"
           extra_debian_depends="$(cat extra_debian_depends.txt)"
-          build_dir="/out/build-package-${package_suffix}"
+          build_dir="/mnt/openhd-glide-build/build-package-${package_suffix}"
+          mkdir -p /mnt/openhd-glide-build
           rm -rf "${build_dir}"
           build_jobs="$(nproc)"
           if [ "${package_suffix}" = "radxa-cubie" ]; then
@@ -401,18 +402,18 @@ jobs:
           host_out.mkdir(parents=True, exist_ok=True)
           common_sh = Path("/opt/OpenHD-ChrootCompiler/scripts/common.sh")
           common_text = common_sh.read_text()
-          common_marker = "# openhd_glide_bind_workspace_out"
+          common_marker = "# openhd_glide_bind_workspace_build"
           if common_marker not in common_text:
               mnt_dir = "$" + "{MNT_DIR}"
               common_needle = '    cp -r "${STAGE_DIR}/../../additionalFiles" "${MNT_DIR}/opt"\n    capsh --drop=cap_setfcap "--chroot=${MNT_DIR}/" -- "$@"\n\n    umount -l "${MNT_DIR}/etc/resolv.conf"\n'
               common_patch = (
                   f"    {common_marker}\n"
-                  + f"    mkdir -p {host_out.as_posix()} \"{mnt_dir}/out\"\n"
-                  + f"    mountpoint -q \"{mnt_dir}/out\" || mount --bind {host_out.as_posix()} \"{mnt_dir}/out\"\n"
+                  + f"    mkdir -p {host_out.as_posix()} \"{mnt_dir}/mnt/openhd-glide-build\"\n"
+                  + f"    mountpoint -q \"{mnt_dir}/mnt/openhd-glide-build\" || mount --bind {host_out.as_posix()} \"{mnt_dir}/mnt/openhd-glide-build\"\n"
                   + '    cp -r "${STAGE_DIR}/../../additionalFiles" "${MNT_DIR}/opt"\n'
                   + '    capsh --drop=cap_setfcap "--chroot=${MNT_DIR}/" -- "$@"\n\n'
-                  + '    if mountpoint -q "${MNT_DIR}/out"; then\n'
-                  + '        umount -l "${MNT_DIR}/out"\n'
+                  + '    if mountpoint -q "${MNT_DIR}/mnt/openhd-glide-build"; then\n'
+                  + '        umount -l "${MNT_DIR}/mnt/openhd-glide-build"\n'
                   + '    fi\n\n'
                   + '    umount -l "${MNT_DIR}/etc/resolv.conf"\n'
               )
