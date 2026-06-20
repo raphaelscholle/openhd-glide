@@ -403,11 +403,12 @@ jobs:
           common_text = common_sh.read_text()
           common_marker = "# openhd_glide_bind_workspace_out"
           if common_marker not in common_text:
+              mnt_dir = "$" + "{MNT_DIR}"
               common_needle = '    cp -r "${STAGE_DIR}/../../additionalFiles" "${MNT_DIR}/opt"\n    capsh --drop=cap_setfcap "--chroot=${MNT_DIR}/" -- "$@"\n\n    umount -l "${MNT_DIR}/etc/resolv.conf"\n'
               common_patch = (
                   f"    {common_marker}\n"
-                  + f"    mkdir -p {host_out.as_posix()} \"${{MNT_DIR}}/out\"\n"
-                  + f"    mountpoint -q \"${{MNT_DIR}}/out\" || mount --bind {host_out.as_posix()} \"${{MNT_DIR}}/out\"\n"
+                  + f"    mkdir -p {host_out.as_posix()} \"{mnt_dir}/out\"\n"
+                  + f"    mountpoint -q \"{mnt_dir}/out\" || mount --bind {host_out.as_posix()} \"{mnt_dir}/out\"\n"
                   + '    cp -r "${STAGE_DIR}/../../additionalFiles" "${MNT_DIR}/opt"\n'
                   + '    capsh --drop=cap_setfcap "--chroot=${MNT_DIR}/" -- "$@"\n\n'
                   + '    if mountpoint -q "${MNT_DIR}/out"; then\n'
