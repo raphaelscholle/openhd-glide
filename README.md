@@ -49,6 +49,19 @@ cmake --preset device-kms
 cmake --build --preset device-kms -j$(nproc)
 ```
 
+Or use the platform-aware helper. It detects Raspberry Pi, Rockchip, Allwinner, or generic Linux,
+warns about missing DRM/GBM/GStreamer pieces, and can install the matching apt packages:
+
+```sh
+scripts/build-auto.sh
+scripts/build-auto.sh --deps
+scripts/build-auto.sh --deps-only
+```
+
+By default the helper requires the KMS/GBM and GStreamer development packages because the target
+video path depends on them. Use `--allow-missing` only for a degraded development build.
+Set `GLIDE_PLATFORM=raspberrypi`, `rockchip`, `allwinner`, or `generic` to override detection.
+
 If the device CMake is too old for presets, use the equivalent direct configure:
 
 ```sh

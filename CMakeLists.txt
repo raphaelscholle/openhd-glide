@@ -394,6 +394,7 @@ install(
 
 install(
     PROGRAMS
+        scripts/build-auto.sh
         scripts/generate_fake_minimap_tiles.py
     DESTINATION share/openhd-glide/scripts
 )
