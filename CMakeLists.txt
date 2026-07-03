@@ -416,6 +416,7 @@ install(
         examples/run-kms-video-gstreamer-flow-ui.sh
         examples/run-kms-video-gstreamer-flow-30fps.sh
         examples/run-kms-video-gstreamer-video-only.sh
+        examples/run-kms-video-rpi-video-only.sh
         examples/run-kms-video-rkmpp-video-only.sh
         examples/run-kms-video-rkmpp-flow-ui.sh
         examples/autorun-local-video-to-glide.sh

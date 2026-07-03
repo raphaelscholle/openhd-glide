@@ -86,6 +86,7 @@ private:
         std::array<std::uint64_t, 4> inodes {};
         std::array<std::uint32_t, 4> strides {};
         std::array<std::uint32_t, 4> offsets {};
+        std::array<std::uint64_t, 4> modifiers {};
     };
 
     struct CachedFramebuffer {
@@ -141,7 +142,7 @@ private:
     bool create_primary_buffer();
     bool choose_writeback_connector();
     bool create_writeback_buffer();
-    bool choose_video_plane(std::uint32_t drm_format);
+    bool choose_video_plane(std::uint32_t drm_format, std::uint64_t modifier);
     bool choose_flow_plane();
     bool choose_ui_plane();
     bool create_gbm_device();
@@ -187,6 +188,7 @@ private:
     std::uint32_t primary_plane_id_ {};
     std::uint32_t video_plane_id_ {};
     std::uint32_t video_plane_format_ {};
+    std::uint64_t video_plane_modifier_ {};
     std::uint32_t flow_plane_id_ {};
     std::uint32_t ui_plane_id_ {};
     bool video_on_primary_ {};

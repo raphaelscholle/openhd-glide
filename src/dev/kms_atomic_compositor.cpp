@@ -50,6 +50,7 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <set>
 #include <sstream>
 #endif
 
@@ -639,12 +640,14 @@ bool KmsAtomicCompositor::create(
 bool KmsAtomicCompositor::present(const DmabufVideoFrame& video_frame, bool update_flow_frame)
 {
 #if OPENHD_GLIDE_HAS_KMS_GBM
-    if (video_plane_id_ == 0 || video_plane_format_ != video_frame.drm_format) {
+    const auto video_modifier = video_frame.modifiers[0];
+    if (video_plane_id_ == 0 || video_plane_format_ != video_frame.drm_format || video_plane_modifier_ != video_modifier) {
         video_plane_id_ = 0;
         video_plane_format_ = 0;
+        video_plane_modifier_ = 0;
         video_on_primary_ = false;
         destroy_video_framebuffer_cache();
-        if (!choose_video_plane(video_frame.drm_format)) {
+        if (!choose_video_plane(video_frame.drm_format, video_modifier)) {
             return false;
         }
     }
@@ -1368,7 +1371,7 @@ bool KmsAtomicCompositor::create_writeback_buffer()
     return true;
 }
 
-bool KmsAtomicCompositor::choose_video_plane(std::uint32_t drm_format)
+bool KmsAtomicCompositor::choose_video_plane(std::uint32_t drm_format, std::uint64_t modifier)
 {
     auto* planes = drmModeGetPlaneResources(drm_fd_);
     if (planes == nullptr) {
@@ -1383,7 +1386,8 @@ bool KmsAtomicCompositor::choose_video_plane(std::uint32_t drm_format)
             last_error_ = "primary KMS plane " + std::to_string(primary_plane_id_) + " does not exist";
             return false;
         }
-        const bool supported = plane_supports_format(plane, drm_format);
+        const bool supported = plane_supports_format(plane, drm_format)
+            && plane_supports_format_modifier(drm_fd_, primary_plane_id_, drm_format, modifier);
         drmModeFreePlane(plane);
         if (!supported) {
             drmModeFreePlaneResources(planes);
@@ -1395,6 +1399,7 @@ bool KmsAtomicCompositor::choose_video_plane(std::uint32_t drm_format)
         drmModeFreePlaneResources(planes);
         video_plane_id_ = primary_plane_id_;
         video_plane_format_ = drm_format;
+        video_plane_modifier_ = modifier;
         video_on_primary_ = true;
         set_range_edge(drm_fd_, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "zpos", false);
         set_range_edge(drm_fd_, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "ZPOS", false);
@@ -1410,9 +1415,13 @@ bool KmsAtomicCompositor::choose_video_plane(std::uint32_t drm_format)
         const bool usable_crtc = (plane->possible_crtcs & (1 << crtc_index_)) != 0;
         const bool reserved_for_flow = preferred_flow_plane_id_ >= 0 && plane->plane_id == static_cast<std::uint32_t>(preferred_flow_plane_id_);
         const bool available = plane->plane_id != primary_plane_id_ && plane->plane_id != flow_plane_id_ && !reserved_for_flow;
-        if (usable_crtc && available && plane_supports_format(plane, drm_format)) {
+        if (usable_crtc
+            && available
+            && plane_supports_format(plane, drm_format)
+            && plane_supports_format_modifier(drm_fd_, plane->plane_id, drm_format, modifier)) {
             video_plane_id_ = plane->plane_id;
             video_plane_format_ = drm_format;
+            video_plane_modifier_ = modifier;
             return true;
         }
         return false;
@@ -1450,9 +1459,12 @@ bool KmsAtomicCompositor::choose_video_plane(std::uint32_t drm_format)
 
     if (video_plane_id_ == 0) {
         auto* primary_plane = drmModeGetPlane(drm_fd_, primary_plane_id_);
-        if (primary_plane != nullptr && plane_supports_format(primary_plane, drm_format)) {
+        if (primary_plane != nullptr
+            && plane_supports_format(primary_plane, drm_format)
+            && plane_supports_format_modifier(drm_fd_, primary_plane_id_, drm_format, modifier)) {
             video_plane_id_ = primary_plane_id_;
             video_plane_format_ = drm_format;
+            video_plane_modifier_ = modifier;
             video_on_primary_ = true;
             drmModeFreePlane(primary_plane);
         } else {
@@ -2052,7 +2064,12 @@ bool KmsAtomicCompositor::import_video_frame(const DmabufVideoFrame& frame, Impo
 
     std::uint32_t strides[4] { frame.strides[0], frame.strides[1], frame.strides[2], frame.strides[3] };
     std::uint32_t offsets[4] { frame.offsets[0], frame.offsets[1], frame.offsets[2], frame.offsets[3] };
-    if (drmModeAddFB2(drm_fd_, frame.width, frame.height, frame.drm_format, handles, strides, offsets, &imported.framebuffer, 0) != 0) {
+    std::uint64_t modifiers[4] { frame.modifiers[0], frame.modifiers[1], frame.modifiers[2], frame.modifiers[3] };
+    const bool has_modifier = modifiers[0] != DRM_FORMAT_MOD_INVALID && modifiers[0] != DRM_FORMAT_MOD_LINEAR;
+    const auto add_result = has_modifier
+        ? drmModeAddFB2WithModifiers(drm_fd_, frame.width, frame.height, frame.drm_format, handles, strides, offsets, modifiers, &imported.framebuffer, DRM_MODE_FB_MODIFIERS)
+        : drmModeAddFB2(drm_fd_, frame.width, frame.height, frame.drm_format, handles, strides, offsets, &imported.framebuffer, 0);
+    if (add_result != 0) {
         last_error_ = "failed to create DRM framebuffer from decoded DMABUF" + errno_suffix();
         destroy_imported(imported);
         return false;
@@ -2074,6 +2091,7 @@ bool KmsAtomicCompositor::make_frame_key(const DmabufVideoFrame& frame, FrameKey
     key.plane_count = frame.plane_count;
     key.strides = frame.strides;
     key.offsets = frame.offsets;
+    key.modifiers = frame.modifiers;
     for (std::uint32_t i = 0; i < frame.plane_count; ++i) {
         if (frame.fds[i] < 0) {
             last_error_ = "decoded DMABUF frame has an invalid fd";
@@ -2106,7 +2124,8 @@ KmsAtomicCompositor::ImportedFramebuffer* KmsAtomicCompositor::find_or_import_vi
             && cached.key.device_ids == key.device_ids
             && cached.key.inodes == key.inodes
             && cached.key.strides == key.strides
-            && cached.key.offsets == key.offsets) {
+            && cached.key.offsets == key.offsets
+            && cached.key.modifiers == key.modifiers) {
             cached.last_used = frame_serial_;
             return &cached.imported;
         }
@@ -2508,13 +2527,16 @@ void KmsAtomicCompositor::destroy_imported(ImportedFramebuffer& imported)
         imported.framebuffer = 0;
     }
     if (drm_fd_ >= 0) {
+        std::set<std::uint32_t> closed;
         for (auto& handle : imported.handles) {
-            if (handle == 0) {
+            if (handle == 0 || closed.count(handle) != 0) {
+                handle = 0;
                 continue;
             }
             drm_gem_close close_args {};
             close_args.handle = handle;
             drmIoctl(drm_fd_, DRM_IOCTL_GEM_CLOSE, &close_args);
+            closed.insert(handle);
             handle = 0;
         }
     }

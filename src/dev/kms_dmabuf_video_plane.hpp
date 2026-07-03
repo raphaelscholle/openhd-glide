@@ -38,6 +38,7 @@ struct DmabufVideoFrame {
     std::array<int, 4> fds { -1, -1, -1, -1 };
     std::array<std::uint32_t, 4> strides {};
     std::array<std::uint32_t, 4> offsets {};
+    std::array<std::uint64_t, 4> modifiers {};
 };
 
 class KmsDmabufVideoPlane {
@@ -68,6 +69,7 @@ private:
         std::array<std::uint64_t, 4> inodes {};
         std::array<std::uint32_t, 4> strides {};
         std::array<std::uint32_t, 4> offsets {};
+        std::array<std::uint64_t, 4> modifiers {};
     };
 
     struct CachedFramebuffer {
@@ -87,7 +89,7 @@ private:
     bool open_card();
     bool choose_connector_and_mode(std::uint32_t requested_width, std::uint32_t requested_height, std::uint32_t requested_refresh_hz);
     bool create_primary_buffer();
-    bool choose_video_plane(std::uint32_t drm_format, int preferred_plane_id);
+    bool choose_video_plane(std::uint32_t drm_format, std::uint64_t modifier, int preferred_plane_id);
     bool configure_video_plane();
     bool import_frame(const DmabufVideoFrame& frame, ImportedFramebuffer& imported);
     bool make_frame_key(const DmabufVideoFrame& frame, FrameKey& key);
@@ -105,6 +107,7 @@ private:
     int crtc_index_ { -1 };
     std::uint32_t video_plane_id_ {};
     std::uint32_t video_plane_format_ {};
+    std::uint64_t video_plane_modifier_ {};
     int preferred_plane_id_ { -1 };
     std::uint32_t display_width_ {};
     std::uint32_t display_height_ {};

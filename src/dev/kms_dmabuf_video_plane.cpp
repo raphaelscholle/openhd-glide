@@ -109,6 +109,134 @@ bool set_plane_property_to_range_edge(int drm_fd, std::uint32_t plane_id, const 
     return set;
 }
 
+struct FormatModifierBlobHeader {
+    std::uint32_t version {};
+    std::uint32_t flags {};
+    std::uint32_t count_formats {};
+    std::uint32_t formats_offset {};
+    std::uint32_t count_modifiers {};
+    std::uint32_t modifiers_offset {};
+};
+
+struct FormatModifierRecord {
+    std::uint64_t formats {};
+    std::uint32_t offset {};
+    std::uint32_t pad {};
+    std::uint64_t modifier {};
+};
+
+static_assert(sizeof(FormatModifierBlobHeader) == 24);
+static_assert(sizeof(FormatModifierRecord) == 24);
+
+bool blob_has_range(const drmModePropertyBlobRes* blob, std::uint64_t offset, std::uint64_t count, std::size_t element_size)
+{
+    if (blob == nullptr || blob->data == nullptr || element_size == 0) {
+        return false;
+    }
+    const auto length = static_cast<std::uint64_t>(blob->length);
+    if (offset > length) {
+        return false;
+    }
+    return count <= (length - offset) / static_cast<std::uint64_t>(element_size);
+}
+
+template <typename T>
+bool read_blob_value(const drmModePropertyBlobRes* blob, std::uint64_t offset, T& value)
+{
+    if (!blob_has_range(blob, offset, 1, sizeof(T))) {
+        return false;
+    }
+    std::memcpy(&value, static_cast<const unsigned char*>(blob->data) + offset, sizeof(T));
+    return true;
+}
+
+bool in_formats_blob_supports_modifier(const drmModePropertyBlobRes* blob, std::uint32_t format, std::uint64_t modifier)
+{
+    constexpr std::uint32_t format_blob_current_version = 1;
+
+    FormatModifierBlobHeader header {};
+    if (!read_blob_value(blob, 0, header)) {
+        return false;
+    }
+    if (header.version != format_blob_current_version || header.flags != 0) {
+        return false;
+    }
+    if (!blob_has_range(blob, header.formats_offset, header.count_formats, sizeof(std::uint32_t))
+        || !blob_has_range(blob, header.modifiers_offset, header.count_modifiers, sizeof(FormatModifierRecord))) {
+        return false;
+    }
+
+    for (std::uint32_t format_index = 0; format_index < header.count_formats; ++format_index) {
+        std::uint32_t blob_format {};
+        const auto format_offset = static_cast<std::uint64_t>(header.formats_offset)
+            + static_cast<std::uint64_t>(format_index) * sizeof(blob_format);
+        if (!read_blob_value(blob, format_offset, blob_format) || blob_format != format) {
+            continue;
+        }
+
+        for (std::uint32_t modifier_index = 0; modifier_index < header.count_modifiers; ++modifier_index) {
+            FormatModifierRecord record {};
+            const auto modifier_offset = static_cast<std::uint64_t>(header.modifiers_offset)
+                + static_cast<std::uint64_t>(modifier_index) * sizeof(record);
+            if (!read_blob_value(blob, modifier_offset, record)) {
+                return false;
+            }
+            if (record.modifier != modifier || format_index < record.offset) {
+                continue;
+            }
+
+            const auto bit = format_index - record.offset;
+            if (bit < 64U && (record.formats & (std::uint64_t { 1 } << bit)) != 0) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+bool plane_supports_format_modifier(int drm_fd, std::uint32_t plane_id, std::uint32_t format, std::uint64_t modifier)
+{
+    if (modifier == DRM_FORMAT_MOD_INVALID || modifier == DRM_FORMAT_MOD_LINEAR) {
+        return true;
+    }
+
+    auto* properties = drmModeObjectGetProperties(drm_fd, plane_id, DRM_MODE_OBJECT_PLANE);
+    if (properties == nullptr) {
+        return true;
+    }
+
+    std::uint64_t blob_id {};
+    bool has_in_formats {};
+    for (std::uint32_t i = 0; i < properties->count_props; ++i) {
+        auto* property = drmModeGetProperty(drm_fd, properties->props[i]);
+        if (property != nullptr && std::strcmp(property->name, "IN_FORMATS") == 0) {
+            blob_id = properties->prop_values[i];
+            has_in_formats = true;
+        }
+        if (property != nullptr) {
+            drmModeFreeProperty(property);
+        }
+        if (has_in_formats) {
+            break;
+        }
+    }
+    drmModeFreeObjectProperties(properties);
+
+    if (!has_in_formats || blob_id == 0) {
+        return true;
+    }
+
+    auto* blob = drmModeGetPropertyBlob(drm_fd, static_cast<std::uint32_t>(blob_id));
+    if (blob == nullptr) {
+        return true;
+    }
+
+    const bool supported = in_formats_blob_supports_modifier(blob, format, modifier);
+    drmModeFreePropertyBlob(blob);
+    return supported;
+}
+
 struct PlaneRect {
     std::uint32_t x {};
     std::uint32_t y {};
@@ -215,13 +343,14 @@ bool KmsDmabufVideoPlane::create(std::uint32_t requested_width, std::uint32_t re
 bool KmsDmabufVideoPlane::present(const DmabufVideoFrame& frame)
 {
 #if OPENHD_GLIDE_HAS_KMS_GBM
-    if (video_plane_id_ == 0 || video_plane_format_ != frame.drm_format) {
+    const auto frame_modifier = frame.modifiers[0];
+    if (video_plane_id_ == 0 || video_plane_format_ != frame.drm_format || video_plane_modifier_ != frame_modifier) {
         if (video_plane_id_ != 0 && drm_fd_ >= 0) {
             drmModeSetPlane(drm_fd_, video_plane_id_, crtc_id_, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         }
         destroy_framebuffer_cache();
         current_framebuffer_ = 0;
-        if (!choose_video_plane(frame.drm_format, preferred_plane_id_)) {
+        if (!choose_video_plane(frame.drm_format, frame_modifier, preferred_plane_id_)) {
             return false;
         }
     }
@@ -523,7 +652,7 @@ bool KmsDmabufVideoPlane::create_primary_buffer()
     return true;
 }
 
-bool KmsDmabufVideoPlane::choose_video_plane(std::uint32_t drm_format, int preferred_plane_id)
+bool KmsDmabufVideoPlane::choose_video_plane(std::uint32_t drm_format, std::uint64_t modifier, int preferred_plane_id)
 {
     auto* planes = drmModeGetPlaneResources(drm_fd_);
     if (planes == nullptr) {
@@ -543,7 +672,8 @@ bool KmsDmabufVideoPlane::choose_video_plane(std::uint32_t drm_format, int prefe
         const bool requested = preferred_plane_id < 0 || plane->plane_id == static_cast<std::uint32_t>(preferred_plane_id);
         const bool usable_crtc = (plane->possible_crtcs & (1 << crtc_index_)) != 0;
         const bool supports_format = std::find(plane->formats, plane->formats + plane->count_formats, drm_format) != plane->formats + plane->count_formats;
-        if (requested && usable_crtc && supports_format) {
+        const bool supports_modifier = plane_supports_format_modifier(drm_fd_, plane->plane_id, drm_format, modifier);
+        if (requested && usable_crtc && supports_format && supports_modifier) {
             std::uint64_t plane_type {};
             get_plane_property_value(drm_fd_, plane->plane_id, "type", plane_type);
             if (selected == 0 || (preferred_plane_id < 0 && selected_type == primary_plane && plane_type == overlay_plane)) {
@@ -566,6 +696,7 @@ bool KmsDmabufVideoPlane::choose_video_plane(std::uint32_t drm_format, int prefe
 
     video_plane_id_ = selected;
     video_plane_format_ = drm_format;
+    video_plane_modifier_ = modifier;
     configure_video_plane();
     return true;
 }
@@ -614,7 +745,12 @@ bool KmsDmabufVideoPlane::import_frame(const DmabufVideoFrame& frame, ImportedFr
 
     std::uint32_t strides[4] { frame.strides[0], frame.strides[1], frame.strides[2], frame.strides[3] };
     std::uint32_t offsets[4] { frame.offsets[0], frame.offsets[1], frame.offsets[2], frame.offsets[3] };
-    if (drmModeAddFB2(drm_fd_, frame.width, frame.height, frame.drm_format, handles, strides, offsets, &imported.framebuffer, 0) != 0) {
+    std::uint64_t modifiers[4] { frame.modifiers[0], frame.modifiers[1], frame.modifiers[2], frame.modifiers[3] };
+    const bool has_modifier = modifiers[0] != DRM_FORMAT_MOD_INVALID && modifiers[0] != DRM_FORMAT_MOD_LINEAR;
+    const auto add_result = has_modifier
+        ? drmModeAddFB2WithModifiers(drm_fd_, frame.width, frame.height, frame.drm_format, handles, strides, offsets, modifiers, &imported.framebuffer, DRM_MODE_FB_MODIFIERS)
+        : drmModeAddFB2(drm_fd_, frame.width, frame.height, frame.drm_format, handles, strides, offsets, &imported.framebuffer, 0);
+    if (add_result != 0) {
         last_error_ = "failed to create DRM framebuffer from decoded DMABUF" + errno_suffix();
         destroy_imported(imported);
         return false;
@@ -636,6 +772,7 @@ bool KmsDmabufVideoPlane::make_frame_key(const DmabufVideoFrame& frame, FrameKey
     key.plane_count = frame.plane_count;
     key.strides = frame.strides;
     key.offsets = frame.offsets;
+    key.modifiers = frame.modifiers;
 
     for (std::uint32_t i = 0; i < frame.plane_count; ++i) {
         if (frame.fds[i] < 0) {
@@ -669,7 +806,8 @@ KmsDmabufVideoPlane::ImportedFramebuffer* KmsDmabufVideoPlane::find_or_import_ca
             && cached.key.device_ids == key.device_ids
             && cached.key.inodes == key.inodes
             && cached.key.strides == key.strides
-            && cached.key.offsets == key.offsets) {
+            && cached.key.offsets == key.offsets
+            && cached.key.modifiers == key.modifiers) {
             cached.last_used = frame_serial_;
             return &cached.imported;
         }

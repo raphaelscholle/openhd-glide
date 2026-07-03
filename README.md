@@ -208,6 +208,9 @@ and scanning it out on a KMS video plane. It still uses a black primary framebuf
 Flow is rendered on an ARGB overlay plane. With `--ui-overlay`, the controller also places a left-side ARGB UI
 overlay plane or composites the LVGL buffer into the Flow/OSD plane when RK3566 exposes only one usable ARGB plane.
 Native Cedar remains available only through the explicit `--native-cedar-video` flag.
+On Raspberry Pi, start with the GStreamer/V4L2 path and the real KMS driver (`vc4-kms-v3d`). Glide imports
+`video/x-raw(memory:DMABuf),format=DMA_DRM` frames with their DRM format modifiers, so non-linear Pi decoder
+buffers can be scanned out when the selected KMS plane advertises the same modifier.
 
 Example run scripts cover the current device modes. Each script takes the UDP video port as its first optional
 argument, defaulting to `5600`; GStreamer/view scripts default to H.264 and take `h264` or `h265` as the second optional argument.
@@ -232,6 +235,9 @@ examples/run-kms-video-gstreamer-flow-30fps.sh 5600 h264
 
 # GStreamer hardware decode, fastest video-only legacy KMS plane path.
 examples/run-kms-video-gstreamer-video-only.sh 5600 h264
+
+# Raspberry Pi KMS video-only bring-up path using V4L2/GStreamer DMABUF decode.
+examples/run-kms-video-rpi-video-only.sh 5600 h264
 
 # Native Cedar RTP/H.264 decode debugging path, KMS video plane plus Flow overlay.
 examples/run-kms-video-cedar-flow.sh 5600

@@ -51,6 +51,7 @@
 #include <cmath>
 #include <csignal>
 #include <cstdint>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <mutex>
@@ -613,6 +614,22 @@ std::uint32_t drm_format_from_name(std::string name)
     return 0;
 }
 
+std::uint64_t drm_modifier_from_name(const std::string& name)
+{
+    const auto modifier_separator = name.find(':');
+    if (modifier_separator == std::string::npos || modifier_separator + 1U >= name.size()) {
+        return 0;
+    }
+
+    const auto modifier_text = name.substr(modifier_separator + 1U);
+    char* end {};
+    const auto value = std::strtoull(modifier_text.c_str(), &end, 0);
+    if (end == modifier_text.c_str() || (end != nullptr && *end != '\0')) {
+        return 0;
+    }
+    return static_cast<std::uint64_t>(value);
+}
+
 std::string caps_to_string(GstCaps* caps)
 {
     if (caps == nullptr) {
@@ -825,6 +842,7 @@ bool extract_dmabuf_frame(GstSample* sample, glide::dev::DmabufVideoFrame& frame
         drm_format_text = gst_structure_get_string(structure, "format");
     }
     const auto drm_format = drm_format_text != nullptr ? drm_format_from_name(drm_format_text) : 0;
+    const auto drm_modifier = drm_format_text != nullptr ? drm_modifier_from_name(drm_format_text) : 0;
     if (drm_format == 0) {
         error = "unsupported decoded DRM format in caps: " + caps_to_string(caps);
         return false;
@@ -873,6 +891,7 @@ bool extract_dmabuf_frame(GstSample* sample, glide::dev::DmabufVideoFrame& frame
         frame.fds[plane] = fd;
         frame.strides[plane] = meta != nullptr ? static_cast<std::uint32_t>(meta->stride[plane]) : inferred_strides[plane];
         frame.offsets[plane] = meta != nullptr ? static_cast<std::uint32_t>(meta->offset[plane]) : inferred_offsets[plane];
+        frame.modifiers[plane] = drm_modifier;
     }
     return true;
 }
@@ -1956,7 +1975,8 @@ int run_kms_video_preview(const Options& options)
                 layout << " plane" << i
                        << "{fd=" << frame.fds[i]
                        << " stride=" << frame.strides[i]
-                       << " offset=" << frame.offsets[i] << "}";
+                       << " offset=" << frame.offsets[i]
+                       << " modifier=0x" << std::hex << frame.modifiers[i] << std::dec << "}";
             }
             glide::log(glide::LogLevel::info, "OpenHD-Glide", layout.str());
             logged_caps = true;
