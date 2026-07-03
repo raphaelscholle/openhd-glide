@@ -56,6 +56,7 @@ public:
         std::uint32_t ui_height = 0,
         bool primary_flow_readback = false);
     bool present(const DmabufVideoFrame& video_frame, bool update_flow_frame);
+    bool present(const CpuVideoFrame& video_frame, bool update_flow_frame);
     bool present_overlay(bool update_flow_frame);
     void set_vblank_wait_enabled(bool enabled);
     bool make_flow_context_current();
@@ -150,6 +151,7 @@ private:
     bool create_egl();
     bool create_solid_flow_buffer();
     bool create_solid_ui_buffer();
+    bool create_cpu_video_buffer(std::uint32_t width, std::uint32_t height);
     bool read_flow_frame_into_primary();
     bool make_flow_framebuffer_key(void* bo, FlowFramebufferKey& key);
     bool find_or_add_flow_framebuffer(void* bo, std::uint32_t& framebuffer_id);
@@ -162,10 +164,12 @@ private:
     bool acquire_flow_framebuffer(bool update_flow_frame, std::uint32_t& framebuffer_id, void*& bo, bool& solid_dumb);
     void release_acquired_flow_framebuffer(std::uint32_t framebuffer_id, void* bo, bool solid_dumb);
     void adopt_flow_framebuffer(std::uint32_t framebuffer_id, void* bo, bool solid_dumb);
+    PlaneRect scaled_video_destination(std::uint32_t width, std::uint32_t height) const;
     PlaneRect scaled_video_destination(const DmabufVideoFrame& video_frame) const;
     bool commit(
-        const DmabufVideoFrame* video_frame,
         std::uint32_t video_framebuffer,
+        std::uint32_t video_width,
+        std::uint32_t video_height,
         std::uint32_t flow_framebuffer,
         std::uint32_t ui_framebuffer,
         bool nonblocking_allowed = false);
@@ -179,6 +183,7 @@ private:
     void close_writeback_recorder();
     void destroy_solid_flow_buffer();
     void destroy_solid_ui_buffer();
+    void destroy_cpu_video_buffer();
     void cleanup();
 
     int drm_fd_ { -1 };
@@ -223,12 +228,17 @@ private:
     bool pending_flow_is_solid_dumb_ {};
     DumbBuffer solid_flow_ {};
     DumbBuffer solid_ui_ {};
+    DumbBuffer cpu_video_ {};
+    std::uint32_t cpu_video_width_ {};
+    std::uint32_t cpu_video_height_ {};
     std::mutex flow_framebuffer_mutex_;
     std::vector<CachedFlowFramebuffer> flow_framebuffer_cache_;
     std::vector<unsigned char> flow_readback_buffer_;
     std::vector<CachedFramebuffer> video_framebuffer_cache_;
     DmabufVideoFrame current_video_frame_ {};
     std::uint32_t current_video_framebuffer_ {};
+    std::uint32_t current_video_width_ {};
+    std::uint32_t current_video_height_ {};
     std::uint64_t frame_serial_ {};
     std::string card_path_;
     std::string last_error_;

@@ -56,8 +56,11 @@ case "$CODEC" in
   h265|hevc)
     CODEC="h265"
     ;;
+  mjpeg|mjpg|jpeg)
+    CODEC="mjpeg"
+    ;;
   *)
-    echo "unsupported codec '${CODEC}'; use h264 or h265" >&2
+    echo "unsupported codec '${CODEC}'; use h264, h265, or mjpeg" >&2
     exit 2
     ;;
 esac

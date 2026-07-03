@@ -694,13 +694,86 @@ bool KmsAtomicCompositor::present(const DmabufVideoFrame& video_frame, bool upda
     }
 
     const bool video_only_update = !update_flow_frame && flow_bo == nullptr;
-    if (!commit(&video_frame, video->framebuffer, flow_framebuffer, solid_ui_.framebuffer, video_only_update)) {
+    if (!commit(video->framebuffer, video_frame.width, video_frame.height, flow_framebuffer, solid_ui_.framebuffer, video_only_update)) {
         release_acquired_flow_framebuffer(flow_framebuffer, flow_bo, flow_is_solid_dumb);
         return false;
     }
 
     current_video_frame_ = video_frame;
     current_video_framebuffer_ = video->framebuffer;
+    current_video_width_ = video_frame.width;
+    current_video_height_ = video_frame.height;
+    adopt_flow_framebuffer(flow_framebuffer, flow_bo, flow_is_solid_dumb);
+    return true;
+#else
+    (void)video_frame;
+    (void)update_flow_frame;
+    return false;
+#endif
+}
+
+bool KmsAtomicCompositor::present(const CpuVideoFrame& video_frame, bool update_flow_frame)
+{
+#if OPENHD_GLIDE_HAS_KMS_GBM
+    if (video_frame.width == 0 || video_frame.height == 0 || video_frame.pixels == nullptr || video_frame.stride < video_frame.width * 4U) {
+        last_error_ = "invalid CPU video frame";
+        return false;
+    }
+
+    constexpr auto cpu_frame_format = DRM_FORMAT_XRGB8888;
+    if (video_plane_id_ == 0 || video_plane_format_ != cpu_frame_format || video_plane_modifier_ != DRM_FORMAT_MOD_LINEAR) {
+        video_plane_id_ = 0;
+        video_plane_format_ = 0;
+        video_plane_modifier_ = 0;
+        video_on_primary_ = false;
+        destroy_video_framebuffer_cache();
+        if (!choose_video_plane(cpu_frame_format, DRM_FORMAT_MOD_LINEAR)) {
+            return false;
+        }
+    }
+    if (cpu_video_.framebuffer == 0 || cpu_video_width_ != video_frame.width || cpu_video_height_ != video_frame.height) {
+        destroy_cpu_video_buffer();
+        if (!create_cpu_video_buffer(video_frame.width, video_frame.height)) {
+            return false;
+        }
+    }
+    if (!primary_flow_readback_ && flow_plane_id_ == 0 && !choose_flow_plane()) {
+        return false;
+    }
+    if (ui_surface_.width != 0 && ui_surface_.height != 0 && ui_plane_id_ == 0 && !choose_ui_plane()) {
+        glide::log(
+            glide::LogLevel::warning,
+            "OpenHD-Glide",
+            "UI KMS overlay disabled: " + last_error_);
+        ui_surface_ = {};
+    }
+
+    auto* dst = static_cast<unsigned char*>(cpu_video_.map);
+    const auto* src = static_cast<const unsigned char*>(video_frame.pixels);
+    const auto row_bytes = static_cast<std::size_t>(video_frame.width) * 4U;
+    for (std::uint32_t y = 0; y < video_frame.height; ++y) {
+        std::memcpy(
+            dst + static_cast<std::size_t>(y) * cpu_video_.pitch,
+            src + static_cast<std::size_t>(y) * video_frame.stride,
+            row_bytes);
+    }
+
+    std::uint32_t flow_framebuffer {};
+    bool flow_is_solid_dumb {};
+    void* flow_bo {};
+    if (!primary_flow_readback_ && !acquire_flow_framebuffer(update_flow_frame, flow_framebuffer, flow_bo, flow_is_solid_dumb)) {
+        return false;
+    }
+
+    const bool video_only_update = !update_flow_frame && flow_bo == nullptr;
+    if (!commit(cpu_video_.framebuffer, video_frame.width, video_frame.height, flow_framebuffer, solid_ui_.framebuffer, video_only_update)) {
+        release_acquired_flow_framebuffer(flow_framebuffer, flow_bo, flow_is_solid_dumb);
+        return false;
+    }
+
+    current_video_framebuffer_ = cpu_video_.framebuffer;
+    current_video_width_ = video_frame.width;
+    current_video_height_ = video_frame.height;
     adopt_flow_framebuffer(flow_framebuffer, flow_bo, flow_is_solid_dumb);
     return true;
 #else
@@ -731,8 +804,7 @@ bool KmsAtomicCompositor::present_overlay(bool update_flow_frame)
         return false;
     }
 
-    const auto* retained_video_frame = current_video_framebuffer_ != 0 ? &current_video_frame_ : nullptr;
-    if (!commit(retained_video_frame, current_video_framebuffer_, flow_framebuffer, solid_ui_.framebuffer)) {
+    if (!commit(current_video_framebuffer_, current_video_width_, current_video_height_, flow_framebuffer, solid_ui_.framebuffer)) {
         release_acquired_flow_framebuffer(flow_framebuffer, flow_bo, flow_is_solid_dumb);
         return false;
     }
@@ -1881,6 +1953,49 @@ bool KmsAtomicCompositor::create_solid_ui_buffer()
     return true;
 }
 
+bool KmsAtomicCompositor::create_cpu_video_buffer(std::uint32_t width, std::uint32_t height)
+{
+    drm_mode_create_dumb create {};
+    create.width = width;
+    create.height = height;
+    create.bpp = 32;
+    if (drmIoctl(drm_fd_, DRM_IOCTL_MODE_CREATE_DUMB, &create) != 0) {
+        last_error_ = "failed to create CPU video DRM buffer" + errno_suffix();
+        return false;
+    }
+    cpu_video_.handle = create.handle;
+    cpu_video_.pitch = create.pitch;
+    cpu_video_.size = create.size;
+
+    std::uint32_t handles[4] { cpu_video_.handle, 0, 0, 0 };
+    std::uint32_t strides[4] { cpu_video_.pitch, 0, 0, 0 };
+    std::uint32_t offsets[4] {};
+    if (drmModeAddFB2(drm_fd_, width, height, DRM_FORMAT_XRGB8888, handles, strides, offsets, &cpu_video_.framebuffer, 0) != 0) {
+        last_error_ = "failed to create CPU video DRM framebuffer" + errno_suffix();
+        destroy_cpu_video_buffer();
+        return false;
+    }
+
+    drm_mode_map_dumb map {};
+    map.handle = cpu_video_.handle;
+    if (drmIoctl(drm_fd_, DRM_IOCTL_MODE_MAP_DUMB, &map) != 0) {
+        last_error_ = "failed to map CPU video DRM buffer" + errno_suffix();
+        destroy_cpu_video_buffer();
+        return false;
+    }
+    cpu_video_.map = mmap(nullptr, cpu_video_.size, PROT_READ | PROT_WRITE, MAP_SHARED, drm_fd_, static_cast<off_t>(map.offset));
+    if (cpu_video_.map == MAP_FAILED) {
+        cpu_video_.map = nullptr;
+        last_error_ = "failed to mmap CPU video DRM buffer" + errno_suffix();
+        destroy_cpu_video_buffer();
+        return false;
+    }
+
+    cpu_video_width_ = width;
+    cpu_video_height_ = height;
+    return true;
+}
+
 bool KmsAtomicCompositor::read_flow_frame_into_primary()
 {
     if (primary_.map == nullptr || primary_.framebuffer == 0) {
@@ -2237,15 +2352,15 @@ void KmsAtomicCompositor::adopt_flow_framebuffer(std::uint32_t framebuffer_id, v
     }
 }
 
-KmsAtomicCompositor::PlaneRect KmsAtomicCompositor::scaled_video_destination(const DmabufVideoFrame& video_frame) const
+KmsAtomicCompositor::PlaneRect KmsAtomicCompositor::scaled_video_destination(std::uint32_t width, std::uint32_t height) const
 {
-    if (video_frame.width == 0 || video_frame.height == 0 || surface_.width == 0 || surface_.height == 0) {
+    if (width == 0 || height == 0 || surface_.width == 0 || surface_.height == 0) {
         return PlaneRect { .x = 0, .y = 0, .width = surface_.width, .height = surface_.height };
     }
 
     const auto scaled_width_from_height =
-        (static_cast<std::uint64_t>(surface_.height) * static_cast<std::uint64_t>(video_frame.width))
-        / static_cast<std::uint64_t>(video_frame.height);
+        (static_cast<std::uint64_t>(surface_.height) * static_cast<std::uint64_t>(width))
+        / static_cast<std::uint64_t>(height);
     if (scaled_width_from_height <= surface_.width) {
         const auto width = static_cast<std::uint32_t>(std::max<std::uint64_t>(1, scaled_width_from_height));
         return PlaneRect {
@@ -2257,20 +2372,26 @@ KmsAtomicCompositor::PlaneRect KmsAtomicCompositor::scaled_video_destination(con
     }
 
     const auto scaled_height_from_width =
-        (static_cast<std::uint64_t>(surface_.width) * static_cast<std::uint64_t>(video_frame.height))
-        / static_cast<std::uint64_t>(video_frame.width);
-    const auto height = static_cast<std::uint32_t>(std::max<std::uint64_t>(1, scaled_height_from_width));
+        (static_cast<std::uint64_t>(surface_.width) * static_cast<std::uint64_t>(height))
+        / static_cast<std::uint64_t>(width);
+    const auto scaled_height = static_cast<std::uint32_t>(std::max<std::uint64_t>(1, scaled_height_from_width));
     return PlaneRect {
         .x = 0,
-        .y = (surface_.height - height) / 2U,
+        .y = (surface_.height - scaled_height) / 2U,
         .width = surface_.width,
-        .height = height,
+        .height = scaled_height,
     };
 }
 
+KmsAtomicCompositor::PlaneRect KmsAtomicCompositor::scaled_video_destination(const DmabufVideoFrame& video_frame) const
+{
+    return scaled_video_destination(video_frame.width, video_frame.height);
+}
+
 bool KmsAtomicCompositor::commit(
-    const DmabufVideoFrame* video_frame,
     std::uint32_t video_framebuffer,
+    std::uint32_t video_width,
+    std::uint32_t video_height,
     std::uint32_t flow_framebuffer,
     std::uint32_t ui_framebuffer,
     bool nonblocking_allowed)
@@ -2285,7 +2406,7 @@ bool KmsAtomicCompositor::commit(
         return false;
     }
 
-    const bool has_video = video_frame != nullptr && video_framebuffer != 0;
+    const bool has_video = video_framebuffer != 0 && video_width != 0 && video_height != 0;
     const bool initial_commit = !modeset_committed_;
     const bool update_primary_plane = initial_commit || (has_video && video_on_primary_);
     const bool update_video_plane = has_video || (!has_video && video_plane_id_ != 0 && !video_on_primary_);
@@ -2295,7 +2416,7 @@ bool KmsAtomicCompositor::commit(
         && (initial_commit || flow_framebuffer != current_flow_framebuffer_);
     const bool update_ui_plane = ui_framebuffer != 0 && ui_plane_id_ != 0 && initial_commit;
     const auto video_destination = has_video && !video_on_primary_
-        ? scaled_video_destination(*video_frame)
+        ? scaled_video_destination(video_width, video_height)
         : PlaneRect { .x = 0, .y = 0, .width = surface_.width, .height = surface_.height };
     bool ok = true;
     if (initial_commit) {
@@ -2334,8 +2455,8 @@ bool KmsAtomicCompositor::commit(
 
     const auto primary_has_video = has_video && video_on_primary_;
     const auto primary_framebuffer = primary_has_video ? video_framebuffer : primary_.framebuffer;
-    const auto primary_src_width = primary_has_video ? video_frame->width : surface_.width;
-    const auto primary_src_height = primary_has_video ? video_frame->height : surface_.height;
+    const auto primary_src_width = primary_has_video ? video_width : surface_.width;
+    const auto primary_src_height = primary_has_video ? video_height : surface_.height;
     if (update_primary_plane) {
         ok = ok && add_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "FB_ID", primary_framebuffer, last_error_);
         ok = ok && add_property(drm_fd_, request, primary_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_ID", crtc_id_, last_error_);
@@ -2354,8 +2475,8 @@ bool KmsAtomicCompositor::commit(
         ok = ok && add_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_ID", crtc_id_, last_error_);
         ok = ok && add_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_X", 0, last_error_);
         ok = ok && add_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_Y", 0, last_error_);
-        ok = ok && add_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_W", video_frame->width << 16U, last_error_);
-        ok = ok && add_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_H", video_frame->height << 16U, last_error_);
+        ok = ok && add_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_W", video_width << 16U, last_error_);
+        ok = ok && add_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "SRC_H", video_height << 16U, last_error_);
         ok = ok && add_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_X", video_destination.x, last_error_);
         ok = ok && add_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_Y", video_destination.y, last_error_);
         ok = ok && add_property(drm_fd_, request, video_plane_id_, DRM_MODE_OBJECT_PLANE, "CRTC_W", video_destination.width, last_error_);
@@ -2681,6 +2802,27 @@ void KmsAtomicCompositor::destroy_solid_ui_buffer()
     solid_ui_ = {};
 }
 
+void KmsAtomicCompositor::destroy_cpu_video_buffer()
+{
+    if (cpu_video_.map != nullptr) {
+        munmap(cpu_video_.map, static_cast<std::size_t>(cpu_video_.size));
+        cpu_video_.map = nullptr;
+    }
+    if (drm_fd_ >= 0 && cpu_video_.framebuffer != 0) {
+        drmModeRmFB(drm_fd_, cpu_video_.framebuffer);
+        cpu_video_.framebuffer = 0;
+    }
+    if (drm_fd_ >= 0 && cpu_video_.handle != 0) {
+        drm_mode_destroy_dumb destroy {};
+        destroy.handle = cpu_video_.handle;
+        drmIoctl(drm_fd_, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+        cpu_video_.handle = 0;
+    }
+    cpu_video_ = {};
+    cpu_video_width_ = 0;
+    cpu_video_height_ = 0;
+}
+
 void KmsAtomicCompositor::cleanup()
 {
     wait_for_pending_page_flip();
@@ -2743,6 +2885,7 @@ void KmsAtomicCompositor::cleanup()
     close_writeback_recorder();
     destroy_solid_flow_buffer();
     destroy_solid_ui_buffer();
+    destroy_cpu_video_buffer();
     destroy_primary_buffer();
 
     if (drm_fd_ >= 0 && mode_blob_id_ != 0) {

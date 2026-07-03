@@ -226,9 +226,8 @@ Native Cedar remains available only through the explicit `--native-cedar-video` 
 On Raspberry Pi, start with the GStreamer path and the real KMS driver (`vc4-kms-v3d`). Raspberry Pi 5
 images should not be treated as H.264 hardware decode/encode targets; the current practical bring-up path is
 RTP/MJPEG in video-only KMS mode, where Glide decodes JPEG in software, copies BGRx into a DRM dumb buffer,
-and scans it out on a KMS plane. H.265 can still use V4L2/DMABUF when the sender provides H.265 and the OS
-exposes the HEVC decoder. MJPEG is intentionally video-only for now; Flow/UI overlays still use the DMABUF
-video compositor path.
+and scans it out on a KMS plane. The same CPU-backed scanout path also works with Flow/UI overlays. H.265 can
+still use V4L2/DMABUF when the sender provides H.265 and the OS exposes the HEVC decoder.
 
 Example run scripts cover the current device modes. Each script takes the UDP video port as its first optional
 argument, defaulting to `5600`; GStreamer/view scripts usually default to H.264 and take `h264`, `h265`, or

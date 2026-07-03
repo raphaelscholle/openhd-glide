@@ -1015,14 +1015,6 @@ int run_kms_video_preview(const Options& options)
     signal(SIGTERM, request_stop);
 
     const bool use_atomic_kms = options.atomic_kms || options.flow_overlay || options.ui_overlay;
-    const bool use_mjpeg_codec = options.view_udp_codec == "mjpeg" || options.view_udp_codec == "mjpg" || options.view_udp_codec == "jpeg";
-    if (use_mjpeg_codec && use_atomic_kms) {
-        glide::log(
-            glide::LogLevel::error,
-            "OpenHD-Glide",
-            "MJPEG KMS preview currently supports video-only mode; disable Flow/UI overlays or use examples/run-kms-video-rpi-video-only.sh");
-        return 1;
-    }
     glide::dev::KmsAtomicCompositor compositor;
     glide::dev::KmsDmabufVideoPlane legacy_output;
     SharedUiBuffer shared_ui;
@@ -1586,14 +1578,33 @@ int run_kms_video_preview(const Options& options)
         return true;
     };
 
-    const auto present_cpu_video_frame = [&](const glide::dev::CpuVideoFrame& frame) {
-        if (use_atomic_kms) {
-            glide::log(glide::LogLevel::error, "OpenHD-Glide", "CPU video frames are not supported by the atomic compositor yet");
+    const auto present_cpu_video_frame = [&](const glide::dev::CpuVideoFrame& frame, std::uint64_t presented_frames) {
+        if (!use_atomic_kms) {
+            if (!legacy_output.present(frame)) {
+                glide::log(glide::LogLevel::error, "OpenHD-Glide", legacy_output.last_error());
+                return false;
+            }
+            return true;
+        }
+        const bool update_flow = !async_flow && should_update_flow(presented_frames);
+        if (update_flow) {
+            if (options.flow_overlay || options.ui_overlay) {
+                render_flow_overlay();
+            } else {
+                flow_renderer.clear(0.0F, 0.0F, 0.0F, 0.0F, flow_surface);
+            }
+        }
+        if (!compositor.present(frame, update_flow)) {
+            glide::log(glide::LogLevel::error, "OpenHD-Glide", compositor.last_error());
             return false;
         }
-        if (!legacy_output.present(frame)) {
-            glide::log(glide::LogLevel::error, "OpenHD-Glide", legacy_output.last_error());
-            return false;
+        video_signal_present.store(true, std::memory_order_relaxed);
+        last_video_frame_time = std::chrono::steady_clock::now();
+        if (compositor.writeback_recording_finished()) {
+            stop_requested = 1;
+        }
+        if (update_flow) {
+            update_flow_deadline();
         }
         return true;
     };
@@ -2074,7 +2085,7 @@ int run_kms_video_preview(const Options& options)
                 logged_caps = true;
             }
             consecutive_frame_errors = 0;
-            presented = present_cpu_video_frame(cpu_frame.frame);
+            presented = present_cpu_video_frame(cpu_frame.frame, frames);
         } else {
             glide::dev::DmabufVideoFrame frame;
             if (!extract_dmabuf_frame(sample, frame, frame_error)) {
