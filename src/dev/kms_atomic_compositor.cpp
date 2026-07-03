@@ -178,6 +178,7 @@ bool add_optional_range_edge_property(
         if (property != nullptr
             && std::strcmp(property->name, name) == 0
             && (property->flags & DRM_MODE_PROP_RANGE) != 0
+            && (property->flags & DRM_MODE_PROP_IMMUTABLE) == 0
             && property->count_values >= 2) {
             const auto value = maximum ? property->values[1] : property->values[0];
             ok = add_optional_property(drm_fd, request, object_id, object_type, name, value, error);
@@ -214,6 +215,7 @@ bool add_optional_range_from_bottom_property(
         if (property != nullptr
             && std::strcmp(property->name, name) == 0
             && (property->flags & DRM_MODE_PROP_RANGE) != 0
+            && (property->flags & DRM_MODE_PROP_IMMUTABLE) == 0
             && property->count_values >= 2) {
             const auto minimum = property->values[0];
             const auto maximum = property->values[1];
@@ -249,7 +251,10 @@ bool add_optional_enum_property(
     bool ok { true };
     for (std::uint32_t i = 0; i < properties->count_props; ++i) {
         auto* property = drmModeGetProperty(drm_fd, properties->props[i]);
-        if (property != nullptr && std::strcmp(property->name, name) == 0 && (property->flags & DRM_MODE_PROP_ENUM) != 0) {
+        if (property != nullptr
+            && std::strcmp(property->name, name) == 0
+            && (property->flags & DRM_MODE_PROP_ENUM) != 0
+            && (property->flags & DRM_MODE_PROP_IMMUTABLE) == 0) {
             for (int j = 0; j < property->count_enums; ++j) {
                 if (std::strcmp(property->enums[j].name, enum_name) == 0) {
                     ok = add_optional_property(drm_fd, request, object_id, object_type, name, property->enums[j].value, error);
@@ -541,6 +546,20 @@ bool can_use_builtin_mode(std::uint32_t requested_width, std::uint32_t requested
         return true;
     }
     return false;
+}
+
+std::string drm_driver_name(int drm_fd)
+{
+    auto* version = drmGetVersion(drm_fd);
+    if (version == nullptr) {
+        return {};
+    }
+    std::string name;
+    if (version->name != nullptr && version->name_len > 0) {
+        name.assign(version->name, version->name + version->name_len);
+    }
+    drmFreeVersion(version);
+    return name;
 }
 
 void configure_mesa_runtime_for_board()
@@ -1651,36 +1670,40 @@ bool KmsAtomicCompositor::create_gbm_device()
 bool KmsAtomicCompositor::create_flow_surface()
 {
     std::uint32_t use_flags = GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING;
-    const std::array<std::uint64_t, 9> rockchip_overlay_modifiers {
-        arm_afbc_16x16_modifier,
-        arm_afbc_16x16_sparse_modifier,
-        arm_afbc_16x16_ytr_modifier,
-        arm_afbc_16x16_ytr_sparse_modifier,
-        arm_afbc_16x16_cbr_modifier,
-        arm_afbc_16x16_sparse_cbr_modifier,
-        arm_afbc_16x16_ytr_cbr_modifier,
-        arm_afbc_16x16_ytr_sparse_cbr_modifier,
-        arm_afbc_16x16_ytr_split_sparse_modifier,
-    };
     gbm_surface* modifier_surface {};
+    const auto driver_name = drm_driver_name(drm_fd_);
+    const bool rockchip_drm = driver_name.find("rockchip") != std::string::npos;
+    if (rockchip_drm) {
+        const std::array<std::uint64_t, 9> rockchip_overlay_modifiers {
+            arm_afbc_16x16_modifier,
+            arm_afbc_16x16_sparse_modifier,
+            arm_afbc_16x16_ytr_modifier,
+            arm_afbc_16x16_ytr_sparse_modifier,
+            arm_afbc_16x16_cbr_modifier,
+            arm_afbc_16x16_sparse_cbr_modifier,
+            arm_afbc_16x16_ytr_cbr_modifier,
+            arm_afbc_16x16_ytr_sparse_cbr_modifier,
+            arm_afbc_16x16_ytr_split_sparse_modifier,
+        };
 #if OPENHD_GLIDE_HAS_GBM_SURFACE_CREATE_WITH_MODIFIERS2
-    modifier_surface = gbm_surface_create_with_modifiers2(
-        static_cast<gbm_device*>(gbm_device_),
-        flow_surface_.width,
-        flow_surface_.height,
-        GBM_FORMAT_ARGB8888,
-        rockchip_overlay_modifiers.data(),
-        rockchip_overlay_modifiers.size(),
-        use_flags);
+        modifier_surface = gbm_surface_create_with_modifiers2(
+            static_cast<gbm_device*>(gbm_device_),
+            flow_surface_.width,
+            flow_surface_.height,
+            GBM_FORMAT_ARGB8888,
+            rockchip_overlay_modifiers.data(),
+            rockchip_overlay_modifiers.size(),
+            use_flags);
 #else
-    modifier_surface = gbm_surface_create_with_modifiers(
-        static_cast<gbm_device*>(gbm_device_),
-        flow_surface_.width,
-        flow_surface_.height,
-        GBM_FORMAT_ARGB8888,
-        rockchip_overlay_modifiers.data(),
-        rockchip_overlay_modifiers.size());
+        modifier_surface = gbm_surface_create_with_modifiers(
+            static_cast<gbm_device*>(gbm_device_),
+            flow_surface_.width,
+            flow_surface_.height,
+            GBM_FORMAT_ARGB8888,
+            rockchip_overlay_modifiers.data(),
+            rockchip_overlay_modifiers.size());
 #endif
+    }
     gbm_surface_ = modifier_surface;
     if (gbm_surface_ == nullptr) {
         gbm_surface_ = gbm_surface_create(
@@ -1694,6 +1717,11 @@ bool KmsAtomicCompositor::create_flow_surface()
         last_error_ = "failed to create Flow GBM overlay surface";
         return false;
     }
+    glide::log(
+        glide::LogLevel::info,
+        "OpenHD-Glide",
+        "Flow GBM overlay surface created for DRM driver '" + (driver_name.empty() ? std::string("unknown") : driver_name)
+            + (rockchip_drm && modifier_surface != nullptr ? "' with Rockchip AFBC modifier candidates" : "' with default scanout allocation"));
     return true;
 }
 

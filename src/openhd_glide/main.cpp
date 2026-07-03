@@ -1836,12 +1836,14 @@ int run_kms_video_preview(const Options& options)
     } else if (use_h265) {
         candidates = {
             { "mppvideodec", "mppvideodec", "mppvideodec dma-feature=true arm-afbc=false fast-mode=true qos=false format=NV12", "video/x-raw(memory:DMABuf),format=NV12" },
+            { "v4l2slh265dec", "v4l2slh265dec", "v4l2slh265dec", "video/x-raw(memory:DMABuf),format=DMA_DRM" },
             { "v4l2h265dec", "v4l2h265dec", "v4l2h265dec capture-io-mode=dmabuf", "video/x-raw(memory:DMABuf),format=DMA_DRM" },
             { "omxhevcvideodec", "omxhevcvideodec", "omxhevcvideodec disable-dma-feature=false", "" },
         };
     } else {
         candidates = {
             { "mppvideodec", "mppvideodec", "mppvideodec dma-feature=true arm-afbc=false fast-mode=true qos=false format=NV12", "video/x-raw(memory:DMABuf),format=NV12" },
+            { "v4l2slh264dec", "v4l2slh264dec", "v4l2slh264dec", "video/x-raw(memory:DMABuf),format=DMA_DRM" },
             { "v4l2h264dec", "v4l2h264dec", "v4l2h264dec capture-io-mode=dmabuf", "video/x-raw(memory:DMABuf),format=DMA_DRM" },
             { "omxh264dec", "omxh264dec", "omxh264dec disable-dma-feature=false", "" },
         };
