@@ -389,6 +389,71 @@ bool KmsDmabufVideoPlane::present(const DmabufVideoFrame& frame)
 #endif
 }
 
+bool KmsDmabufVideoPlane::present(const CpuVideoFrame& frame)
+{
+#if OPENHD_GLIDE_HAS_KMS_GBM
+    if (frame.width == 0 || frame.height == 0 || frame.pixels == nullptr || frame.stride < frame.width * 4U) {
+        last_error_ = "invalid CPU video frame";
+        return false;
+    }
+
+    constexpr auto cpu_frame_format = DRM_FORMAT_XRGB8888;
+    if (video_plane_id_ == 0 || video_plane_format_ != cpu_frame_format || video_plane_modifier_ != DRM_FORMAT_MOD_LINEAR) {
+        if (video_plane_id_ != 0 && drm_fd_ >= 0) {
+            drmModeSetPlane(drm_fd_, video_plane_id_, crtc_id_, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        }
+        destroy_framebuffer_cache();
+        current_framebuffer_ = 0;
+        if (!choose_video_plane(cpu_frame_format, DRM_FORMAT_MOD_LINEAR, preferred_plane_id_)) {
+            return false;
+        }
+    }
+    if (cpu_video_.framebuffer == 0 || cpu_video_width_ != frame.width || cpu_video_height_ != frame.height) {
+        destroy_cpu_video_buffer();
+        if (!create_cpu_video_buffer(frame.width, frame.height)) {
+            return false;
+        }
+    }
+
+    auto* dst = static_cast<unsigned char*>(cpu_video_.map);
+    const auto* src = static_cast<const unsigned char*>(frame.pixels);
+    const auto row_bytes = static_cast<std::size_t>(frame.width) * 4U;
+    for (std::uint32_t y = 0; y < frame.height; ++y) {
+        std::memcpy(
+            dst + static_cast<std::size_t>(y) * cpu_video_.pitch,
+            src + static_cast<std::size_t>(y) * frame.stride,
+            row_bytes);
+    }
+
+    const auto destination = scaled_video_destination(frame.width, frame.height, display_width_, display_height_);
+    if (drmModeSetPlane(
+            drm_fd_,
+            video_plane_id_,
+            crtc_id_,
+            cpu_video_.framebuffer,
+            0,
+            destination.x,
+            destination.y,
+            destination.width,
+            destination.height,
+            0,
+            0,
+            frame.width << 16U,
+            frame.height << 16U)
+        != 0) {
+        last_error_ = "failed to set KMS video plane from CPU framebuffer" + errno_suffix();
+        return false;
+    }
+
+    current_framebuffer_ = cpu_video_.framebuffer;
+    wait_for_vblank();
+    return true;
+#else
+    (void)frame;
+    return false;
+#endif
+}
+
 void KmsDmabufVideoPlane::set_vblank_wait_enabled(bool enabled)
 {
     vblank_wait_enabled_ = enabled;
@@ -713,6 +778,50 @@ bool KmsDmabufVideoPlane::configure_video_plane()
     return true;
 }
 
+bool KmsDmabufVideoPlane::create_cpu_video_buffer(std::uint32_t width, std::uint32_t height)
+{
+    drm_mode_create_dumb create {};
+    create.width = width;
+    create.height = height;
+    create.bpp = 32;
+    if (drmIoctl(drm_fd_, DRM_IOCTL_MODE_CREATE_DUMB, &create) != 0) {
+        last_error_ = "failed to create CPU video DRM buffer" + errno_suffix();
+        return false;
+    }
+
+    cpu_video_.handle = create.handle;
+    cpu_video_.pitch = create.pitch;
+    cpu_video_.size = create.size;
+
+    std::uint32_t handles[4] { cpu_video_.handle, 0, 0, 0 };
+    std::uint32_t strides[4] { cpu_video_.pitch, 0, 0, 0 };
+    std::uint32_t offsets[4] {};
+    if (drmModeAddFB2(drm_fd_, width, height, DRM_FORMAT_XRGB8888, handles, strides, offsets, &cpu_video_.framebuffer, 0) != 0) {
+        last_error_ = "failed to create CPU video DRM framebuffer" + errno_suffix();
+        destroy_cpu_video_buffer();
+        return false;
+    }
+
+    drm_mode_map_dumb map {};
+    map.handle = cpu_video_.handle;
+    if (drmIoctl(drm_fd_, DRM_IOCTL_MODE_MAP_DUMB, &map) != 0) {
+        last_error_ = "failed to map CPU video DRM buffer" + errno_suffix();
+        destroy_cpu_video_buffer();
+        return false;
+    }
+    cpu_video_.map = mmap(nullptr, cpu_video_.size, PROT_READ | PROT_WRITE, MAP_SHARED, drm_fd_, static_cast<off_t>(map.offset));
+    if (cpu_video_.map == MAP_FAILED) {
+        cpu_video_.map = nullptr;
+        last_error_ = "failed to mmap CPU video DRM buffer" + errno_suffix();
+        destroy_cpu_video_buffer();
+        return false;
+    }
+
+    cpu_video_width_ = width;
+    cpu_video_height_ = height;
+    return true;
+}
+
 bool KmsDmabufVideoPlane::import_frame(const DmabufVideoFrame& frame, ImportedFramebuffer& imported)
 {
     if (frame.plane_count == 0 || frame.plane_count > 4) {
@@ -898,6 +1007,27 @@ void KmsDmabufVideoPlane::destroy_framebuffer_cache()
     framebuffer_cache_.clear();
 }
 
+void KmsDmabufVideoPlane::destroy_cpu_video_buffer()
+{
+    if (cpu_video_.map != nullptr) {
+        munmap(cpu_video_.map, cpu_video_.size);
+        cpu_video_.map = nullptr;
+    }
+    if (cpu_video_.framebuffer != 0 && drm_fd_ >= 0) {
+        drmModeRmFB(drm_fd_, cpu_video_.framebuffer);
+        cpu_video_.framebuffer = 0;
+    }
+    if (cpu_video_.handle != 0 && drm_fd_ >= 0) {
+        drm_mode_destroy_dumb destroy {};
+        destroy.handle = cpu_video_.handle;
+        drmIoctl(drm_fd_, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+        cpu_video_.handle = 0;
+    }
+    cpu_video_ = {};
+    cpu_video_width_ = 0;
+    cpu_video_height_ = 0;
+}
+
 void KmsDmabufVideoPlane::destroy_primary_buffer()
 {
     if (primary_.map != nullptr) {
@@ -929,6 +1059,7 @@ void KmsDmabufVideoPlane::cleanup()
     }
     current_framebuffer_ = 0;
     destroy_framebuffer_cache();
+    destroy_cpu_video_buffer();
     destroy_primary_buffer();
     if (original_crtc_ != nullptr) {
         drmModeFreeCrtc(static_cast<drmModeCrtc*>(original_crtc_));

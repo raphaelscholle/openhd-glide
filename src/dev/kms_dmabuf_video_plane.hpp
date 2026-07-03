@@ -41,6 +41,13 @@ struct DmabufVideoFrame {
     std::array<std::uint64_t, 4> modifiers {};
 };
 
+struct CpuVideoFrame {
+    std::uint32_t width {};
+    std::uint32_t height {};
+    std::uint32_t stride {};
+    const void* pixels {};
+};
+
 class KmsDmabufVideoPlane {
 public:
     KmsDmabufVideoPlane() = default;
@@ -51,6 +58,7 @@ public:
 
     bool create(std::uint32_t requested_width, std::uint32_t requested_height, std::uint32_t requested_refresh_hz = 0, int preferred_plane_id = -1);
     bool present(const DmabufVideoFrame& frame);
+    bool present(const CpuVideoFrame& frame);
     void set_vblank_wait_enabled(bool enabled);
     const std::string& last_error() const;
 
@@ -91,6 +99,7 @@ private:
     bool create_primary_buffer();
     bool choose_video_plane(std::uint32_t drm_format, std::uint64_t modifier, int preferred_plane_id);
     bool configure_video_plane();
+    bool create_cpu_video_buffer(std::uint32_t width, std::uint32_t height);
     bool import_frame(const DmabufVideoFrame& frame, ImportedFramebuffer& imported);
     bool make_frame_key(const DmabufVideoFrame& frame, FrameKey& key);
     ImportedFramebuffer* find_or_import_cached_framebuffer(const DmabufVideoFrame& frame);
@@ -98,6 +107,7 @@ private:
     void wait_for_vblank();
     void destroy_imported(ImportedFramebuffer& imported);
     void destroy_framebuffer_cache();
+    void destroy_cpu_video_buffer();
     void destroy_primary_buffer();
     void cleanup();
 
@@ -114,6 +124,9 @@ private:
     void* original_crtc_ {};
     void* mode_ {};
     DumbBuffer primary_ {};
+    DumbBuffer cpu_video_ {};
+    std::uint32_t cpu_video_width_ {};
+    std::uint32_t cpu_video_height_ {};
     std::vector<CachedFramebuffer> framebuffer_cache_;
     std::uint64_t frame_serial_ {};
     std::uint32_t current_framebuffer_ {};

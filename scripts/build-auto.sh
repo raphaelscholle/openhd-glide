@@ -157,6 +157,19 @@ apt_available() {
   have_command apt-get && have_command apt-cache
 }
 
+apt_release_available() {
+  apt-cache policy 2>/dev/null | awk -v target="$1" '
+    $1 == "release" {
+      for (i = 2; i <= NF; ++i) {
+        if ($i == "n=" target || $i == "a=" target) {
+          found = 1
+        }
+      }
+    }
+    END { exit(found ? 0 : 1) }
+  '
+}
+
 pkg_config_has() {
   have_command pkg-config && pkg-config --exists "$1" >/dev/null 2>&1
 }
@@ -196,9 +209,13 @@ install_apt_packages() {
   graphics_dev_packages="libdrm-dev libgbm-dev libgles2-mesa-dev libegl1-mesa-dev"
   graphics_runtime_packages="libdrm2 libdrm-radeon1 libdrm-nouveau2 libdrm-amdgpu1 libgbm1 libegl-mesa0 libglapi-mesa"
   if apt-cache policy libdrm2 libgbm1 | awk '/Installed:|Candidate:/ && /~bpo/ { found = 1 } END { exit(found ? 0 : 1) }'; then
-    echo "Detected backports DRM/GBM packages; installing matching graphics packages from ${APT_BACKPORTS_TARGET}."
-    sudo apt-get install -y -t "$APT_BACKPORTS_TARGET" $graphics_runtime_packages
-    sudo apt-get install -y -t "$APT_BACKPORTS_TARGET" $graphics_dev_packages
+    if apt_release_available "$APT_BACKPORTS_TARGET"; then
+      echo "Detected backports DRM/GBM packages; installing matching graphics packages from ${APT_BACKPORTS_TARGET}."
+      sudo apt-get install -y -t "$APT_BACKPORTS_TARGET" $graphics_runtime_packages
+      sudo apt-get install -y -t "$APT_BACKPORTS_TARGET" $graphics_dev_packages
+    else
+      echo "Detected backports-style DRM/GBM package versions, but apt release ${APT_BACKPORTS_TARGET} is not configured; using the default apt release."
+    fi
   fi
 
   sudo apt-get install -y "$@"
@@ -274,30 +291,44 @@ REQUIRED_MODULES="libdrm gbm egl glesv2 freetype2 gstreamer-1.0 gstreamer-app-1.
 MISSING_COMMANDS="$(missing_commands $REQUIRED_COMMANDS)"
 MISSING_MODULES="$(missing_pkg_modules $REQUIRED_MODULES)"
 MISSING_GST_ELEMENTS=""
+RUNTIME_WARNINGS=""
 if ! gst_element_has rtph264depay; then
   MISSING_GST_ELEMENTS="${MISSING_GST_ELEMENTS} rtph264depay"
 fi
 if ! gst_element_has h264parse; then
   MISSING_GST_ELEMENTS="${MISSING_GST_ELEMENTS} h264parse"
 fi
-if [ "$PLATFORM" = "raspberrypi" ] && ! gst_element_has v4l2h264dec; then
-  MISSING_GST_ELEMENTS="${MISSING_GST_ELEMENTS} v4l2h264dec"
+if ! gst_element_has rtpjpegdepay; then
+  MISSING_GST_ELEMENTS="${MISSING_GST_ELEMENTS} rtpjpegdepay"
+fi
+if ! gst_element_has jpegdec && ! gst_element_has avdec_mjpeg; then
+  MISSING_GST_ELEMENTS="${MISSING_GST_ELEMENTS} jpegdec-or-avdec_mjpeg"
+fi
+if ! gst_element_has videoconvert; then
+  MISSING_GST_ELEMENTS="${MISSING_GST_ELEMENTS} videoconvert"
+fi
+if [ "$PLATFORM" = "raspberrypi" ]; then
+  if ! gst_element_has v4l2h264dec && ! gst_element_has v4l2slh264dec; then
+    RUNTIME_WARNINGS="${RUNTIME_WARNINGS}
+Raspberry Pi H.264 hardware decode element was not found. Raspberry Pi 5 images may expose HEVC/H.265 only; use MJPEG for the current video-only KMS path or H.265 where the sender supports it."
+  fi
+  if gst_element_has v4l2slh265dec || gst_element_has v4l2h265dec; then
+    RUNTIME_WARNINGS="${RUNTIME_WARNINGS}
+Raspberry Pi HEVC/H.265 V4L2 decode element is available."
+  fi
 fi
 if [ "$PLATFORM" = "rockchip" ] && enabled "$REQUIRE_RKMPP" && [ ! -e /usr/lib/aarch64-linux-gnu/librockchip_mpp.so ] && [ ! -e /usr/lib/arm-linux-gnueabihf/librockchip_mpp.so ] && [ ! -e /usr/lib/librockchip_mpp.so ]; then
   MISSING_MODULES="${MISSING_MODULES}
 rockchip_mpp library"
 fi
 
-if [ -n "$MISSING_COMMANDS" ] || [ -n "$MISSING_MODULES" ] || [ -n "$MISSING_GST_ELEMENTS" ]; then
+if [ -n "$MISSING_COMMANDS" ] || [ -n "$MISSING_MODULES" ]; then
   echo "Missing build/video dependencies were detected:"
   if [ -n "$MISSING_COMMANDS" ]; then
     printf '  commands:\n%s\n' "$MISSING_COMMANDS" | sed 's/^/    /'
   fi
   if [ -n "$MISSING_MODULES" ]; then
     printf '  pkg-config/libraries:\n%s\n' "$MISSING_MODULES" | sed 's/^/    /'
-  fi
-  if [ -n "$MISSING_GST_ELEMENTS" ]; then
-    printf '  GStreamer elements:%s\n' "$MISSING_GST_ELEMENTS"
   fi
 
   if apt_available && confirm_install; then
@@ -309,6 +340,14 @@ if [ -n "$MISSING_COMMANDS" ] || [ -n "$MISSING_MODULES" ] || [ -n "$MISSING_GST
   else
     echo "Continuing despite missing dependencies because --allow-missing was set."
   fi
+fi
+
+if [ -n "$MISSING_GST_ELEMENTS" ]; then
+  echo "Warning: missing runtime GStreamer elements:${MISSING_GST_ELEMENTS}"
+  echo "Install the GStreamer plugin packages with: scripts/build-auto.sh --deps"
+fi
+if [ -n "$RUNTIME_WARNINGS" ]; then
+  printf 'Runtime capability notes:%s\n' "$RUNTIME_WARNINGS"
 fi
 
 CMAKE_ARGS="
@@ -354,6 +393,13 @@ case "$PLATFORM" in
     ;;
 esac
 
+BUILD_PARENT="$(dirname -- "$BUILD_DIR")"
+if { [ -e "$BUILD_DIR" ] && [ ! -w "$BUILD_DIR" ]; } || { [ ! -e "$BUILD_DIR" ] && [ ! -w "$BUILD_PARENT" ]; }; then
+  echo "Build directory is not writable: ${BUILD_DIR}" >&2
+  echo "Use sudo for a root-owned checkout, or set GLIDE_BUILD_DIR to a writable path." >&2
+  exit 1
+fi
+
 # shellcheck disable=SC2086
 cmake -S "$ROOT_DIR" -B "$BUILD_DIR" $CMAKE_ARGS
 cmake --build "$BUILD_DIR" -j"$JOBS"
@@ -365,8 +411,8 @@ fi
 
 case "$PLATFORM" in
   raspberrypi)
-    echo "Try: sudo ${BUILD_DIR}/openhd-glide --kms-video-preview --gstreamer-video --no-flow --view-udp-port 5600 --preview-width 0 --flow-height 0"
-    echo "Or:  examples/run-kms-video-rpi-video-only.sh 5600 h264"
+    echo "Try: sudo ${BUILD_DIR}/openhd-glide --kms-video-preview --gstreamer-video --no-flow --view-udp-port 5600 --view-udp-codec mjpeg --preview-width 0 --flow-height 0"
+    echo "Or:  examples/run-kms-video-rpi-video-only.sh 5600 mjpeg"
     ;;
   rockchip)
     echo "Try: examples/run-kms-video-rkmpp-video-only.sh 5600 h264"

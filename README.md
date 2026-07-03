@@ -188,7 +188,9 @@ sudo ./build-kms/openhd-glide --kms-stack --preview-width 1920 --flow-height 108
 uses DRM/KMS discovery from the controller, runs `glide-flow` through GBM/EGL directly on the active KMS connector,
 and runs `glide-ui` headless until the LVGL shared-buffer/plane backend exists.
 
-`glide-view` listens for RTP/H.264 on UDP port 5600 by default and decodes through GStreamer into `appsink`.
+`glide-view` listens for UDP RTP video on port 5600 by default and decodes through GStreamer into `appsink`.
+It supports H.264, H.265, and MJPEG with `--udp-codec h264|h265|mjpeg`; H.264 remains the default for
+existing senders.
 It intentionally does not use `kmssink`, because `kmssink` would compete for DRM/KMS master. The next production step is
 Unix-socket FD passing so `glide-view` can hand decoded DMABUFs to `openhd-glide`, while only `openhd-glide` imports
 buffers and programs KMS planes.
@@ -221,12 +223,16 @@ and scanning it out on a KMS video plane. It still uses a black primary framebuf
 Flow is rendered on an ARGB overlay plane. With `--ui-overlay`, the controller also places a left-side ARGB UI
 overlay plane or composites the LVGL buffer into the Flow/OSD plane when RK3566 exposes only one usable ARGB plane.
 Native Cedar remains available only through the explicit `--native-cedar-video` flag.
-On Raspberry Pi, start with the GStreamer/V4L2 path and the real KMS driver (`vc4-kms-v3d`). Glide imports
-`video/x-raw(memory:DMABuf),format=DMA_DRM` frames with their DRM format modifiers, so non-linear Pi decoder
-buffers can be scanned out when the selected KMS plane advertises the same modifier.
+On Raspberry Pi, start with the GStreamer path and the real KMS driver (`vc4-kms-v3d`). Raspberry Pi 5
+images should not be treated as H.264 hardware decode/encode targets; the current practical bring-up path is
+RTP/MJPEG in video-only KMS mode, where Glide decodes JPEG in software, copies BGRx into a DRM dumb buffer,
+and scans it out on a KMS plane. H.265 can still use V4L2/DMABUF when the sender provides H.265 and the OS
+exposes the HEVC decoder. MJPEG is intentionally video-only for now; Flow/UI overlays still use the DMABUF
+video compositor path.
 
 Example run scripts cover the current device modes. Each script takes the UDP video port as its first optional
-argument, defaulting to `5600`; GStreamer/view scripts default to H.264 and take `h264` or `h265` as the second optional argument.
+argument, defaulting to `5600`; GStreamer/view scripts usually default to H.264 and take `h264`, `h265`, or
+`mjpeg` as the second optional argument where supported. The Raspberry Pi video-only script defaults to MJPEG.
 Set `GLIDE_WIDTH` and `GLIDE_HEIGHT` to override the default `1920x1080`.
 Device KMS scripts default to `GLIDE_DISPLAY_HZ=0`, which auto-selects the highest refresh mode exposed by the connected display. Set `GLIDE_DISPLAY_HZ` to a non-zero value to request a specific refresh rate.
 
@@ -246,11 +252,13 @@ examples/run-kms-video-gstreamer-flow-ui.sh 5600 h264
 # GStreamer hardware decode, KMS video plane plus Flow overlay capped to 30 fps.
 examples/run-kms-video-gstreamer-flow-30fps.sh 5600 h264
 
-# GStreamer hardware decode, fastest video-only legacy KMS plane path.
+# GStreamer decode, fastest video-only legacy KMS plane path.
 examples/run-kms-video-gstreamer-video-only.sh 5600 h264
+examples/run-kms-video-gstreamer-video-only.sh 5600 mjpeg
 
-# Raspberry Pi KMS video-only bring-up path using V4L2/GStreamer DMABUF decode.
-examples/run-kms-video-rpi-video-only.sh 5600 h264
+# Raspberry Pi KMS video-only bring-up path. Defaults to RTP/MJPEG.
+examples/run-kms-video-rpi-video-only.sh 5600
+examples/run-kms-video-rpi-video-only.sh 5600 mjpeg
 
 # Native Cedar RTP/H.264 decode debugging path, KMS video plane plus Flow overlay.
 examples/run-kms-video-cedar-flow.sh 5600
@@ -260,6 +268,7 @@ examples/run-kms-video-cedar-video-only.sh 5600
 
 # Standalone glide-view decode-only test.
 examples/run-glide-view-decode-only.sh 5600 h264
+examples/run-glide-view-decode-only.sh 5600 mjpeg
 
 # Multi-process KMS stack smoke test.
 examples/run-kms-stack.sh 5600 h264
@@ -298,6 +307,7 @@ Send a test pattern from another machine with GStreamer:
 
 ```sh
 examples/stream-videotestsrc-to-glide-view.sh <target-ip> 5600
+examples/stream-mjpeg-videotestsrc-to-glide.sh <target-ip> 5600
 ```
 
 Use the Pi's actual network IP as `<target-ip>`. For a sender running on the same Pi, use `127.0.0.1`.
@@ -306,6 +316,8 @@ The Linux sender requires a hardware encoder such as `v4l2h264enc` by default. S
 The script performs a small encoder self-test first. If `v4l2h264enc` fails with `bcm2835-codec ... ret -3` in
 `dmesg`, the Raspberry Pi encoder driver is failing independently of Glide; use another sender with hardware H.264 or
 fix the Pi encoder stack before using it for performance measurements.
+For Raspberry Pi 5 MJPEG bring-up, use `examples/stream-mjpeg-videotestsrc-to-glide.sh`; it uses `jpegenc`
+and `rtpjpegpay` instead of an H.264 encoder.
 
 To avoid sender-side encoding entirely, stream a downloaded H.264 MP4:
 

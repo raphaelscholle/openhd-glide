@@ -57,7 +57,7 @@ The probe currently reports all planes exposed through `libdrm` universal planes
 
 ## GlideView Video
 
-`glide-view --udp-video` receives RTP/H.264 on UDP port 5600 by default and decodes with GStreamer into `appsink`. It intentionally does not use `kmssink`, because `kmssink` would make the View process compete for KMS master. The intended device pipeline is:
+`glide-view --udp-video` receives RTP video on UDP port 5600 by default and decodes with GStreamer into `appsink`. It supports H.264, H.265, and MJPEG via `--udp-codec h264|h265|mjpeg`. It intentionally does not use `kmssink`, because `kmssink` would make the View process compete for KMS master. The intended device pipeline is:
 
 - `udpsrc`
 - `rtph264depay`

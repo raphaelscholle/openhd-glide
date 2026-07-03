@@ -895,6 +895,56 @@ bool extract_dmabuf_frame(GstSample* sample, glide::dev::DmabufVideoFrame& frame
     }
     return true;
 }
+
+struct MappedCpuVideoFrame {
+    GstVideoFrame mapped {};
+    bool valid {};
+    glide::dev::CpuVideoFrame frame {};
+
+    ~MappedCpuVideoFrame()
+    {
+        if (valid) {
+            gst_video_frame_unmap(&mapped);
+        }
+    }
+
+    MappedCpuVideoFrame(const MappedCpuVideoFrame&) = delete;
+    MappedCpuVideoFrame& operator=(const MappedCpuVideoFrame&) = delete;
+    MappedCpuVideoFrame() = default;
+};
+
+bool extract_bgrx_cpu_frame(GstSample* sample, MappedCpuVideoFrame& mapped, std::string& error)
+{
+    auto* caps = gst_sample_get_caps(sample);
+    auto* buffer = gst_sample_get_buffer(sample);
+    if (caps == nullptr || buffer == nullptr) {
+        error = "decoded sample is missing caps or buffer";
+        return false;
+    }
+
+    GstVideoInfo info {};
+    if (!gst_video_info_from_caps(&info, caps)) {
+        error = "decoded CPU sample has invalid video caps: " + caps_to_string(caps);
+        return false;
+    }
+    if (GST_VIDEO_INFO_FORMAT(&info) != GST_VIDEO_FORMAT_BGRx) {
+        error = "decoded CPU sample is not BGRx: " + caps_to_string(caps);
+        return false;
+    }
+    if (!gst_video_frame_map(&mapped.mapped, &info, buffer, GST_MAP_READ)) {
+        error = "failed to map decoded CPU video frame";
+        return false;
+    }
+
+    mapped.valid = true;
+    mapped.frame = glide::dev::CpuVideoFrame {
+        .width = static_cast<std::uint32_t>(GST_VIDEO_INFO_WIDTH(&info)),
+        .height = static_cast<std::uint32_t>(GST_VIDEO_INFO_HEIGHT(&info)),
+        .stride = static_cast<std::uint32_t>(GST_VIDEO_FRAME_PLANE_STRIDE(&mapped.mapped, 0)),
+        .pixels = GST_VIDEO_FRAME_PLANE_DATA(&mapped.mapped, 0),
+    };
+    return true;
+}
 #endif
 
 struct SharedUiBuffer {
@@ -965,6 +1015,14 @@ int run_kms_video_preview(const Options& options)
     signal(SIGTERM, request_stop);
 
     const bool use_atomic_kms = options.atomic_kms || options.flow_overlay || options.ui_overlay;
+    const bool use_mjpeg_codec = options.view_udp_codec == "mjpeg" || options.view_udp_codec == "mjpg" || options.view_udp_codec == "jpeg";
+    if (use_mjpeg_codec && use_atomic_kms) {
+        glide::log(
+            glide::LogLevel::error,
+            "OpenHD-Glide",
+            "MJPEG KMS preview currently supports video-only mode; disable Flow/UI overlays or use examples/run-kms-video-rpi-video-only.sh");
+        return 1;
+    }
     glide::dev::KmsAtomicCompositor compositor;
     glide::dev::KmsDmabufVideoPlane legacy_output;
     SharedUiBuffer shared_ui;
@@ -1528,6 +1586,18 @@ int run_kms_video_preview(const Options& options)
         return true;
     };
 
+    const auto present_cpu_video_frame = [&](const glide::dev::CpuVideoFrame& frame) {
+        if (use_atomic_kms) {
+            glide::log(glide::LogLevel::error, "OpenHD-Glide", "CPU video frames are not supported by the atomic compositor yet");
+            return false;
+        }
+        if (!legacy_output.present(frame)) {
+            glide::log(glide::LogLevel::error, "OpenHD-Glide", legacy_output.last_error());
+            return false;
+        }
+        return true;
+    };
+
 #if OPENHD_GLIDE_HAS_CEDAR
     if (options.native_cedar_video) {
         glide::video::CedarRtpDecoder cedar;
@@ -1717,8 +1787,9 @@ int run_kms_video_preview(const Options& options)
 
     const bool use_h265 = options.view_udp_codec == "h265" || options.view_udp_codec == "hevc";
     const bool use_h264 = options.view_udp_codec == "h264";
-    if (!use_h264 && !use_h265) {
-        glide::log(glide::LogLevel::error, "OpenHD-Glide", "unsupported --view-udp-codec value; use h264 or h265");
+    const bool use_mjpeg = options.view_udp_codec == "mjpeg" || options.view_udp_codec == "mjpg" || options.view_udp_codec == "jpeg";
+    if (!use_h264 && !use_h265 && !use_mjpeg) {
+        glide::log(glide::LogLevel::error, "OpenHD-Glide", "unsupported --view-udp-codec value; use h264, h265, or mjpeg");
         return 1;
     }
 
@@ -1727,15 +1798,24 @@ int run_kms_video_preview(const Options& options)
         text
             << "udpsrc name=video-source port=" << options.view_udp_port
             << " buffer-size=33554432 "
-            << " caps=\"application/x-rtp,media=(string)video,clock-rate=(int)90000,encoding-name=(string)"
-            << (use_h265 ? "H265" : "H264")
-            << ",payload=(int)96\" "
-            << "! " << (use_h265 ? "rtph265depay" : "rtph264depay") << " "
-            << "! " << (use_h265 ? "h265parse" : "h264parse") << " name=video-parse config-interval=-1 "
-            << "! " << (use_h265 ? "video/x-h265" : "video/x-h264") << ",stream-format=byte-stream,parsed=true,alignment=au "
-            << "! " << candidate.decoder << " ";
-        if (force_dmabuf_capture && std::string(candidate.name) == (use_h265 ? "v4l2h265dec" : "v4l2h264dec")) {
-            text << "capture-io-mode=dmabuf ";
+            << " caps=\"application/x-rtp,media=(string)video,clock-rate=(int)90000,encoding-name=(string)";
+        if (use_mjpeg) {
+            text
+                << "JPEG,payload=(int)96\" "
+                << "! rtpjpegdepay name=video-parse "
+                << "! " << candidate.decoder << " "
+                << "! videoconvert ";
+        } else {
+            text
+                << (use_h265 ? "H265" : "H264")
+                << ",payload=(int)96\" "
+                << "! " << (use_h265 ? "rtph265depay" : "rtph264depay") << " "
+                << "! " << (use_h265 ? "h265parse" : "h264parse") << " name=video-parse config-interval=-1 "
+                << "! " << (use_h265 ? "video/x-h265" : "video/x-h264") << ",stream-format=byte-stream,parsed=true,alignment=au "
+                << "! " << candidate.decoder << " ";
+            if (force_dmabuf_capture && std::string(candidate.name) == (use_h265 ? "v4l2h265dec" : "v4l2h264dec")) {
+                text << "capture-io-mode=dmabuf ";
+            }
         }
         text
             << "! queue max-size-buffers=8 max-size-bytes=0 max-size-time=0 leaky=downstream "
@@ -1747,17 +1827,25 @@ int run_kms_video_preview(const Options& options)
         return text.str();
     };
 
-    const std::array<DecoderPipelineCandidate, 3> candidates = use_h265
-        ? std::array<DecoderPipelineCandidate, 3> { {
+    std::vector<DecoderPipelineCandidate> candidates;
+    if (use_mjpeg) {
+        candidates = {
+            { "jpegdec", "jpegdec", "jpegdec", "video/x-raw,format=BGRx" },
+            { "avdec_mjpeg", "avdec_mjpeg", "avdec_mjpeg", "video/x-raw,format=BGRx" },
+        };
+    } else if (use_h265) {
+        candidates = {
             { "mppvideodec", "mppvideodec", "mppvideodec dma-feature=true arm-afbc=false fast-mode=true qos=false format=NV12", "video/x-raw(memory:DMABuf),format=NV12" },
             { "v4l2h265dec", "v4l2h265dec", "v4l2h265dec capture-io-mode=dmabuf", "video/x-raw(memory:DMABuf),format=DMA_DRM" },
             { "omxhevcvideodec", "omxhevcvideodec", "omxhevcvideodec disable-dma-feature=false", "" },
-        } }
-        : std::array<DecoderPipelineCandidate, 3> { {
+        };
+    } else {
+        candidates = {
             { "mppvideodec", "mppvideodec", "mppvideodec dma-feature=true arm-afbc=false fast-mode=true qos=false format=NV12", "video/x-raw(memory:DMABuf),format=NV12" },
             { "v4l2h264dec", "v4l2h264dec", "v4l2h264dec capture-io-mode=dmabuf", "video/x-raw(memory:DMABuf),format=DMA_DRM" },
             { "omxh264dec", "omxh264dec", "omxh264dec disable-dma-feature=false", "" },
-        } };
+        };
+    }
 
     GError* error {};
     GstElement* pipeline {};
@@ -1792,7 +1880,7 @@ int run_kms_video_preview(const Options& options)
         }
     }
     if (pipeline == nullptr) {
-        glide::log(glide::LogLevel::error, "OpenHD-Glide", "failed to create any hardware video preview pipeline");
+        glide::log(glide::LogLevel::error, "OpenHD-Glide", "failed to create any video preview pipeline");
         return 1;
     }
 
@@ -1835,10 +1923,15 @@ int run_kms_video_preview(const Options& options)
         return 1;
     }
 
-    glide::log(glide::LogLevel::info, "OpenHD-Glide", "controller-owned KMS DMABUF video plane running");
-    glide::log(glide::LogLevel::info, "OpenHD-Glide", "selected decoder pipeline=" + selected_pipeline_name + " codec=" + (use_h265 ? std::string("h265") : std::string("h264")));
-    glide::log(glide::LogLevel::info, "OpenHD-Glide", "KMS video importer build: forced decoder DMABUF capture + fd-backed memory diagnostics");
-    glide::log(glide::LogLevel::info, "OpenHD-Glide", "decoded DMABUF frames are imported directly into DRM and scanned out on a KMS plane");
+    const auto selected_codec_label = use_mjpeg ? std::string("mjpeg") : (use_h265 ? std::string("h265") : std::string("h264"));
+    glide::log(glide::LogLevel::info, "OpenHD-Glide", "controller-owned KMS video plane running");
+    glide::log(glide::LogLevel::info, "OpenHD-Glide", "selected decoder pipeline=" + selected_pipeline_name + " codec=" + selected_codec_label);
+    if (use_mjpeg) {
+        glide::log(glide::LogLevel::info, "OpenHD-Glide", "decoded MJPEG CPU frames are copied into a DRM dumb buffer and scanned out on a KMS plane");
+    } else {
+        glide::log(glide::LogLevel::info, "OpenHD-Glide", "KMS video importer build: forced decoder DMABUF capture + fd-backed memory diagnostics");
+        glide::log(glide::LogLevel::info, "OpenHD-Glide", "decoded DMABUF frames are imported directly into DRM and scanned out on a KMS plane");
+    }
     glide::preview_control::set_fps_overlay_enabled(true);
     glide::preview_control::set_coordinates_overlay_enabled(true);
     glide::preview_control::set_compact_readouts_enabled(false);
@@ -1952,49 +2045,80 @@ int run_kms_video_preview(const Options& options)
             }
         }
 
-        glide::dev::DmabufVideoFrame frame;
         std::string frame_error;
-        if (!extract_dmabuf_frame(sample, frame, frame_error)) {
-            ++consecutive_frame_errors;
-            glide::log(glide::LogLevel::warning, "OpenHD-Glide", "dropping decoded sample: " + frame_error);
-            gst_sample_unref(sample);
-            if (consecutive_frame_errors >= 30) {
-                glide::log(glide::LogLevel::error, "OpenHD-Glide", "too many consecutive decoded samples could not be imported");
-                stop_requested = 1;
-                break;
-            }
-            continue;
-        }
-        if (!logged_caps) {
-            std::ostringstream layout;
-            layout << "first imported DMABUF layout format=" << fourcc_to_string(frame.drm_format)
-                   << " width=" << frame.width
-                   << " height=" << frame.height
-                   << " planes=" << frame.plane_count;
-            for (std::uint32_t i = 0; i < frame.plane_count; ++i) {
-                layout << " plane" << i
-                       << "{fd=" << frame.fds[i]
-                       << " stride=" << frame.strides[i]
-                       << " offset=" << frame.offsets[i]
-                       << " modifier=0x" << std::hex << frame.modifiers[i] << std::dec << "}";
-            }
-            glide::log(glide::LogLevel::info, "OpenHD-Glide", layout.str());
-            logged_caps = true;
-        }
-        consecutive_frame_errors = 0;
 
         const auto present_start = std::chrono::steady_clock::now();
-        const bool presented = present_video_frame(frame, frames);
+        bool presented {};
+        if (use_mjpeg) {
+            MappedCpuVideoFrame cpu_frame;
+            if (!extract_bgrx_cpu_frame(sample, cpu_frame, frame_error)) {
+                ++consecutive_frame_errors;
+                glide::log(glide::LogLevel::warning, "OpenHD-Glide", "dropping decoded sample: " + frame_error);
+                gst_sample_unref(sample);
+                if (consecutive_frame_errors >= 30) {
+                    glide::log(glide::LogLevel::error, "OpenHD-Glide", "too many consecutive decoded MJPEG samples could not be mapped");
+                    stop_requested = 1;
+                    break;
+                }
+                continue;
+            }
+            if (!logged_caps) {
+                std::ostringstream layout;
+                layout << "first mapped CPU video layout format=BGRx"
+                       << " width=" << cpu_frame.frame.width
+                       << " height=" << cpu_frame.frame.height
+                       << " stride=" << cpu_frame.frame.stride;
+                glide::log(glide::LogLevel::info, "OpenHD-Glide", layout.str());
+                logged_caps = true;
+            }
+            consecutive_frame_errors = 0;
+            presented = present_cpu_video_frame(cpu_frame.frame);
+        } else {
+            glide::dev::DmabufVideoFrame frame;
+            if (!extract_dmabuf_frame(sample, frame, frame_error)) {
+                ++consecutive_frame_errors;
+                glide::log(glide::LogLevel::warning, "OpenHD-Glide", "dropping decoded sample: " + frame_error);
+                gst_sample_unref(sample);
+                if (consecutive_frame_errors >= 30) {
+                    glide::log(glide::LogLevel::error, "OpenHD-Glide", "too many consecutive decoded samples could not be imported");
+                    stop_requested = 1;
+                    break;
+                }
+                continue;
+            }
+            if (!logged_caps) {
+                std::ostringstream layout;
+                layout << "first imported DMABUF layout format=" << fourcc_to_string(frame.drm_format)
+                       << " width=" << frame.width
+                       << " height=" << frame.height
+                       << " planes=" << frame.plane_count;
+                for (std::uint32_t i = 0; i < frame.plane_count; ++i) {
+                    layout << " plane" << i
+                           << "{fd=" << frame.fds[i]
+                           << " stride=" << frame.strides[i]
+                           << " offset=" << frame.offsets[i]
+                           << " modifier=0x" << std::hex << frame.modifiers[i] << std::dec << "}";
+                }
+                glide::log(glide::LogLevel::info, "OpenHD-Glide", layout.str());
+                logged_caps = true;
+            }
+            consecutive_frame_errors = 0;
+            presented = present_video_frame(frame, frames);
+        }
         const auto present_end = std::chrono::steady_clock::now();
         const auto present_ms = std::chrono::duration<double, std::milli>(present_end - present_start).count();
         present_ms_total += present_ms;
         present_ms_max = std::max(present_ms_max, present_ms);
         ++present_count;
         if (presented) {
-            if (scanout_sample != nullptr) {
-                gst_sample_unref(scanout_sample);
+            if (use_mjpeg) {
+                gst_sample_unref(sample);
+            } else {
+                if (scanout_sample != nullptr) {
+                    gst_sample_unref(scanout_sample);
+                }
+                scanout_sample = sample;
             }
-            scanout_sample = sample;
             ++frames;
             ++frames_since_log;
             if (software_present_pacing) {
@@ -2022,7 +2146,7 @@ int run_kms_video_preview(const Options& options)
                 logged_rtp_packets = rtp_packets;
                 logged_parsed_access_units = parsed_access_units;
                 video_plane_fps.store(current_fps);
-                status << "KMS DMABUF video plane fps=" << current_fps
+                status << (use_mjpeg ? "KMS CPU video plane fps=" : "KMS DMABUF video plane fps=") << current_fps
                        << " parsed_au_fps=" << parsed_au_fps
                        << " rtp_packet_rate=" << rtp_packet_rate
                        << " sample_wait_avg_ms=" << (sample_wait_count > 0 ? sample_wait_ms_total / static_cast<double>(sample_wait_count) : 0.0)
@@ -2328,8 +2452,11 @@ int run_kms_stack(char* argv0, const Options& options)
         return 1;
     }
 
+    const auto view_codec_label = (options.view_udp_codec == "mjpeg" || options.view_udp_codec == "mjpg" || options.view_udp_codec == "jpeg")
+        ? "MJPEG"
+        : (options.view_udp_codec == "h265" || options.view_udp_codec == "hevc" ? "H265" : "H264");
     std::cout << "device KMS stack:\n"
-              << "  glide-view UDP RTP/" << (options.view_udp_codec == "h265" || options.view_udp_codec == "hevc" ? "H265" : "H264") << " decode port=" << options.view_udp_port
+              << "  glide-view UDP RTP/" << view_codec_label << " decode port=" << options.view_udp_port
               << " (no KMS ownership)\n";
     if (options.view_plane_id >= 0) {
         glide::log(glide::LogLevel::warning, "OpenHD-Glide", "--view-plane-id is ignored until openhd-glide owns video plane import");
