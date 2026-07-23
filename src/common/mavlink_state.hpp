@@ -72,6 +72,7 @@ struct Snapshot {
     std::string air_hotspot { "N/A" };
     std::string ground_hotspot { "N/A" };
     std::string openhd_version { "N/A" };
+    std::string platform { "N/A" };
     std::string ground_chipset { "N/A" };
     std::string air_chipset { "N/A" };
     std::string camera { "N/A" };

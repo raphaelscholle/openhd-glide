@@ -22,6 +22,7 @@
  ******************************************************************************/
 
 #include "common/mavlink_state.hpp"
+#include "common/openhd_protocol.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -185,7 +186,14 @@ bool apply_ipc_line(Snapshot& snapshot, const std::string& line)
             }
             snapshot.rc_quality_percent = clamp_percent(snapshot.rc_quality_percent);
         } else if (field == "core") {
-            stream >> snapshot.link_txc_temp_c;
+            int platform_type {};
+            stream >> snapshot.link_txc_temp_c >> platform_type;
+            for (const auto& entry : openhd::platform::ids) {
+                if (entry.id == platform_type) {
+                    snapshot.platform = std::string(entry.name);
+                    break;
+                }
+            }
         }
         return true;
     }
@@ -235,7 +243,8 @@ bool apply_ipc_line(Snapshot& snapshot, const std::string& line)
         } else if (upper_param == "GROUND_CHIPSET") {
             snapshot.ground_chipset = value;
         } else if (upper_param == "CAMERA" || upper_param == "CAMERA_TYPE") {
-            snapshot.camera = value;
+            const auto camera_type = parse_int_or(-1, value);
+            snapshot.camera = camera_type >= 0 ? openhd::camera::type_to_string(camera_type) : value;
         }
         return true;
     }

@@ -2005,6 +2005,7 @@ void build_status_panel(UiState& state)
     const auto connection_color = state.mavlink.air_alive && state.mavlink.ground_alive ? 0x20b383 : 0xdf4c7c;
     value_row(state, "Connection", connection, connection_color);
     value_row(state, "OpenHD Version", state.mavlink.openhd_version, state.mavlink.openhd_version == "N/A" ? 0xdf4c7c : 0x20b383);
+    value_row(state, "Platform", state.mavlink.platform, state.mavlink.platform == "N/A" ? 0xdf4c7c : 0x20b383);
     value_row(state, "Chipset GND", state.mavlink.ground_chipset, state.mavlink.ground_alive ? 0x20b383 : 0xb3c6d6);
     value_row(state, "Chipset AIR", state.mavlink.air_chipset, state.mavlink.air_alive ? 0x20b383 : 0xdf4c7c);
     value_row(state, "Camera", state.mavlink.camera, state.mavlink.air_alive ? 0x20b383 : 0xdf4c7c);
