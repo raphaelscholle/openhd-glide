@@ -77,6 +77,13 @@ struct Snapshot {
     std::string ground_chipset { "N/A" };
     std::string air_chipset { "N/A" };
     std::string camera { "N/A" };
+    int primary_camera_type { -1 };
+    int secondary_camera_type { -1 };
+    std::string primary_ip_camera_pipeline { "rtspsrc location=rtsp://{IP}:554/stream=0 latency=0 ! rtph264depay" };
+    std::string secondary_ip_camera_pipeline { "rtspsrc location=rtsp://{IP}:554/stream=0 latency=0 ! rtph264depay" };
+    std::string primary_ip_camera_address { "192.168.144.108" };
+    std::string secondary_ip_camera_address { "192.168.144.108" };
+    int ip_camera_bitrate_mbits { 2 };
     std::array<std::string, 5> messages {};
     std::size_t message_count {};
 };
