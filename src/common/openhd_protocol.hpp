@@ -16,6 +16,10 @@ namespace glide::openhd {
 
 inline constexpr std::uint8_t system_id_ground = 100;
 inline constexpr std::uint8_t system_id_air = 101;
+inline constexpr std::uint8_t component_id_onboard_computer = 191;
+
+inline constexpr std::uint16_t mav_cmd_storage_format = 526;
+inline constexpr std::uint16_t openhd_cmd_storage_manage = 11202;
 
 // Wire-level values mirrored from OpenHD. Keep these synchronized with:
 //   ohd_common/inc/openhd_platform.h
@@ -200,6 +204,16 @@ namespace wire {
 inline constexpr std::uint32_t stats_monitor_mode_wifi_link_message_id = 1211;
 inline constexpr std::uint32_t stats_monitor_mode_wifi_card_message_id = 1212;
 inline constexpr std::uint32_t core_status_message_id = 1227;
+inline constexpr std::uint32_t storage_information_message_id = 261;
+
+inline constexpr std::size_t storage_total_capacity_offset = 4;
+inline constexpr std::size_t storage_available_capacity_offset = 12;
+inline constexpr std::size_t storage_id_offset = 24;
+inline constexpr std::size_t storage_status_offset = 26;
+inline constexpr std::size_t storage_name_offset = 28;
+inline constexpr std::size_t storage_name_length = 32;
+inline constexpr std::size_t storage_usage_offset = 60;
+inline constexpr std::uint8_t storage_usage_flag_video = 1U << 2U;
 
 inline constexpr std::size_t wifi_link_frequency_mhz_offset = 26;
 inline constexpr std::size_t wifi_link_rate_kbits_offset = 28;

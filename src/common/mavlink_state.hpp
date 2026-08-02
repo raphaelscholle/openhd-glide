@@ -24,9 +24,21 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <string>
+#include <vector>
 
 namespace glide::mavlink {
+
+struct StorageEntry {
+    int id {};
+    bool disk {};
+    int status {};
+    float total_mib {};
+    float available_mib {};
+    bool mounted_at_video {};
+    std::string device;
+};
 
 struct Snapshot {
     bool air_alive {};

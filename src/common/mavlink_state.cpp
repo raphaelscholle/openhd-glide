@@ -78,6 +78,28 @@ int parse_int_or(int fallback, const std::string& value)
     }
 }
 
+std::string storage_result_text(int result, int progress)
+{
+    switch (result) {
+    case 0:
+        return "Storage operation complete";
+    case 1:
+        return "Storage temporarily rejected";
+    case 2:
+        return "Storage operation denied";
+    case 3:
+        return "Storage operation unsupported";
+    case 4:
+        return "Storage operation failed";
+    case 5:
+        return "Storage operation in progress (" + std::to_string(std::clamp(progress, 0, 100)) + "%)";
+    case 6:
+        return "Storage operation cancelled";
+    default:
+        return "Unknown storage response";
+    }
+}
+
 } // namespace
 
 bool apply_ipc_line(Snapshot& snapshot, const std::string& line)
@@ -278,6 +300,53 @@ bool apply_ipc_line(Snapshot& snapshot, const std::string& line)
             snapshot.camera = value;
         } else if (field == "recording") {
             snapshot.recording_status = value;
+        }
+        return true;
+    }
+    if (key == "storage") {
+        std::string field;
+        stream >> field;
+        if (field == "clear") {
+            snapshot.storage_entries.clear();
+            snapshot.storage_status = "Waiting for air storage";
+            return true;
+        }
+        if (field == "item") {
+            StorageEntry entry;
+            int mounted {};
+            std::string kind;
+            stream >> entry.id >> kind >> entry.status >> entry.total_mib
+                >> entry.available_mib >> mounted >> entry.device;
+            if (entry.id <= 0 || entry.device.empty()) {
+                return true;
+            }
+            entry.disk = kind == "disk";
+            entry.mounted_at_video = mounted != 0;
+            const auto found = std::find_if(
+                snapshot.storage_entries.begin(), snapshot.storage_entries.end(),
+                [&entry](const StorageEntry& existing) { return existing.id == entry.id; });
+            if (found == snapshot.storage_entries.end()) {
+                snapshot.storage_entries.push_back(std::move(entry));
+            } else {
+                *found = std::move(entry);
+            }
+            if (snapshot.storage_status == "Not loaded"
+                || snapshot.storage_status == "Waiting for air storage") {
+                snapshot.storage_status = "Storage inventory ready";
+            }
+            return true;
+        }
+        if (field == "ack") {
+            int command {};
+            int result {};
+            int progress { 255 };
+            stream >> command >> result >> progress;
+            if (command == openhd::mav_cmd_storage_format
+                || command == openhd::openhd_cmd_storage_manage) {
+                snapshot.storage_busy = result == 5;
+                snapshot.storage_status = storage_result_text(result, progress);
+            }
+            return true;
         }
         return true;
     }

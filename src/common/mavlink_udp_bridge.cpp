@@ -28,6 +28,7 @@
 #include <array>
 #include <cerrno>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <iomanip>
 #include <limits>
@@ -134,6 +135,23 @@ std::string mode_from_heartbeat(std::uint8_t base_mode, std::uint32_t custom_mod
     return "Armed";
 }
 
+int storage_id_from_arguments(const std::string& arguments)
+{
+    std::istringstream stream(arguments);
+    std::string token;
+    while (stream >> token) {
+        if (token.rfind("id=", 0) == 0) {
+            token.erase(0, 3);
+        }
+        char* end {};
+        const auto parsed = std::strtol(token.c_str(), &end, 10);
+        if (end != token.c_str() && *end == '\0' && parsed >= 1 && parsed <= 254) {
+            return static_cast<int>(parsed);
+        }
+    }
+    return 0;
+}
+
 std::optional<std::string> decode_frame(const Frame& frame)
 {
     const auto& p = frame.payload;
@@ -201,6 +219,18 @@ std::optional<std::string> decode_frame(const Frame& frame)
     case 74:
         line << "mav speed " << read_float(p, 16) << ' ' << read_float(p, 0);
         return line.str();
+    case 77: {
+        const auto command = read_le<std::uint16_t>(p, 0);
+        if (frame.sysid == openhd::system_id_air
+            && (command == openhd::mav_cmd_storage_format
+                || command == openhd::openhd_cmd_storage_manage)) {
+            line << "mav storage ack " << command << ' '
+                 << static_cast<int>(read_le<std::uint8_t>(p, 2)) << ' '
+                 << static_cast<int>(read_le<std::uint8_t>(p, 3));
+            return line.str();
+        }
+        break;
+    }
     case 253: {
         const auto severity = read_le<std::uint8_t>(p, 0);
         auto text = trim_payload_string(c_string(p, 1, p.size() > 51 ? 254 : 50));
@@ -225,6 +255,30 @@ std::optional<std::string> decode_frame(const Frame& frame)
             return line.str();
         }
         break;
+    }
+    case openhd::wire::storage_information_message_id: {
+        if (frame.sysid != openhd::system_id_air) {
+            break;
+        }
+        const auto encoded_name = c_string(
+            p, openhd::wire::storage_name_offset,
+            openhd::wire::storage_name_length);
+        if (encoded_name.rfind("D ", 0) != 0
+            && encoded_name.rfind("P ", 0) != 0) {
+            break;
+        }
+        const bool disk = encoded_name.rfind("D ", 0) == 0;
+        const auto usage = read_le<std::uint8_t>(
+            p, openhd::wire::storage_usage_offset);
+        line << "mav storage item "
+             << static_cast<int>(read_le<std::uint8_t>(p, openhd::wire::storage_id_offset)) << ' '
+             << (disk ? "disk" : "partition") << ' '
+             << static_cast<int>(read_le<std::uint8_t>(p, openhd::wire::storage_status_offset)) << ' '
+             << read_float(p, openhd::wire::storage_total_capacity_offset) << ' '
+             << read_float(p, openhd::wire::storage_available_capacity_offset) << ' '
+             << ((usage & openhd::wire::storage_usage_flag_video) != 0 ? 1 : 0) << ' '
+             << encoded_name.substr(2);
+        return line.str();
     }
     case openhd::wire::stats_monitor_mode_wifi_link_message_id: {
         const auto frequency_mhz = read_le<std::uint16_t>(p, openhd::wire::wifi_link_frequency_mhz_offset);
@@ -387,6 +441,7 @@ bool UdpBridge::start(UdpBridgeOptions options)
 std::vector<std::string> UdpBridge::poll()
 {
     std::vector<std::string> lines;
+    lines.swap(pending_lines_);
 #if defined(__linux__)
     if (fd_ < 0) {
         return lines;
@@ -405,6 +460,17 @@ std::vector<std::string> UdpBridge::poll()
             peer_->valid = true;
         }
         for (const auto& frame : parse_datagram(buffer.data(), static_cast<std::size_t>(received))) {
+            if (storage_command_pending_ && frame.sysid == openhd::system_id_air
+                && frame.msgid == 77
+                && read_le<std::uint16_t>(frame.payload, 0) == storage_command_id_) {
+                const auto result = read_le<std::uint8_t>(frame.payload, 2);
+                if (result == 5) {
+                    storage_command_retries_ = 0;
+                    storage_command_sent_at_ = std::chrono::steady_clock::now();
+                } else {
+                    storage_command_pending_ = false;
+                }
+            }
             if (frame.msgid == 0) {
                 const auto type = read_le<std::uint8_t>(frame.payload, 4);
                 const auto autopilot = read_le<std::uint8_t>(frame.payload, 5);
@@ -431,6 +497,28 @@ std::vector<std::string> UdpBridge::poll()
                         lines.push_back(std::move(line));
                     }
                 }
+            }
+        }
+    }
+    if (storage_command_pending_
+        && std::chrono::steady_clock::now() - storage_command_sent_at_
+            >= std::chrono::seconds(1)) {
+        if (storage_command_retries_ >= 5) {
+            lines.push_back(
+                "mav storage ack " + std::to_string(storage_command_id_)
+                + " 4 255");
+            storage_command_pending_ = false;
+        } else {
+            const auto command = storage_command_name_;
+            const auto arguments = storage_command_arguments_;
+            const auto retry = storage_command_retries_ + 1;
+            if (send_command_long(command, arguments)) {
+                storage_command_retries_ = retry;
+            } else {
+                lines.push_back(
+                    "mav storage ack " + std::to_string(storage_command_id_)
+                    + " 4 255");
+                storage_command_pending_ = false;
             }
         }
     }
@@ -471,7 +559,15 @@ bool UdpBridge::handle_action_line(const std::string& line)
         if (!arguments.empty() && arguments.front() == ' ') {
             arguments.erase(arguments.begin());
         }
-        return send_command_long(command, arguments);
+        const bool sent = send_command_long(command, arguments);
+        if (!sent && command.rfind("storage-", 0) == 0) {
+            const auto command_id = command == "storage-format"
+                ? openhd::mav_cmd_storage_format
+                : openhd::openhd_cmd_storage_manage;
+            pending_lines_.push_back(
+                "mav storage ack " + std::to_string(command_id) + " 4 255");
+        }
+        return sent;
     }
     return false;
 }
@@ -526,8 +622,38 @@ bool UdpBridge::send_command_long(const std::string& command, const std::string&
 {
     float params[7] {};
     std::uint16_t command_id {};
+    std::uint8_t target_component = air_component_id_;
+    const bool storage_command = command.rfind("storage-", 0) == 0;
+    const auto confirmation = storage_command && storage_command_pending_
+            && storage_command_name_ == command
+            && storage_command_arguments_ == arguments
+        ? static_cast<std::uint8_t>(std::min(storage_command_retries_ + 1, 255))
+        : 0;
     if (command == "scan") {
         command_id = 31000;
+    } else if (command == "storage-refresh") {
+        command_id = openhd::openhd_cmd_storage_manage;
+        params[0] = 1.0F;
+        target_component = openhd::component_id_onboard_computer;
+    } else if (command == "storage-format") {
+        const auto storage_id = storage_id_from_arguments(arguments);
+        if (storage_id == 0) {
+            return false;
+        }
+        command_id = openhd::mav_cmd_storage_format;
+        params[0] = static_cast<float>(storage_id);
+        params[1] = 1.0F;
+        target_component = openhd::component_id_onboard_computer;
+    } else if (command == "storage-repartition" || command == "storage-mount") {
+        const auto storage_id = storage_id_from_arguments(arguments);
+        if (storage_id == 0) {
+            return false;
+        }
+        command_id = openhd::openhd_cmd_storage_manage;
+        params[0] = command == "storage-repartition" ? 2.0F : 3.0F;
+        params[1] = static_cast<float>(storage_id);
+        params[2] = 1.0F;
+        target_component = openhd::component_id_onboard_computer;
     } else {
         return false;
     }
@@ -537,9 +663,18 @@ bool UdpBridge::send_command_long(const std::string& command, const std::string&
     }
     put_le<std::uint16_t>(payload, command_id);
     put_u8(payload, air_system_id_);
-    put_u8(payload, air_component_id_);
-    put_u8(payload, 0);
-    return send_packet(76, 152, payload);
+    put_u8(payload, target_component);
+    put_u8(payload, confirmation);
+    const bool sent = send_packet(76, 152, payload);
+    if (sent && storage_command) {
+        storage_command_pending_ = true;
+        storage_command_id_ = command_id;
+        storage_command_name_ = command;
+        storage_command_arguments_ = arguments;
+        storage_command_retries_ = 0;
+        storage_command_sent_at_ = std::chrono::steady_clock::now();
+    }
+    return sent;
 }
 
 bool UdpBridge::send_packet(std::uint32_t message_id, std::uint8_t crc_extra, const std::vector<std::uint8_t>& payload)
@@ -587,6 +722,8 @@ void UdpBridge::close()
 #endif
     delete peer_;
     peer_ = nullptr;
+    storage_command_pending_ = false;
+    pending_lines_.clear();
 }
 
 bool UdpBridge::running() const

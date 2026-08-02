@@ -251,6 +251,10 @@ struct UiState {
     std::uint32_t display_hz { 120 };
     std::uint32_t flow_fps { 60 };
     std::uint32_t flow_scale_percent { 50 };
+    std::size_t storage_selected_index {};
+    bool storage_inventory_requested {};
+    int storage_confirm_id {};
+    std::string storage_confirm_action;
     bool net_scanning {};
     std::string net_status { "Idle" };
     std::vector<std::string> net_peers;
@@ -1134,6 +1138,8 @@ void send_mavlink_action(UiState& state, const std::string& line)
     }
 }
 
+void request_panel_rebuild(UiState& state, std::chrono::steady_clock::time_point now);
+
 void send_network_action(UiState& state, const std::string& line)
 {
     if (state.ipc.connected()) {
@@ -1149,6 +1155,145 @@ void send_openhd_param(UiState& state, const std::string& target, const std::str
 void send_artosyn_action(UiState& state, const std::string& param)
 {
     send_openhd_param(state, "air", param, "1");
+}
+
+const glide::mavlink::StorageEntry* selected_storage(UiState& state)
+{
+    if (state.mavlink.storage_entries.empty()) {
+        state.storage_selected_index = 0;
+        return nullptr;
+    }
+    state.storage_selected_index = std::min(
+        state.storage_selected_index, state.mavlink.storage_entries.size() - 1U);
+    return &state.mavlink.storage_entries[state.storage_selected_index];
+}
+
+std::string storage_size_text(float mib)
+{
+    std::ostringstream text;
+    if (mib >= 1024.0F) {
+        text << std::fixed << std::setprecision(1) << (mib / 1024.0F) << " GiB";
+    } else {
+        text << static_cast<int>(std::round(std::max(0.0F, mib))) << " MiB";
+    }
+    return text.str();
+}
+
+void send_storage_action(UiState& state, const std::string& action, int storage_id = 0)
+{
+    if (state.mavlink.storage_busy) {
+        return;
+    }
+    if (!state.ipc.connected()) {
+        state.mavlink.storage_busy = false;
+        state.mavlink.storage_status = "Controller not connected";
+        return;
+    }
+    std::string command;
+    if (action == "refresh") {
+        command = "storage-refresh";
+        state.mavlink.storage_status = "Refreshing air storage";
+    } else if (action == "format") {
+        command = "storage-format";
+        state.mavlink.storage_status = "Formatting selected partition";
+    } else if (action == "repartition") {
+        command = "storage-repartition";
+        state.mavlink.storage_status = "Repartitioning selected disk";
+    } else if (action == "mount") {
+        command = "storage-mount";
+        state.mavlink.storage_status = "Mounting partition at /Video";
+    } else {
+        return;
+    }
+    state.mavlink.storage_entries.clear();
+    state.storage_selected_index = 0;
+    state.mavlink.storage_busy = true;
+    state.storage_inventory_requested = true;
+    send_mavlink_action(
+        state,
+        glide::mavlink::format_action_command(
+            command, storage_id > 0 ? "id=" + std::to_string(storage_id) : ""));
+    request_panel_rebuild(state, std::chrono::steady_clock::now());
+}
+
+void close_storage_confirmation(UiState& state)
+{
+    if (state.storage_confirm_overlay != nullptr) {
+        lv_obj_delete(state.storage_confirm_overlay);
+        state.storage_confirm_overlay = nullptr;
+    }
+    state.storage_confirm_action.clear();
+    state.storage_confirm_id = 0;
+}
+
+void execute_storage_confirmation(UiState& state)
+{
+    const auto action = state.storage_confirm_action;
+    const auto storage_id = state.storage_confirm_id;
+    close_storage_confirmation(state);
+    if (!action.empty() && storage_id > 0) {
+        send_storage_action(state, action, storage_id);
+    }
+}
+
+void show_storage_confirmation(UiState& state, const std::string& action)
+{
+    const auto* storage = selected_storage(state);
+    if (storage == nullptr || state.mavlink.storage_busy) {
+        return;
+    }
+    close_storage_confirmation(state);
+    state.storage_confirm_action = action;
+    state.storage_confirm_id = storage->id;
+
+    auto* overlay = lv_obj_create(state.root);
+    state.storage_confirm_overlay = overlay;
+    set_panel_style(overlay, 0x000000, LV_OPA_70);
+    lv_obj_set_size(overlay, LV_PCT(100), LV_PCT(100));
+    lv_obj_center(overlay);
+    lv_obj_move_foreground(overlay);
+
+    auto* dialog = lv_obj_create(overlay);
+    set_panel_style(dialog, 0x101a23, LV_OPA_COVER);
+    lv_obj_set_style_radius(dialog, 10, 0);
+    lv_obj_set_style_border_width(dialog, 2, 0);
+    lv_obj_set_style_border_color(dialog, color(action == "mount" ? 0xffa928 : 0xdf4c7c), 0);
+    lv_obj_set_size(dialog, 430, 230);
+    lv_obj_center(dialog);
+    lv_obj_set_flex_flow(dialog, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(dialog, 18, 0);
+    lv_obj_set_style_pad_row(dialog, 14, 0);
+
+    const auto title_text = action == "mount" ? "CHANGE RECORDING STORAGE?" : "CONFIRM DATA DELETION";
+    auto* title = label(dialog, title_text, &lv_font_montserrat_18, action == "mount" ? 0xffc14d : 0xff668f);
+    lv_obj_set_width(title, LV_PCT(100));
+    const auto warning = action == "mount"
+        ? "Stop recording first. This will replace the current /Video mount with " + storage->device + "."
+        : "This permanently deletes data on " + storage->device + ". Verify the selected device carefully.";
+    auto* message = label(dialog, warning.c_str(), &lv_font_montserrat_14, 0xe3edf5);
+    lv_obj_set_width(message, LV_PCT(100));
+    lv_label_set_long_mode(message, LV_LABEL_LONG_WRAP);
+
+    auto* buttons = lv_obj_create(dialog);
+    set_panel_style(buttons, 0x000000, LV_OPA_TRANSP);
+    lv_obj_set_size(buttons, LV_PCT(100), 54);
+    lv_obj_set_flex_flow(buttons, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(buttons, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    auto* cancel = lv_button_create(buttons);
+    lv_obj_set_size(cancel, 150, 44);
+    auto* cancel_label = label(cancel, "CANCEL", &lv_font_montserrat_14);
+    lv_obj_center(cancel_label);
+    lv_obj_add_event_cb(cancel, [](lv_event_t* event) {
+        close_storage_confirmation(*static_cast<UiState*>(lv_event_get_user_data(event)));
+    }, LV_EVENT_CLICKED, &state);
+    auto* confirm = lv_button_create(buttons);
+    lv_obj_set_size(confirm, 190, 44);
+    lv_obj_set_style_bg_color(confirm, color(action == "mount" ? 0xb36b00 : 0xa51f46), 0);
+    auto* confirm_label = label(confirm, action == "mount" ? "USE /VIDEO" : "DELETE DATA", &lv_font_montserrat_14);
+    lv_obj_center(confirm_label);
+    lv_obj_add_event_cb(confirm, [](lv_event_t* event) {
+        execute_storage_confirmation(*static_cast<UiState*>(lv_event_get_user_data(event)));
+    }, LV_EVENT_CLICKED, &state);
 }
 
 std::string next_resolution_fps_value(const std::string& current)
@@ -1397,6 +1542,14 @@ void apply_terminal_key(UiState& state, const std::string& line)
         return;
     }
     const auto key = line.substr(7);
+    if (state.storage_confirm_overlay != nullptr) {
+        if (key == "left" || key == "back") {
+            close_storage_confirmation(state);
+        } else if (key == "enter") {
+            execute_storage_confirmation(state);
+        }
+        return;
+    }
     if (key == "m" || key == "menu") {
         cycle_overlay_from_menu_key(state);
         return;
@@ -1565,6 +1718,22 @@ void apply_terminal_key(UiState& state, const std::string& line)
             send_openhd_param(state, "camera1", "AIR_RECORDING_E", "1");
         } else if (state.active_panel == SidebarPanel::recording && state.selected_row == 4) {
             send_openhd_param(state, "camera1", "AIR_RECORDING_E", "2");
+        } else if (state.active_panel == SidebarPanel::recording && state.selected_row == 5) {
+            if (!state.mavlink.storage_entries.empty()) {
+                state.storage_selected_index =
+                    (state.storage_selected_index + 1U) % state.mavlink.storage_entries.size();
+                rebuild_ui(state);
+            }
+        } else if (state.active_panel == SidebarPanel::recording && state.selected_row == 9) {
+            send_storage_action(state, "refresh");
+        } else if (state.active_panel == SidebarPanel::recording && state.selected_row == 10) {
+            if (const auto* storage = selected_storage(state)) {
+                show_storage_confirmation(state, storage->disk ? "repartition" : "format");
+            }
+        } else if (state.active_panel == SidebarPanel::recording && state.selected_row == 11) {
+            if (const auto* storage = selected_storage(state); storage != nullptr && !storage->disk) {
+                show_storage_confirmation(state, "mount");
+            }
         } else if (state.active_panel == SidebarPanel::developer && state.selected_row == 5) {
             state.advanced_visible = !state.advanced_visible;
             rebuild_ui(state);
@@ -2374,7 +2543,16 @@ void build_ip_camera_panel(UiState& state)
 
 void build_recording_panel(UiState& state)
 {
+    if (!state.storage_inventory_requested) {
+        if (state.mavlink.air_alive) {
+            send_storage_action(state, "refresh");
+        } else {
+            state.mavlink.storage_status = "Waiting for air unit";
+        }
+    }
     setup_panel_column(state.panel_body);
+    auto* recording_section = label(state.panel_body, "Recording", &lv_font_montserrat_18, 0xffffff);
+    lv_obj_set_width(recording_section, LV_PCT(100));
     value_row(state, "Recording", state.mavlink.recording);
     value_row(state, "Status", state.mavlink.recording_status);
     auto* off = action_button(state, "AIR RECORDING OFF");
@@ -2404,6 +2582,119 @@ void build_recording_panel(UiState& state)
         },
         LV_EVENT_CLICKED,
         &state);
+
+    auto* storage_section = label(state.panel_body, "Air Storage", &lv_font_montserrat_18, 0xffffff);
+    lv_obj_set_width(storage_section, LV_PCT(100));
+    const int selector_row_index = state.row_count++;
+    auto* selector_row = lv_obj_create(state.panel_body);
+    set_panel_style(selector_row, state.focus_panel && state.selected_row == selector_row_index ? 0x2d210e : 0x0f2130, LV_OPA_80);
+    lv_obj_set_style_radius(selector_row, 6, 0);
+    lv_obj_set_style_border_width(selector_row, state.focus_panel && state.selected_row == selector_row_index ? 1 : 0, 0);
+    lv_obj_set_style_border_color(selector_row, color(0xff8a00), 0);
+    lv_obj_set_size(selector_row, LV_PCT(100), 58);
+    lv_obj_set_style_pad_left(selector_row, 16, 0);
+    lv_obj_set_style_pad_right(selector_row, 16, 0);
+    lv_obj_set_flex_flow(selector_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(selector_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    auto* selector_label = label(selector_row, "Device", &lv_font_montserrat_14, 0xdce8f0);
+    lv_obj_set_width(selector_label, LV_PCT(28));
+    state.storage_dropdown = lv_dropdown_create(selector_row);
+    std::string storage_options;
+    for (const auto& entry : state.mavlink.storage_entries) {
+        if (!storage_options.empty()) {
+            storage_options += '\n';
+        }
+        storage_options += entry.device + (entry.disk ? " [disk]" : " [partition]");
+    }
+    if (storage_options.empty()) {
+        storage_options = "No safe storage";
+    }
+    lv_dropdown_set_options(state.storage_dropdown, storage_options.c_str());
+    lv_obj_set_size(state.storage_dropdown, 235, 38);
+    lv_obj_set_style_bg_color(state.storage_dropdown, color(0x162a3a), 0);
+    lv_obj_set_style_text_color(state.storage_dropdown, color(0xffffff), 0);
+    selected_storage(state);
+    lv_dropdown_set_selected(state.storage_dropdown, static_cast<std::uint32_t>(state.storage_selected_index));
+    lv_obj_add_event_cb(
+        state.storage_dropdown,
+        [](lv_event_t* event) {
+            auto* state = static_cast<UiState*>(lv_event_get_user_data(event));
+            state->storage_selected_index = lv_dropdown_get_selected(state->storage_dropdown);
+            request_panel_rebuild(*state, std::chrono::steady_clock::now());
+        },
+        LV_EVENT_VALUE_CHANGED,
+        &state);
+
+    const auto* storage = selected_storage(state);
+    if (storage != nullptr) {
+        value_row(
+            state, "Space",
+            storage->disk
+                ? storage_size_text(storage->total_mib) + " total"
+                : storage_size_text(storage->available_mib) + " free / "
+                    + storage_size_text(storage->total_mib));
+        value_row(
+            state, "Mounted",
+            storage->mounted_at_video ? "/Video" : "No",
+            storage->mounted_at_video ? 0x20b383 : 0xb3c6d6);
+    } else {
+        value_row(state, "Space", "N/A");
+        value_row(state, "Mounted", "N/A");
+    }
+    value_row(
+        state, "Operation", state.mavlink.storage_status,
+        state.mavlink.storage_busy ? 0xffa928 : 0xb3c6d6);
+
+    auto* refresh = action_button(state, "REFRESH STORAGE");
+    lv_obj_add_event_cb(
+        refresh,
+        [](lv_event_t* event) {
+            send_storage_action(*static_cast<UiState*>(lv_event_get_user_data(event)), "refresh");
+        },
+        LV_EVENT_CLICKED,
+        &state);
+    if (state.mavlink.storage_busy) {
+        lv_obj_remove_flag(refresh, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_opa(refresh, LV_OPA_40, 0);
+    }
+
+    auto* destructive = action_button(
+        state, storage != nullptr && storage->disk ? "REPARTITION DISK" : "FORMAT PARTITION");
+    lv_obj_set_style_bg_color(destructive, color(0x5b172d), 0);
+    lv_obj_add_event_cb(
+        destructive,
+        [](lv_event_t* event) {
+            auto* state = static_cast<UiState*>(lv_event_get_user_data(event));
+            if (const auto* storage = selected_storage(*state)) {
+                show_storage_confirmation(*state, storage->disk ? "repartition" : "format");
+            }
+        },
+        LV_EVENT_CLICKED,
+        &state);
+
+    auto* mount = action_button(state, "USE FOR RECORDING (/Video)");
+    lv_obj_add_event_cb(
+        mount,
+        [](lv_event_t* event) {
+            auto* state = static_cast<UiState*>(lv_event_get_user_data(event));
+            if (const auto* storage = selected_storage(*state); storage != nullptr && !storage->disk) {
+                show_storage_confirmation(*state, "mount");
+            }
+        },
+        LV_EVENT_CLICKED,
+        &state);
+
+    const bool destructive_enabled = storage != nullptr && !state.mavlink.storage_busy;
+    const bool mount_enabled = destructive_enabled && !storage->disk
+        && storage->status != 1 && !storage->mounted_at_video;
+    if (!destructive_enabled) {
+        lv_obj_remove_flag(destructive, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_opa(destructive, LV_OPA_40, 0);
+    }
+    if (!mount_enabled) {
+        lv_obj_remove_flag(mount, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_opa(mount, LV_OPA_40, 0);
+    }
 }
 
 void build_rc_panel(UiState& state)
@@ -2502,6 +2793,7 @@ void clear_panel(UiState& state)
     state.flow_fps_label = nullptr;
     state.flow_scale_slider = nullptr;
     state.flow_scale_label = nullptr;
+    state.storage_dropdown = nullptr;
     state.scan_bar = nullptr;
     state.scan_percent = nullptr;
     state.row_count = 0;
