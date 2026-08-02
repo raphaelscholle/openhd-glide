@@ -237,6 +237,16 @@ bool apply_ipc_line(Snapshot& snapshot, const std::string& line)
         const auto upper_param = upper_copy(param);
         if (upper_param == "RESOLUTION_FPS" || upper_param == "VIDEO_FORMAT" || upper_param == "CAMERA_FORMAT") {
             snapshot.resolution_fps = value;
+        } else if (upper_param == "IP_CAM_PIPELINE" && target == "camera1") {
+            snapshot.primary_ip_camera_pipeline = value;
+        } else if (upper_param == "IP_CAM_PIPELINE" && (target == "camera2" || target == "auto")) {
+            snapshot.secondary_ip_camera_pipeline = value;
+        } else if (upper_param == "IP_CAM_ADDRESS" && target == "camera1") {
+            snapshot.primary_ip_camera_address = value;
+        } else if (upper_param == "IP_CAM_ADDRESS" && (target == "camera2" || target == "auto")) {
+            snapshot.secondary_ip_camera_address = value;
+        } else if (upper_param == "V_IP_CAM_MBITS") {
+            snapshot.ip_camera_bitrate_mbits = std::clamp(parse_int_or(2, value), 1, 20);
         } else if (upper_param == "ROTATION_FLIP" || upper_param == "ROTATION_DEG" || upper_param == "VIDEO_ROTATION") {
             snapshot.rotation = value;
         } else if (upper_param == "AIR_RECORDING_E" || upper_param == "RECORDING" || upper_param == "REC_ENABLED") {
@@ -265,7 +275,14 @@ bool apply_ipc_line(Snapshot& snapshot, const std::string& line)
             snapshot.ground_chipset = value;
         } else if (upper_param == "CAMERA" || upper_param == "CAMERA_TYPE") {
             const auto camera_type = parse_int_or(-1, value);
-            snapshot.camera = camera_type >= 0 ? openhd::camera::type_to_string(camera_type) : value;
+            if (target == "camera1") {
+                snapshot.primary_camera_type = camera_type;
+            } else if (target == "camera2") {
+                snapshot.secondary_camera_type = camera_type;
+            }
+            if (target == "camera1" || target == "auto") {
+                snapshot.camera = camera_type >= 0 ? openhd::camera::type_to_string(camera_type) : value;
+            }
         }
         return true;
     }

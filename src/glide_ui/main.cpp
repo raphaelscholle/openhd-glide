@@ -177,6 +177,7 @@ enum class SidebarPanel {
     system = 7,
     developer = 8,
     colors = 9,
+    ip_camera = 10,
 };
 
 enum class OverlayMode {
@@ -231,15 +232,20 @@ struct UiState {
     lv_obj_t* flow_fps_label {};
     lv_obj_t* flow_scale_slider {};
     lv_obj_t* flow_scale_label {};
-    lv_obj_t* storage_dropdown {};
-    lv_obj_t* storage_confirm_overlay {};
+    lv_obj_t* ip_camera_address_textarea {};
+    lv_obj_t* ip_camera_pipeline_textarea {};
+    lv_obj_t* ip_camera_keyboard {};
+    lv_obj_t* ip_camera_slot_dropdown {};
+    int ip_camera_slot { 1 };
     lv_obj_t* scan_bar {};
     lv_obj_t* scan_percent {};
-    lv_obj_t* nav_buttons[10] {};
+    lv_obj_t* nav_buttons[11] {};
     std::unique_ptr<glide::ui::MinimapWidget> minimap;
     std::chrono::steady_clock::time_point minimap_started {};
     std::chrono::steady_clock::time_point minimap_last_render {};
     std::chrono::steady_clock::time_point next_ipc_reconnect {};
+    std::chrono::steady_clock::time_point next_mavlink_param_request {};
+    int mavlink_param_request_attempts {};
     std::uint32_t glide_width { 1920 };
     std::uint32_t glide_height { 1080 };
     std::uint32_t display_hz { 120 };
@@ -255,6 +261,7 @@ struct UiState {
 };
 
 void dispatch_key(UiState& state, const char* key);
+bool has_selected_ip_camera(const UiState& state);
 
 struct BufferDisplay {
     int fd { -1 };
@@ -595,6 +602,8 @@ const char* panel_title(SidebarPanel panel)
         return "Status";
     case SidebarPanel::colors:
         return "Colors";
+    case SidebarPanel::ip_camera:
+        return "IP Camera";
     }
     return "Dashboard";
 }
@@ -622,6 +631,8 @@ const char* nav_symbol(int index)
         return LV_SYMBOL_KEYBOARD;
     case 9:
         return LV_SYMBOL_EDIT;
+    case 10:
+        return LV_SYMBOL_IMAGE;
     }
     return LV_SYMBOL_SETTINGS;
 }
@@ -649,6 +660,8 @@ const char* nav_text(int index)
         return "Status";
     case 9:
         return "Colors";
+    case 10:
+        return "IP Camera";
     }
     return "Menu";
 }
@@ -1389,6 +1402,7 @@ bool panel_uses_mavlink(SidebarPanel panel)
         || panel == SidebarPanel::link
         || panel == SidebarPanel::video
         || panel == SidebarPanel::camera
+        || panel == SidebarPanel::ip_camera
         || panel == SidebarPanel::telemetry
         || panel == SidebarPanel::recording
         || panel == SidebarPanel::system
@@ -1430,11 +1444,11 @@ void invalidate_ui_handles(UiState& state)
     state.flow_fps_label = nullptr;
     state.flow_scale_slider = nullptr;
     state.flow_scale_label = nullptr;
-    state.storage_dropdown = nullptr;
-    state.storage_confirm_overlay = nullptr;
     state.scan_bar = nullptr;
     state.scan_percent = nullptr;
-    std::fill(std::begin(state.nav_buttons), std::end(state.nav_buttons), nullptr);
+    for (auto& nav_button : state.nav_buttons) {
+        nav_button = nullptr;
+    }
     state.row_count = 0;
 }
 
@@ -1446,6 +1460,10 @@ void rebuild_ui(UiState& state)
     const auto width = lv_obj_get_width(state.root);
     const auto height = lv_obj_get_height(state.root);
     state.minimap.reset();
+    state.ip_camera_address_textarea = nullptr;
+    state.ip_camera_pipeline_textarea = nullptr;
+    state.ip_camera_keyboard = nullptr;
+    state.ip_camera_slot_dropdown = nullptr;
     lv_obj_clean(state.root);
     invalidate_ui_handles(state);
     build_overlay(state, static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
@@ -1571,7 +1589,7 @@ void apply_terminal_key(UiState& state, const std::string& line)
             state.selected_row = std::min(std::max(0, state.row_count - 1), state.selected_row + 1);
             rebuild_ui(state);
         } else {
-            index = std::min(9, index + 1);
+            index = std::min(has_selected_ip_camera(state) ? 10 : 9, index + 1);
             set_active_panel(state, static_cast<SidebarPanel>(index));
         }
     } else if (key == "left" || key == "back") {
@@ -1662,6 +1680,30 @@ void apply_terminal_key(UiState& state, const std::string& line)
             theme_color_ref(state, index) = rgb;
             send_theme_color(state, index);
             sync_theme_controls(state);
+        } else if (state.active_panel == SidebarPanel::ip_camera && state.selected_row == 3) {
+            if (state.ip_camera_address_textarea != nullptr) {
+                const auto* value = lv_textarea_get_text(state.ip_camera_address_textarea);
+                auto& address = state.ip_camera_slot == 0
+                    ? state.mavlink.primary_ip_camera_address
+                    : state.mavlink.secondary_ip_camera_address;
+                address = value == nullptr ? "" : value;
+                send_openhd_param(state, state.ip_camera_slot == 0 ? "camera1" : "camera2", "IP_CAM_ADDRESS", address);
+            }
+        } else if (state.active_panel == SidebarPanel::ip_camera && state.selected_row == 4) {
+            if (state.ip_camera_pipeline_textarea != nullptr) {
+                const auto* value = lv_textarea_get_text(state.ip_camera_pipeline_textarea);
+                auto& pipeline = state.ip_camera_slot == 0
+                    ? state.mavlink.primary_ip_camera_pipeline
+                    : state.mavlink.secondary_ip_camera_pipeline;
+                pipeline = value == nullptr ? "" : value;
+                send_openhd_param(state, state.ip_camera_slot == 0 ? "camera1" : "camera2", "IP_CAM_PIPELINE", pipeline);
+            }
+        } else if (state.active_panel == SidebarPanel::ip_camera && state.selected_row == 5) {
+            state.mavlink.ip_camera_bitrate_mbits =
+                state.mavlink.ip_camera_bitrate_mbits >= 20
+                ? 1
+                : state.mavlink.ip_camera_bitrate_mbits + 1;
+            send_openhd_param(state, "air", "V_IP_CAM_MBITS", std::to_string(state.mavlink.ip_camera_bitrate_mbits));
         } else if (state.active_panel == SidebarPanel::camera && state.selected_row == 3) {
             send_openhd_param(state, "camera1", "RESOLUTION_FPS", next_resolution_fps_value(state.mavlink.resolution_fps));
         } else if (state.active_panel == SidebarPanel::camera && state.selected_row == 4) {
@@ -2339,6 +2381,166 @@ void build_camera_panel(UiState& state)
         &state);
 }
 
+bool has_selected_ip_camera(const UiState& state)
+{
+    return state.mavlink.primary_camera_type == 3
+        || state.mavlink.secondary_camera_type == 3;
+}
+
+void build_ip_camera_panel(UiState& state)
+{
+    setup_panel_column(state.panel_body);
+    value_row(state, "IP camera reserve", std::to_string(state.mavlink.ip_camera_bitrate_mbits) + " Mbit/s");
+    value_row(state, "Primary IP camera", state.mavlink.primary_ip_camera_address.empty() ? "Not set" : state.mavlink.primary_ip_camera_address);
+    value_row(state, "Secondary IP camera", state.mavlink.secondary_ip_camera_address.empty() ? "Not set" : state.mavlink.secondary_ip_camera_address);
+
+    auto* slot_title = label(state.panel_body, "IP camera slot", &lv_font_montserrat_14, 0xaab7c2);
+    lv_obj_set_width(slot_title, LV_PCT(100));
+    state.ip_camera_slot_dropdown = lv_dropdown_create(state.panel_body);
+    const bool primary_is_ip = state.mavlink.primary_camera_type == 3;
+    const bool secondary_is_ip = state.mavlink.secondary_camera_type == 3;
+    if (primary_is_ip && secondary_is_ip) {
+        lv_dropdown_set_options(state.ip_camera_slot_dropdown, "Camera 1\nCamera 2");
+        lv_dropdown_set_selected(state.ip_camera_slot_dropdown, static_cast<std::uint32_t>(state.ip_camera_slot));
+    } else if (primary_is_ip) {
+        state.ip_camera_slot = 0;
+        lv_dropdown_set_options(state.ip_camera_slot_dropdown, "Camera 1");
+    } else {
+        state.ip_camera_slot = 1;
+        lv_dropdown_set_options(state.ip_camera_slot_dropdown, "Camera 2");
+    }
+    lv_obj_set_size(state.ip_camera_slot_dropdown, LV_PCT(100), 42);
+    lv_obj_add_event_cb(
+        state.ip_camera_slot_dropdown,
+        [](lv_event_t* event) {
+            auto* state = static_cast<UiState*>(lv_event_get_user_data(event));
+            const auto selected = static_cast<int>(lv_dropdown_get_selected(state->ip_camera_slot_dropdown));
+            if (state->mavlink.primary_camera_type == 3 && state->mavlink.secondary_camera_type == 3) {
+                state->ip_camera_slot = selected;
+            } else {
+                state->ip_camera_slot = state->mavlink.primary_camera_type == 3 ? 0 : 1;
+            }
+            const auto& pipeline = state->ip_camera_slot == 0
+                ? state->mavlink.primary_ip_camera_pipeline
+                : state->mavlink.secondary_ip_camera_pipeline;
+            const auto& address = state->ip_camera_slot == 0
+                ? state->mavlink.primary_ip_camera_address
+                : state->mavlink.secondary_ip_camera_address;
+            lv_textarea_set_text(state->ip_camera_address_textarea, address.c_str());
+            lv_textarea_set_text(state->ip_camera_pipeline_textarea, pipeline.c_str());
+        },
+        LV_EVENT_VALUE_CHANGED,
+        &state);
+
+    auto* address_title = label(state.panel_body, "IP camera address", &lv_font_montserrat_14, 0xaab7c2);
+    lv_obj_set_width(address_title, LV_PCT(100));
+    state.ip_camera_address_textarea = lv_textarea_create(state.panel_body);
+    lv_textarea_set_one_line(state.ip_camera_address_textarea, true);
+    lv_textarea_set_max_length(state.ip_camera_address_textarea, 15);
+    const auto& selected_address = state.ip_camera_slot == 0
+        ? state.mavlink.primary_ip_camera_address
+        : state.mavlink.secondary_ip_camera_address;
+    lv_textarea_set_text(state.ip_camera_address_textarea, selected_address.c_str());
+    lv_obj_set_size(state.ip_camera_address_textarea, LV_PCT(100), 48);
+    lv_obj_set_style_bg_color(state.ip_camera_address_textarea, color(0x162a3a), 0);
+    lv_obj_set_style_text_color(state.ip_camera_address_textarea, color(0xffffff), 0);
+    lv_obj_add_event_cb(
+        state.ip_camera_address_textarea,
+        [](lv_event_t* event) {
+            auto* state = static_cast<UiState*>(lv_event_get_user_data(event));
+            if (state->ip_camera_keyboard == nullptr) {
+                state->ip_camera_keyboard = lv_keyboard_create(lv_screen_active());
+                lv_obj_set_size(state->ip_camera_keyboard, LV_PCT(100), LV_PCT(42));
+                lv_obj_align(state->ip_camera_keyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
+            }
+            lv_keyboard_set_textarea(state->ip_camera_keyboard, state->ip_camera_address_textarea);
+            lv_obj_remove_flag(state->ip_camera_keyboard, LV_OBJ_FLAG_HIDDEN);
+        },
+        LV_EVENT_FOCUSED,
+        &state);
+
+    auto* save_address = action_button(state, "SAVE IP CAMERA ADDRESS");
+    lv_obj_add_event_cb(
+        save_address,
+        [](lv_event_t* event) {
+            auto* state = static_cast<UiState*>(lv_event_get_user_data(event));
+            const auto* value = lv_textarea_get_text(state->ip_camera_address_textarea);
+            auto& address = state->ip_camera_slot == 0
+                ? state->mavlink.primary_ip_camera_address
+                : state->mavlink.secondary_ip_camera_address;
+            address = value == nullptr ? "" : value;
+            send_openhd_param(*state, state->ip_camera_slot == 0 ? "camera1" : "camera2", "IP_CAM_ADDRESS", address);
+            if (state->ip_camera_keyboard != nullptr) {
+                lv_obj_add_flag(state->ip_camera_keyboard, LV_OBJ_FLAG_HIDDEN);
+            }
+        },
+        LV_EVENT_CLICKED,
+        &state);
+
+    auto* pipeline_title = label(state.panel_body, "IP camera pipeline", &lv_font_montserrat_14, 0xaab7c2);
+    lv_obj_set_width(pipeline_title, LV_PCT(100));
+    state.ip_camera_pipeline_textarea = lv_textarea_create(state.panel_body);
+    lv_textarea_set_one_line(state.ip_camera_pipeline_textarea, true);
+    lv_textarea_set_max_length(state.ip_camera_pipeline_textarea, 127);
+    const auto& selected_pipeline = state.ip_camera_slot == 0
+        ? state.mavlink.primary_ip_camera_pipeline
+        : state.mavlink.secondary_ip_camera_pipeline;
+    lv_textarea_set_text(state.ip_camera_pipeline_textarea, selected_pipeline.c_str());
+    lv_obj_set_size(state.ip_camera_pipeline_textarea, LV_PCT(100), 48);
+    lv_obj_set_style_bg_color(state.ip_camera_pipeline_textarea, color(0x162a3a), 0);
+    lv_obj_set_style_text_color(state.ip_camera_pipeline_textarea, color(0xffffff), 0);
+    lv_obj_add_event_cb(
+        state.ip_camera_pipeline_textarea,
+        [](lv_event_t* event) {
+            auto* state = static_cast<UiState*>(lv_event_get_user_data(event));
+            if (state->ip_camera_keyboard == nullptr) {
+                state->ip_camera_keyboard = lv_keyboard_create(lv_screen_active());
+                lv_obj_set_size(state->ip_camera_keyboard, LV_PCT(100), LV_PCT(42));
+                lv_obj_align(state->ip_camera_keyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
+            }
+            lv_keyboard_set_textarea(state->ip_camera_keyboard, state->ip_camera_pipeline_textarea);
+            lv_obj_remove_flag(state->ip_camera_keyboard, LV_OBJ_FLAG_HIDDEN);
+        },
+        LV_EVENT_FOCUSED,
+        &state);
+
+    auto* save_pipeline = action_button(state, "SAVE IP CAMERA PIPELINE");
+    lv_obj_add_event_cb(
+        save_pipeline,
+        [](lv_event_t* event) {
+            auto* state = static_cast<UiState*>(lv_event_get_user_data(event));
+            const auto* value = lv_textarea_get_text(state->ip_camera_pipeline_textarea);
+            auto& pipeline = state->ip_camera_slot == 0
+                ? state->mavlink.primary_ip_camera_pipeline
+                : state->mavlink.secondary_ip_camera_pipeline;
+            pipeline = value == nullptr ? "" : value;
+            send_openhd_param(*state, state->ip_camera_slot == 0 ? "camera1" : "camera2", "IP_CAM_PIPELINE", pipeline);
+            if (state->ip_camera_keyboard != nullptr) {
+                lv_obj_add_flag(state->ip_camera_keyboard, LV_OBJ_FLAG_HIDDEN);
+            }
+        },
+        LV_EVENT_CLICKED,
+        &state);
+
+    auto* bitrate = action_button(state, "CYCLE IP CAMERA FIXED RATE (KEEP LOW)");
+    lv_obj_add_event_cb(
+        bitrate,
+        [](lv_event_t* event) {
+            auto* state = static_cast<UiState*>(lv_event_get_user_data(event));
+            state->mavlink.ip_camera_bitrate_mbits =
+                state->mavlink.ip_camera_bitrate_mbits >= 20
+                ? 1
+                : state->mavlink.ip_camera_bitrate_mbits + 1;
+            send_openhd_param(*state, "air", "V_IP_CAM_MBITS", std::to_string(state->mavlink.ip_camera_bitrate_mbits));
+        },
+        LV_EVENT_CLICKED,
+        &state);
+    auto* bitrate_warning = label(state.panel_body, "OpenHD cannot adjust the IP camera encoder. Set its WebUI bitrate at or below this reservation.", &lv_font_montserrat_12, 0xff8a00);
+    lv_obj_set_width(bitrate_warning, LV_PCT(100));
+    lv_label_set_long_mode(bitrate_warning, LV_LABEL_LONG_WRAP);
+
+}
+
 void build_recording_panel(UiState& state)
 {
     if (!state.storage_inventory_requested) {
@@ -2563,7 +2765,14 @@ void build_placeholder_panel(UiState& state)
 
 void clear_panel(UiState& state)
 {
+    if (state.ip_camera_keyboard != nullptr) {
+        lv_obj_delete(state.ip_camera_keyboard);
+    }
     lv_obj_clean(state.panel_body);
+    state.ip_camera_address_textarea = nullptr;
+    state.ip_camera_pipeline_textarea = nullptr;
+    state.ip_camera_keyboard = nullptr;
+    state.ip_camera_slot_dropdown = nullptr;
     state.fps_switch = nullptr;
     state.fps_label = nullptr;
     state.coordinates_switch = nullptr;
@@ -2604,7 +2813,7 @@ void set_active_panel(UiState& state, SidebarPanel panel)
     lv_label_set_text(state.panel_title, panel_title(panel));
     clear_panel(state);
 
-    for (int i = 0; i < 10; ++i) {
+    for (int i = 0; i < 11; ++i) {
         if (state.nav_buttons[i] == nullptr) {
             continue;
         }
@@ -2623,6 +2832,8 @@ void set_active_panel(UiState& state, SidebarPanel panel)
         build_video_panel(state);
     } else if (panel == SidebarPanel::camera) {
         build_camera_panel(state);
+    } else if (panel == SidebarPanel::ip_camera) {
+        build_ip_camera_panel(state);
     } else if (panel == SidebarPanel::osd) {
         build_osd_panel(state);
     } else if (panel == SidebarPanel::telemetry) {
@@ -2658,6 +2869,11 @@ void send_initial_ipc_requests(UiState& state, const char* backend_name)
     state.ipc.send_line("get osd");
     state.ipc.send_line("get theme");
     state.ipc.send_line("get net");
+    state.ipc.send_line("mav request-params camera1");
+    state.ipc.send_line("mav request-params camera2");
+    state.ipc.send_line("mav request-params air");
+    state.mavlink_param_request_attempts = 1;
+    state.next_mavlink_param_request = std::chrono::steady_clock::now() + std::chrono::seconds(3);
 }
 
 bool apply_network_state_line(UiState& state, const std::string& line)
@@ -2776,7 +2992,12 @@ void build_sidebar(UiState& state, std::uint32_t width, std::uint32_t height)
     lv_obj_set_style_margin_left(accent, 38, 0);
     lv_obj_set_style_margin_bottom(accent, 8, 0);
 
-    for (int i = 0; i < 10; ++i) {
+    for (int i = 0; i < 11; ++i) {
+        if (i == static_cast<int>(SidebarPanel::ip_camera)
+            && !has_selected_ip_camera(state)) {
+            state.nav_buttons[i] = nullptr;
+            continue;
+        }
         auto* button = lv_button_create(rail);
         state.nav_buttons[i] = button;
         lv_obj_set_user_data(button, reinterpret_cast<void*>(static_cast<std::intptr_t>(i)));
@@ -2870,6 +3091,8 @@ void build_sidebar(UiState& state, std::uint32_t width, std::uint32_t height)
         build_video_panel(state);
     } else if (active == SidebarPanel::camera) {
         build_camera_panel(state);
+    } else if (active == SidebarPanel::ip_camera) {
+        build_ip_camera_panel(state);
     } else if (active == SidebarPanel::osd) {
         build_osd_panel(state);
     } else if (active == SidebarPanel::telemetry) {
@@ -3032,6 +3255,16 @@ void poll_ipc(UiState& state, std::chrono::steady_clock::time_point now)
         return;
     }
 
+    if (state.mavlink_param_request_attempts < 4
+        && (state.mavlink.primary_camera_type < 0 || state.mavlink.secondary_camera_type < 0)
+        && now >= state.next_mavlink_param_request) {
+        state.next_mavlink_param_request = now + std::chrono::seconds(3);
+        ++state.mavlink_param_request_attempts;
+        state.ipc.send_line("mav request-params camera1");
+        state.ipc.send_line("mav request-params camera2");
+        state.ipc.send_line("mav request-params air");
+    }
+
     for (const auto& line : state.ipc.poll_lines()) {
         if (line == "state fps 0" || line == "state fps 1") {
             if (update_bool(state.fps_enabled, line.back() == '1')) {
@@ -3063,12 +3296,25 @@ void poll_ipc(UiState& state, std::chrono::steady_clock::time_point now)
             if (state.overlay_mode == OverlayMode::menu && panel_uses_network(state.active_panel)) {
                 request_panel_rebuild(state, now);
             }
-        } else if (glide::mavlink::apply_ipc_line(state.mavlink, line)) {
-            if (state.overlay_mode == OverlayMode::menu && panel_uses_mavlink(state.active_panel)) {
-                request_panel_rebuild(state, now);
-            }
         } else {
-            apply_terminal_key(state, line);
+            const bool had_ip_camera = has_selected_ip_camera(state);
+            if (glide::mavlink::apply_ipc_line(state.mavlink, line)) {
+                const bool has_ip_camera = has_selected_ip_camera(state);
+                if (had_ip_camera != has_ip_camera) {
+                    if (!has_ip_camera && state.active_panel == SidebarPanel::ip_camera) {
+                        state.active_panel = SidebarPanel::camera;
+                    }
+                    rebuild_ui(state);
+                } else if (state.overlay_mode == OverlayMode::menu
+                    && panel_uses_mavlink(state.active_panel)
+                    && !(state.active_panel == SidebarPanel::ip_camera
+                        && state.ip_camera_keyboard != nullptr
+                        && !lv_obj_has_flag(state.ip_camera_keyboard, LV_OBJ_FLAG_HIDDEN))) {
+                    request_panel_rebuild(state, now);
+                }
+            } else {
+                apply_terminal_key(state, line);
+            }
         }
     }
 

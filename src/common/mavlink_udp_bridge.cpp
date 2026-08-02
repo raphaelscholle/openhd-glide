@@ -31,6 +31,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iomanip>
+#include <limits>
 #include <optional>
 #include <sstream>
 
@@ -240,10 +241,17 @@ std::optional<std::string> decode_frame(const Frame& frame)
         break;
     }
     case 322: {
-        const auto name = c_string(p, 5, 16);
-        const auto value = c_string(p, 21, 128);
+        // PARAM_EXT_VALUE wire order is value[128], count, index, id[16], type.
+        const auto name = c_string(p, 132, 16);
+        const auto param_type = read_le<std::uint8_t>(p, 148);
+        const auto value = param_type == 6
+            ? std::to_string(read_le<std::int32_t>(p, 0))
+            : c_string(p, 0, 128);
         if (!name.empty()) {
-            line << "mav param auto " << name << ' ' << value;
+            const auto target = frame.sysid == 101 && frame.compid == 100
+                ? "camera1"
+                : (frame.sysid == 101 && frame.compid == 101 ? "camera2" : "auto");
+            line << "mav param " << target << ' ' << name << ' ' << value;
             return line.str();
         }
         break;
@@ -360,6 +368,9 @@ std::uint8_t target_system_for(const std::string& target, std::uint8_t air, std:
     if (target == "fc") {
         return fc;
     }
+    if (target == "camera1" || target == "camera2") {
+        return 101;
+    }
     return air;
 }
 
@@ -370,6 +381,12 @@ std::uint8_t target_component_for(const std::string& target, std::uint8_t air, s
     }
     if (target == "fc") {
         return fc;
+    }
+    if (target == "camera1") {
+        return 100;
+    }
+    if (target == "camera2") {
+        return 101;
     }
     return air;
 }
@@ -529,6 +546,11 @@ bool UdpBridge::handle_action_line(const std::string& line)
         }
         return send_param_ext_set(target, name, value) || send_param_set(target, name, value);
     }
+    if (action == "request-params") {
+        std::string target;
+        stream >> target;
+        return !target.empty() && send_param_ext_request_list(target);
+    }
     if (action == "command") {
         std::string command;
         stream >> command;
@@ -572,12 +594,31 @@ bool UdpBridge::send_param_ext_set(const std::string& target, const std::string&
     put_u8(payload, target_system_for(target, air_system_id_, ground_system_id_, flight_controller_system_id_));
     put_u8(payload, target_component_for(target, air_component_id_, ground_component_id_, flight_controller_component_id_));
     put_fixed_string(payload, name, 16);
-    put_fixed_string(payload, value, 128);
-    put_u8(payload, 9);
+
+    char* integer_end {};
+    const auto integer_value = std::strtol(value.c_str(), &integer_end, 10);
+    if (integer_end != value.c_str() && *integer_end == '\0'
+        && integer_value >= std::numeric_limits<std::int32_t>::min()
+        && integer_value <= std::numeric_limits<std::int32_t>::max()) {
+        put_le<std::int32_t>(payload, static_cast<std::int32_t>(integer_value));
+        payload.insert(payload.end(), 124, 0);
+        put_u8(payload, 6); // MAV_PARAM_EXT_TYPE_INT32
+    } else {
+        put_fixed_string(payload, value, 128);
+        put_u8(payload, 11); // MAV_PARAM_EXT_TYPE_CUSTOM
+    }
     return send_packet(323, 78, payload);
 }
 
-bool UdpBridge::send_command_long(const std::string& command, const std::string& arguments)
+bool UdpBridge::send_param_ext_request_list(const std::string& target)
+{
+    std::vector<std::uint8_t> payload;
+    put_u8(payload, target_system_for(target, air_system_id_, ground_system_id_, flight_controller_system_id_));
+    put_u8(payload, target_component_for(target, air_component_id_, ground_component_id_, flight_controller_component_id_));
+    return send_packet(321, 88, payload);
+}
+
+bool UdpBridge::send_command_long(const std::string& command, const std::string&)
 {
     float params[7] {};
     std::uint16_t command_id {};
