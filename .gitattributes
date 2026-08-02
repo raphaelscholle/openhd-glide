@@ -23,3 +23,6 @@
 
 # Auto detect text files and perform LF normalization
 * text=auto
+*.sh text eol=lf
+*.default text eol=lf
+packaging/systemd/openhd-glide-service-run text eol=lf

@@ -23,6 +23,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -65,6 +66,13 @@ private:
     std::uint8_t air_component_id_ { 1 };
     std::uint8_t ground_system_id_ { 100 };
     std::uint8_t ground_component_id_ { 1 };
+    bool storage_command_pending_ {};
+    std::uint16_t storage_command_id_ {};
+    std::string storage_command_name_;
+    std::string storage_command_arguments_;
+    int storage_command_retries_ {};
+    std::chrono::steady_clock::time_point storage_command_sent_at_ {};
+    std::vector<std::string> pending_lines_;
     std::string last_error_;
 
     struct PeerStorage;
